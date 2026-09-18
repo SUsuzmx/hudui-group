@@ -3,6 +3,7 @@ import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
 import { io } from 'socket.io-client';
 import { getToken, api } from '../api.js';
 import UserAvatar from './UserAvatar.vue';
+import WxIcons from './WxIcons.vue';
 
 const props = defineProps({
   me: { type: Object, required: true },
@@ -49,30 +50,34 @@ const swipeAxis = ref(null);
 let socket = null;
 let chatsReloadTimer = null;
 
-const discoverSections = [
-  { icon: '📷', label: '朋友圈', key: 'moments', color: '#3a7' },
-  { icon: '▦', label: '扫一扫', key: 'scan', color: '#3a7' },
-  { icon: '🔍', label: '搜一搜', key: 'search', color: '#3a7' },
-  { icon: '🛒', label: '购物', key: 'shopping', color: '#e6a23c' },
-  { icon: '🎮', label: '游戏', key: 'games', color: '#5b7' },
-  { icon: '📦', label: '小程序', key: 'miniapp', color: '#57c' },
-  { icon: '👀', label: '看一看', key: 'look', color: '#f85' },
-  { icon: '📍', label: '附近的人', key: 'nearby', color: '#3a7' },
+// 对齐真实微信截图的入口分组
+const discoverGroups = [
+  [{ icon: 'moments', label: '朋友圈', key: 'moments' }],
+  [
+    { icon: 'channels', label: '视频号', key: 'videoChannels' },
+    { icon: 'live', label: '直播', key: 'live', extra: '英雄联盟赛事：2026 L…', dot: true },
+  ],
+  [{ icon: 'listen', label: '听一听', key: 'listen' }],
+  [{ icon: 'game', label: '游戏', key: 'games' }],
 ];
-const meSections = [
-  { icon: '⭐', label: '收藏', key: 'favorites', color: '#f85' },
-  { icon: '🖼', label: '相册', key: 'album', color: '#3a7' },
-  { icon: '📷', label: '朋友圈', key: 'moments-mine', color: '#3a7' },
-  { icon: '💬', label: '状态', key: 'statusHome', color: '#5b9' },
-  { icon: '💳', label: '服务', key: 'services', color: '#5b9' },
-  { icon: '💰', label: '钱包', key: 'wallet', color: '#e6a23c' },
-  { icon: '🎴', label: '卡包', key: 'cards', color: '#57c' },
-  { icon: '😊', label: '表情', key: 'stickers', color: '#f85' },
-  { icon: '🏷', label: '标签', key: 'tags', color: '#57c' },
+const meService = [{ icon: 'services', label: '服务', key: 'services' }];
+const meGroup1 = [
+  { icon: 'fav', label: '收藏', key: 'favorites' },
+  { icon: 'album-me', label: '朋友圈', key: 'moments-mine' },
+  { icon: 'works', label: '作品', key: 'works' },
+  { icon: 'shop-cards', label: '小店与卡包', key: 'cards' },
+  { icon: 'sticker', label: '表情', key: 'stickers' },
 ];
-const settingsSections = [
-  { icon: '⚙️', label: '设置', key: 'settings', color: '#999' },
+const meGroup2 = [{ icon: 'settings', label: '设置', key: 'settings' }];
+const contactEntries = [
+  { icon: 'new-friend', label: '新的朋友', key: 'newfriends' },
+  { icon: 'chat-only', label: '仅聊天的朋友', key: 'chat-only' },
+  { icon: 'group', label: '群聊', key: 'groupList' },
+  { icon: 'tag', label: '标签', key: 'tags' },
+  { icon: 'oa', label: '公众号', key: 'official' },
+  { icon: 'service-oa', label: '服务号', key: 'service-oa' },
 ];
+const contactWork = [{ icon: 'work-wechat', label: '企业微信联系人', key: 'work-wecom' }];
 
 const floatChats = ref([]);
 const foldedOpen = ref(false);
@@ -82,6 +87,16 @@ const visibleChats = computed(() => {
   const foldedIds = new Set(foldedChats.value.map((c) => c.id));
   return chats.value.filter((c) => !foldedIds.has(c.id) || foldedOpen.value);
 });
+
+const navTitleText = computed(() => {
+  if (tab.value === 'chats') {
+    const n = unreadTotal.value || 0;
+    return n > 0 ? `微信(${n > 99 ? '99+' : n})` : '微信';
+  }
+  return tab.value === 'contacts' ? '通讯录' : tab.value === 'discover' ? '发现' : '我';
+});
+const showNav = computed(() => tab.value !== 'me');
+const starFriends = computed(() => contactPeople().filter((p) => p.isAI).slice(0, 4));
 
 function toggleFloatChat(c) {
   const exists = floatChats.value.find((x) => x.id === c.id);
@@ -324,13 +339,16 @@ function openDiscover(s) {
     miniapp: { feature: 'miniappHome', title: '小程序' },
     games: { feature: 'miniappHome', title: '游戏' },
     shopping: { feature: 'servicesHome', title: '购物' },
-    scan: null,
+    videoChannels: { feature: 'videoChannels', title: '视频号' },
+    live: { feature: 'videoChannels', title: '直播' },
+    listen: { feature: 'lookDetail', title: '听一听' },
   };
-  if (s.key === 'look' || s.key === 'nearby' || s.key === 'miniapp' || s.key === 'games' || s.key === 'shopping') {
+  if (deepMap[s.key]) {
     const d = deepMap[s.key];
     emit('open-view', { type: 'deep-feature', feature: d.feature, title: d.title || s.label });
     return;
   }
+  if (s.key === 'scan') { openFeature('scan', s.label); return; }
   openFeature(s.key, s.label);
 }
 
@@ -344,15 +362,34 @@ function openMeCell(s) {
   } else if (s.key === 'services') {
     emit('open-view', { type: 'deep-feature', feature: 'servicesHome', title: '服务' });
   } else if (s.key === 'cards') {
-    emit('open-view', { type: 'feature', feature: 'cards', title: '卡包' });
+    emit('open-view', { type: 'feature', feature: 'cards', title: '小店与卡包' });
   } else if (s.key === 'statusHome') {
     emit('open-view', { type: 'deep-feature', feature: 'statusHome', title: '状态' });
-  } else if (['album', 'favorites', 'tags', 'stickers', 'scan', 'shopping', 'games', 'miniapp', 'look', 'nearby'].includes(s.key)) {
+  } else if (s.key === 'works' || s.key === 'album') {
+    emit('open-view', { type: 'feature', feature: 'album', title: '作品' });
+  } else if (['favorites', 'tags', 'stickers', 'scan'].includes(s.key)) {
     emit('open-view', { type: 'feature', feature: s.key, title: s.label });
   } else {
     openFeature(s.key, s.label);
   }
 }
+
+function openContactEntry(s) {
+  if (s.key === 'newfriends') {
+    emit('open-view', { type: 'feature', feature: 'newfriends', title: '新的朋友' });
+    return;
+  }
+  if (s.key === 'groupList') {
+    emit('open-view', { type: 'deep-feature', feature: 'groupList', title: '群聊' });
+    return;
+  }
+  if (s.key === 'tags' || s.key === 'official') {
+    emit('open-view', { type: 'feature', feature: s.key, title: s.label });
+    return;
+  }
+  emit('open-view', { type: 'feature', feature: s.key, title: s.label });
+}
+
 
 function openEditProfile() { emit('open-view', { type: 'edit-profile' }); }
 function openAddFriend() { showMore.value = false; emit('open-view', { type: 'add-friend' }); }
@@ -399,7 +436,7 @@ function contactPeople() {
     list.push(p);
   };
   const aiMembers = members.value.aiMembers || [];
-  const allUsers = members.value.allUsers || [];
+  // 通讯录仅展示: 好友 + AI 联系人（对齐微信，不把全库用户塞进来）
   const friendList = friends.value || [];
   for (const f of friendList) {
     push({
@@ -427,26 +464,42 @@ function contactPeople() {
       isFriend: false,
     });
   }
-  for (const u of allUsers) {
-    if (u.id === props.me?.id) continue;
-    push({
-      key: 'u-' + u.id,
-      nickname: u.nickname,
-      avatar: u.avatar,
-      emoji: null,
-      color: u.avatarColor,
-      wxid: u.wxid,
-      userId: u.id,
-      isAI: false,
-      isFriend: friendList.some((f) => f.id === u.id),
-    });
-  }
   return list;
 }
 
 function alphaOf(name) {
-  const ch = (name || '?')[0].toUpperCase();
-  return /[A-Z]/.test(ch) ? ch : '#';
+  const ch = (name || '?')[0];
+  if (/[\u4e00-\u9fa5]/.test(ch)) {
+    // 中文按拼音首字母：用简单映射不够准，微信也常用系统拼音；演示按 Unicode 分桶到 #
+    // 尽量把常见姓氏归到字母，其余 #
+    const map = {
+      阿: 'A', 艾: 'A', 安: 'A',
+      白: 'B', 包: 'B', 鲍: 'B', 毕: 'B', 边: 'B', 卞: 'B',
+      蔡: 'C', 曹: 'C', 岑: 'C', 常: 'C', 车: 'C', 陈: 'C', 成: 'C', 程: 'C', 池: 'C', 褚: 'C', 崔: 'C',
+      戴: 'D', 邓: 'D', 狄: 'D', 刁: 'D', 丁: 'D', 董: 'D', 杜: 'D', 段: 'D',
+      樊: 'F', 范: 'F', 方: 'F', 费: 'F', 冯: 'F', 凤: 'F', 符: 'F', 傅: 'F',
+      甘: 'G', 高: 'G', 葛: 'G', 耿: 'G', 龚: 'G', 巩: 'G', 古: 'G', 顾: 'G', 关: 'G', 郭: 'G',
+      韩: 'H', 杭: 'H', 郝: 'H', 何: 'H', 贺: 'H', 赫: 'H', 洪: 'H', 侯: 'H', 胡: 'H', 花: 'H', 华: 'H', 黄: 'H', 霍: 'H',
+      嵇: 'J', 吉: 'J', 纪: 'J', 季: 'J', 贾: 'J', 江: 'J', 姜: 'J', 蒋: 'J', 金: 'J', 荆: 'J',
+      康: 'K', 柯: 'K', 孔: 'K',
+      赖: 'L', 蓝: 'L', 郎: 'L', 劳: 'L', 雷: 'L', 黎: 'L', 李: 'L', 连: 'L', 梁: 'L', 廖: 'L', 林: 'L', 凌: 'L', 刘: 'L', 柳: 'L', 龙: 'L', 卢: 'L', 陆: 'L', 吕: 'L', 罗: 'L', 骆: 'L',
+      马: 'M', 毛: 'M', 梅: 'M', 孟: 'M', 米: 'M', 苗: 'M', 闵: 'M', 莫: 'M', 牟: 'M', 穆: 'M',
+      倪: 'N', 聂: 'N', 宁: 'N', 牛: 'N',
+      欧: 'O', 区: 'O',
+      潘: 'P', 庞: 'P', 裴: 'P', 彭: 'P', 皮: 'P',
+      戚: 'Q', 齐: 'Q', 钱: 'Q', 强: 'Q', 乔: 'Q', 秦: 'Q', 邱: 'Q', 裘: 'Q', 屈: 'Q',
+      饶: 'R', 任: 'R', 荣: 'R', 阮: 'R',
+      沙: 'S', 邵: 'S', 申: 'S', 沈: 'S', 盛: 'S', 师: 'S', 施: 'S', 石: 'S', 时: 'S', 史: 'S', 寿: 'S', 舒: 'S', 束: 'S', 双: 'S', 水: 'S', 宋: 'S', 苏: 'S', 孙: 'S',
+      谭: 'T', 汤: 'T', 唐: 'T', 陶: 'T', 滕: 'T', 田: 'T', 童: 'T', 涂: 'T',
+      万: 'W', 汪: 'W', 王: 'W', 危: 'W', 韦: 'W', 魏: 'W', 温: 'W', 文: 'W', 闻: 'W', 翁: 'W', 巫: 'W', 邬: 'W', 吴: 'W', 伍: 'W', 武: 'W',
+      奚: 'X', 习: 'X', 夏: 'X', 肖: 'X', 萧: 'X', 谢: 'X', 辛: 'X', 邢: 'X', 熊: 'X', 徐: 'X', 许: 'X', 薛: 'X',
+      严: 'Y', 言: 'Y', 阎: 'Y', 颜: 'Y', 杨: 'Y', 姚: 'Y', 叶: 'Y', 易: 'Y', 殷: 'Y', 尹: 'Y', 应: 'Y', 于: 'Y', 余: 'Y', 俞: 'Y', 虞: 'Y', 禹: 'Y', 喻: 'Y', 袁: 'Y', 岳: 'Y', 云: 'Y',
+      臧: 'Z', 曾: 'Z', 詹: 'Z', 张: 'Z', 章: 'Z', 赵: 'Z', 甄: 'Z', 郑: 'Z', 钟: 'Z', 周: 'Z', 朱: 'Z', 诸: 'Z', 庄: 'Z', 卓: 'Z',
+    };
+    return map[ch] || '#';
+  }
+  const up = String(ch || '?').toUpperCase();
+  return /[A-Z]/.test(up) ? up : '#';
 }
 
 const contactGroups = computed(() => {
@@ -458,7 +511,10 @@ const contactGroups = computed(() => {
   }
   return [...map.entries()]
     .sort((x, y) => (x[0] === '#' ? 1 : y[0] === '#' ? -1 : x[0].localeCompare(y[0])))
-    .map(([letter, people]) => ({ letter, people }));
+    .map(([letter, people]) => ({
+      letter,
+      people: [...people].sort((a, b) => String(a.nickname).localeCompare(String(b.nickname), 'zh')),
+    }));
 });
 
 const contactCount = computed(() => contactGroups.value.reduce((s, g) => s + g.people.length, 0));
@@ -571,36 +627,25 @@ function doChatAction(kind) {
 
 <template>
   <div class="main-page">
-    <header class="nav-bar">
+    <header v-if="showNav" class="nav-bar">
+      <div class="nav-spacer"></div>
       <div class="nav-title">
-        {{ tab === 'chats' ? '微信' : tab === 'contacts' ? '通讯录' : tab === 'discover' ? '发现' : '我' }}
-        <span v-if="tab === 'chats' && unreadTotal > 0" class="nav-unread">{{ unreadTotal > 99 ? '99+' : unreadTotal }}</span>
+        <span class="nav-title-text">{{ navTitleText }}</span>
       </div>
       <div class="nav-actions">
-        <button v-if="tab === 'chats'" class="icon-btn" aria-label="搜索" @click="openSearch">
-          <svg viewBox="0 0 24 24" width="22" height="22"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M16 16l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <button class="icon-btn" aria-label="搜索" @click="openSearch">
+          <WxIcons name="search" :size="22" />
         </button>
-        <button v-if="tab === 'chats'" class="icon-btn" aria-label="更多" @click="toggleMore">
-          <svg viewBox="0 0 24 24" width="22" height="22"><circle cx="5" cy="12" r="1.7" fill="currentColor"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/><circle cx="19" cy="12" r="1.7" fill="currentColor"/></svg>
-        </button>
-        <button v-if="tab === 'contacts'" class="icon-btn" aria-label="添加朋友" @click="openAddFriend">
-          <svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <button class="icon-btn" aria-label="更多" @click="tab === 'chats' ? toggleMore() : openSearch()">
+          <WxIcons name="plus" :size="22" />
         </button>
       </div>
     </header>
 
     <main class="content">
+      <!-- 微信会话列表 -->
       <div v-show="tab === 'chats'" class="tab-pane scroll-y" ref="chatsScrollEl">
-        <button class="search-entry" @click="openSearch">
-          <span class="search-entry-icon"></span>
-          <span>搜索</span>
-        </button>
         <ul class="msg-list">
-          <li v-if="foldedChats.length && !foldedOpen" class="msg-item folded-bar">
-            <button type="button" class="folded-btn" @click="foldedOpen = true">
-              📁 折叠的群聊（{{ foldedChats.length }}）
-            </button>
-          </li>
           <li
             v-for="c in visibleChats"
             :key="c.id"
@@ -613,12 +658,7 @@ function doChatAction(kind) {
             @pointerleave="clearChatLongPress"
             @pointercancel="clearChatLongPress"
           >
-            <button
-              v-show="swipeId === c.id"
-              class="swipe-del"
-              type="button"
-              @click.stop="hideSwiped(c.id)"
-            >不显示</button>
+            <button v-show="swipeId === c.id" class="swipe-del" type="button" @click.stop="hideSwiped(c.id)">不显示</button>
             <div class="msg-swipe">
               <div class="msg-avatar-wrap">
                 <UserAvatar
@@ -626,7 +666,7 @@ function doChatAction(kind) {
                   :name="c.remark || c.name"
                   :avatar="typeof c.avatars?.[0] === 'string' && String(c.avatars[0]).startsWith('/') ? c.avatars[0] : null"
                   :emoji="typeof c.avatars?.[0] === 'string' && !String(c.avatars[0]).startsWith('/') ? c.avatars[0] : null"
-                  :size="48"
+                  :size="52"
                 />
                 <div v-else class="group-avatar" :class="'n' + Math.min(9, (c.avatars || []).length || 1)">
                   <UserAvatar
@@ -635,7 +675,7 @@ function doChatAction(kind) {
                     :name="c.name"
                     :avatar="typeof av === 'string' && String(av).startsWith('/') ? av : null"
                     :emoji="typeof av === 'string' && !String(av).startsWith('/') ? av : null"
-                    :size="14"
+                    :size="(c.avatars || []).length > 1 ? 16 : 22"
                   />
                 </div>
                 <span v-if="unreadMap[c.id]" class="msg-badge">{{ unreadMap[c.id] > 99 ? '99+' : unreadMap[c.id] }}</span>
@@ -645,7 +685,7 @@ function doChatAction(kind) {
                   <div class="msg-name">{{ c.remark || c.name }}</div>
                   <div class="msg-time-col">
                     <div class="msg-time">{{ fmtTime(c.lastTime) }}</div>
-                    <svg v-if="c.muted" class="mute-bell" viewBox="0 0 24 24" width="12" height="12"><path d="M8 10a4 4 0 0 1 8 0v1l2 2H6l2-2v-1z" fill="none" stroke="#c0c0c0" stroke-width="1.6"/><path d="M4 4l16 16" stroke="#c0c0c0" stroke-width="1.6" stroke-linecap="round"/></svg>
+                    <WxIcons v-if="c.muted" name="mute" :size="12" class="mute-bell" />
                   </div>
                 </div>
                 <div class="msg-bottom">
@@ -656,36 +696,48 @@ function doChatAction(kind) {
               </div>
             </div>
           </li>
+          <li v-if="foldedChats.length" class="msg-item folded-bar">
+            <div class="msg-swipe" @click="foldedOpen = !foldedOpen">
+              <div class="msg-avatar-wrap">
+                <div class="folder-avatar"><WxIcons name="folder" :size="26" /></div>
+              </div>
+              <div class="msg-main">
+                <div class="msg-top">
+                  <div class="msg-name">折叠的聊天</div>
+                </div>
+                <div class="msg-bottom">
+                  <div class="msg-preview">{{ foldedOpen ? '点击收起' : `共 ${foldedChats.length} 个会话` }}</div>
+                </div>
+              </div>
+            </div>
+          </li>
         </ul>
         <div v-if="!chats.length" class="empty-state">暂无消息</div>
       </div>
 
+      <!-- 通讯录 -->
       <div v-show="tab === 'contacts'" class="tab-pane scroll-y" ref="contactsScrollEl">
-        <button class="search-entry" @click="openSearch">
-          <span class="search-entry-icon"></span>
-          <span>搜索</span>
-        </button>
-        <div class="cell-group">
-          <button class="cell-row" @click="emit('open-view', { type: 'deep-feature', feature: 'groupList', title: '群聊' })">
-            <span class="cell-icon" style="background:#07c160">👥</span>
-            <span class="cell-label">群聊</span>
+        <div class="cell-group flat">
+          <button v-for="s in contactEntries" :key="s.key" class="cell-row" @click="openContactEntry(s)">
+            <WxIcons :name="s.icon" :size="28" />
+            <span class="cell-label">{{ s.label }}</span>
+            <span v-if="s.key === 'newfriends' && pendingFriendCount" class="msg-badge inline">{{ pendingFriendCount > 99 ? '99+' : pendingFriendCount }}</span>
             <span class="cell-arrow"></span>
           </button>
-          <button class="cell-row" @click="openSubNewFriends">
-            <span class="cell-icon" style="background:#07c160">👤</span>
-            <span class="cell-label">新的朋友</span>
-            <span v-if="pendingFriendCount" class="msg-badge inline">{{ pendingFriendCount > 99 ? '99+' : pendingFriendCount }}</span>
+        </div>
+        <div class="section-bar">我的企业及企业联系人</div>
+        <div class="cell-group flat">
+          <button v-for="s in contactWork" :key="s.key" class="cell-row" @click="openContactEntry(s)">
+            <WxIcons :name="s.icon" :size="28" />
+            <span class="cell-label">{{ s.label }}</span>
             <span class="cell-arrow"></span>
           </button>
-          <button class="cell-row" @click="openFeature('tags', '标签')">
-            <span class="cell-icon" style="background:#57c">🏷</span>
-            <span class="cell-label">标签</span>
-            <span class="cell-arrow"></span>
-          </button>
-          <button class="cell-row" @click="openFeature('official', '公众号')">
-            <span class="cell-icon" style="background:#57c">📢</span>
-            <span class="cell-label">公众号</span>
-            <span class="cell-arrow"></span>
+        </div>
+        <div v-if="starFriends.length" class="section-bar">星标朋友</div>
+        <div v-if="starFriends.length" class="cell-group flat">
+          <button v-for="p in starFriends" :key="'star-'+p.key" class="contact-row" @click="openContact(p)">
+            <UserAvatar :name="p.nickname" :avatar="p.avatar" :emoji="p.emoji" :color="p.color || '#07c160'" :size="44" />
+            <div class="contact-name-wrap"><div class="contact-name">{{ p.nickname }}</div></div>
           </button>
         </div>
         <template v-for="g in contactGroups" :key="g.letter">
@@ -696,48 +748,64 @@ function doChatAction(kind) {
             class="contact-row"
             @click="openContact(p)"
           >
-            <UserAvatar :name="p.nickname" :avatar="p.avatar" :emoji="p.emoji" :color="p.color || '#07c160'" :size="40" />
+            <UserAvatar :name="p.nickname" :avatar="p.avatar" :emoji="p.emoji" :color="p.color || '#07c160'" :size="44" />
             <div class="contact-name-wrap">
               <div class="contact-name">{{ p.nickname }}</div>
-              <div v-if="p.isAI || p.remark" class="contact-sub">{{ p.isAI ? 'AI 联系人' : (p.remark || '') }}</div>
             </div>
           </button>
         </template>
-        <div class="alpha-footer">共 {{ contactCount }} 位联系人</div>
+        <div class="alpha-footer">{{ contactCount }} 位联系人</div>
+        <div class="alpha-index" aria-hidden="true">
+          <span>↑</span><span>☆</span>
+          <span v-for="L in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ#'.split('')" :key="L">{{ L }}</span>
+        </div>
       </div>
 
-      <div v-show="tab === 'discover'" class="tab-pane scroll-y" ref="discoverScrollEl">
-        <div class="cell-group">
-          <button v-for="(s, i) in discoverSections" :key="s.key" class="cell-row" @click="openDiscover(s)">
-            <span class="cell-icon" :style="{ background: s.color }">{{ s.icon }}</span>
+      <!-- 发现 -->
+      <div v-show="tab === 'discover'" class="tab-pane discover-pane scroll-y" ref="discoverScrollEl">
+        <div v-for="(group, gi) in discoverGroups" :key="gi" class="cell-group flat gap">
+          <button v-for="s in group" :key="s.key" class="cell-row" @click="openDiscover(s)">
+            <WxIcons :name="s.icon" :size="24" />
             <span class="cell-label">{{ s.label }}</span>
-            <span v-if="i === 0 && momentsDot" class="red-dot"></span>
+            <span v-if="s.extra" class="cell-extra">{{ s.extra }}</span>
+            <span v-if="s.dot || (s.key === 'moments' && momentsDot)" class="red-dot"></span>
             <span class="cell-arrow"></span>
           </button>
         </div>
-        <div class="discover-tip">发现 · 演示内容可点开体验</div>
       </div>
 
-      <div v-show="tab === 'me'" class="tab-pane scroll-y" ref="meScrollEl">
+      <!-- 我 -->
+      <div v-show="tab === 'me'" class="tab-pane me-pane scroll-y" ref="meScrollEl">
         <button class="profile-card" type="button" @click="openEditProfile">
-          <UserAvatar :name="me?.nickname" :avatar="me?.avatar" :color="me?.avatarColor" :size="64" />
+          <UserAvatar :name="me?.nickname" :avatar="me?.avatar" :color="me?.avatarColor" :size="72" />
           <div class="profile-main">
             <div class="profile-name">{{ me?.nickname }}</div>
             <div class="profile-wxid">微信号：{{ me?.wxid || '未设置' }}</div>
+            <div class="profile-status">
+              <span class="status-chip" @click.stop="emit('open-view', { type: 'deep-feature', feature: 'statusHome', title: '状态' })">+ 状态</span>
+              <span class="status-refresh">↻</span>
+            </div>
           </div>
-          <span class="qr-entry" @click.stop="openQr">▦</span>
+          <span class="qr-entry" @click.stop="openQr"><WxIcons name="qr" :size="22" /></span>
           <span class="cell-arrow"></span>
         </button>
-        <div class="cell-group">
-          <button v-for="s in meSections" :key="s.key" class="cell-row" @click="openMeCell(s)">
-            <span class="cell-icon" :style="{ background: s.color }">{{ s.icon }}</span>
+        <div class="cell-group flat gap">
+          <button v-for="s in meService" :key="s.key" class="cell-row" @click="openMeCell(s)">
+            <WxIcons :name="s.icon" :size="24" />
             <span class="cell-label">{{ s.label }}</span>
             <span class="cell-arrow"></span>
           </button>
         </div>
-        <div class="cell-group">
-          <button v-for="s in settingsSections" :key="s.key" class="cell-row" @click="openMeCell(s)">
-            <span class="cell-icon" :style="{ background: s.color }">{{ s.icon }}</span>
+        <div class="cell-group flat gap">
+          <button v-for="s in meGroup1" :key="s.key" class="cell-row" @click="openMeCell(s)">
+            <WxIcons :name="s.icon" :size="24" />
+            <span class="cell-label">{{ s.label }}</span>
+            <span class="cell-arrow"></span>
+          </button>
+        </div>
+        <div class="cell-group flat gap">
+          <button v-for="s in meGroup2" :key="s.key" class="cell-row" @click="openMeCell(s)">
+            <WxIcons :name="s.icon" :size="24" />
             <span class="cell-label">{{ s.label }}</span>
             <span class="cell-arrow"></span>
           </button>
@@ -811,22 +879,22 @@ function doChatAction(kind) {
 
     <nav class="tab-bar">
       <button class="tab-item" :class="{ active: tab === 'chats' }" @click="switchTab('chats')">
-        <span class="tab-ico">💬</span>
+        <span class="tab-ico"><WxIcons :name="tab === 'chats' ? 'tab-chats-on' : 'tab-chats'" :size="26" /></span>
         <span>微信</span>
         <span v-if="unreadTotal > 0" class="tab-badge">{{ unreadTotal > 99 ? '99+' : unreadTotal }}</span>
       </button>
       <button class="tab-item" :class="{ active: tab === 'contacts' }" @click="switchTab('contacts')">
-        <span class="tab-ico">👥</span>
+        <span class="tab-ico"><WxIcons :name="tab === 'contacts' ? 'tab-contacts-on' : 'tab-contacts'" :size="26" /></span>
         <span>通讯录</span>
         <span v-if="pendingFriendCount > 0" class="tab-badge">{{ pendingFriendCount > 99 ? '99+' : pendingFriendCount }}</span>
       </button>
       <button class="tab-item" :class="{ active: tab === 'discover' }" @click="switchTab('discover')">
-        <span class="tab-ico">🧭</span>
+        <span class="tab-ico"><WxIcons :name="tab === 'discover' ? 'tab-discover-on' : 'tab-discover'" :size="26" /></span>
         <span>发现</span>
         <span v-if="momentsDot" class="tab-dot"></span>
       </button>
       <button class="tab-item" :class="{ active: tab === 'me' }" @click="switchTab('me')">
-        <span class="tab-ico">👤</span>
+        <span class="tab-ico"><WxIcons :name="tab === 'me' ? 'tab-me-on' : 'tab-me'" :size="26" /></span>
         <span>我</span>
       </button>
     </nav>
@@ -840,15 +908,66 @@ function doChatAction(kind) {
 <style scoped>
 .main-page { display: flex; flex-direction: column; min-height: 0; flex: 1; width: 100%; background: var(--bg); position: relative; }
 .nav-bar {
-  height: var(--nav-h); flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
-  padding: 0 8px 0 16px; background: var(--bg); border-bottom: 0.5px solid var(--divider);
+  height: var(--nav-h);
+  flex-shrink: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+  background: var(--bg);
+  border-bottom: 0.5px solid var(--divider);
 }
-.nav-title { font-size: 17px; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 6px; }
-.nav-unread { font-size: 12px; color: var(--red); font-weight: 400; }
-.nav-actions { display: flex; align-items: center; }
-.icon-btn { width: 40px; height: 40px; border: 0; background: transparent; color: var(--text); display: flex; align-items: center; justify-content: center; }
+.nav-spacer { width: 88px; flex-shrink: 0; }
+.nav-title {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  max-width: 64%;
+  z-index: 1;
+  pointer-events: none;
+}
+.nav-title-text {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1;
+  white-space: nowrap;
+}
+.nav-unread {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1;
+}
+.nav-actions {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  margin-left: auto;
+  z-index: 2;
+}
+.icon-btn {
+  width: 44px; height: 44px; border: 0; background: transparent; color: var(--text);
+  display: flex; align-items: center; justify-content: center;
+}
 .content { flex: 1; min-height: 0; position: relative; }
+.group-avatar {
+  width: 52px; height: 52px; border-radius: 6px; overflow: hidden;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--divider-soft);
+  padding: 2px; box-sizing: border-box;
+}
+.group-avatar.n1 { display: flex; align-items: center; justify-content: center; padding: 0; }
 .tab-pane { position: absolute; inset: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: calc(var(--tab-h) + var(--safe-b) + 8px); }
+#tab-contacts-relative, .tab-pane { position: absolute; }
+.content .tab-pane { position: absolute; }
+
 .search-entry {
   display: flex; align-items: center; justify-content: center; gap: 6px;
   width: calc(100% - 24px); margin: 8px auto 0; height: 36px; border: 0; border-radius: 6px;
@@ -913,51 +1032,82 @@ function doChatAction(kind) {
 .group-avatar.n8,.group-avatar.n9 { grid-template-columns: repeat(3,1fr); grid-template-rows: repeat(3,1fr); }
 .empty-state { padding: 48px 16px; text-align: center; color: var(--text-3); font-size: 14px; }
 .cell-group { background: var(--white); margin-top: 8px; }
+.cell-group.flat { background: var(--white); margin-top: 0; }
+.cell-group.flat.gap { margin-top: 8px; }
+.section-bar {
+  padding: 8px 16px; font-size: 13px; color: var(--text-2); background: var(--bg);
+}
 .cell-row {
   width: 100%; display: flex; align-items: center; gap: 12px; padding: 0 16px;
-  min-height: var(--wx-cell-h); text-align: left; box-sizing: border-box; border: 0; background: transparent;
+  min-height: 54px; text-align: left; box-sizing: border-box; border: 0; background: var(--white);
+  position: relative;
 }
-.cell-row + .cell-row::before { content: ''; display: block; }
+.cell-row + .cell-row::before {
+  content: ''; position: absolute; left: 56px; right: 0; top: 0; height: 0.5px; background: var(--divider);
+}
 .cell-row:active { background: var(--press); }
-.cell-icon { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 15px; color: #fff; flex-shrink: 0; }
 .cell-label { flex: 1; min-width: 0; font-size: 16px; color: var(--text); }
-.cell-arrow { width: 8px; height: 8px; border-right: 1.5px solid #c7c7cc; border-top: 1.5px solid #c7c7cc; transform: rotate(45deg); flex-shrink: 0; margin-left: 2px; }
-.red-dot { width: 8px; height: 8px; border-radius: 4px; background: var(--red); margin-right: 6px; }
+.cell-extra {
+  max-width: 42%; font-size: 13px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cell-arrow { width: 8px; height: 8px; border-right: 1.5px solid #c7c7cc; border-top: 1.5px solid #c7c7cc; transform: rotate(45deg); flex-shrink: 0; margin-left: 2px; color: #c7c7cc; }
+.red-dot { width: 8px; height: 8px; border-radius: 4px; background: var(--red); margin-right: 6px; flex-shrink: 0; }
 .alpha-bar { padding: 6px 16px; font-size: 13px; color: var(--text-2); background: var(--bg); }
 .contact-row {
   width: 100%; display: flex; align-items: center; gap: 12px; padding: 8px 16px;
-  background: var(--white); border: 0; text-align: left; box-sizing: border-box; min-height: 56px;
+  background: var(--white); border: 0; text-align: left; box-sizing: border-box; min-height: 60px;
+  position: relative;
 }
-.contact-row + .contact-row { border-top: 0.5px solid var(--divider); }
+.contact-row::after {
+  content: ''; position: absolute; left: 72px; right: 0; bottom: 0; height: 0.5px; background: var(--divider);
+}
+.contact-row:last-child::after { display: none; }
 .contact-name-wrap { min-width: 0; flex: 1; }
 .contact-name { font-size: 17px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .contact-sub { margin-top: 2px; font-size: 12px; color: var(--text-2); }
 .alpha-footer { padding: 16px; text-align: center; font-size: 12px; color: var(--text-3); }
-.discover-tip { padding: 16px; text-align: center; font-size: 12px; color: var(--text-3); }
-.profile-card {
-  width: 100%; display: flex; align-items: center; gap: 14px; padding: 20px 16px;
-  background: var(--white); border: 0; text-align: left; margin-top: 8px; box-sizing: border-box;
+.alpha-index {
+  position: absolute; right: 2px; top: 50%; transform: translateY(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+  font-size: 10px; color: var(--text-2); z-index: 5; pointer-events: none;
+  max-height: 70%;
 }
-.profile-main { flex: 1; min-width: 0; }
-.profile-name { font-size: 20px; font-weight: 500; color: var(--text); }
-.profile-wxid { margin-top: 6px; font-size: 14px; color: var(--text-2); }
-.qr-entry { font-size: 20px; color: var(--text-2); margin-right: 4px; }
+.discover-pane, .me-pane { background: var(--bg); }
+.profile-card {
+  width: 100%; display: flex; align-items: flex-start; gap: 16px; padding: 28px 16px 20px;
+  background: var(--white); border: 0; text-align: left; margin-top: 0; box-sizing: border-box;
+}
+.profile-main { flex: 1; min-width: 0; padding-top: 4px; }
+.profile-name { font-size: 22px; font-weight: 600; color: var(--text); }
+.profile-wxid { margin-top: 8px; font-size: 14px; color: var(--text-2); }
+.profile-status { margin-top: 14px; display: flex; align-items: center; gap: 10px; }
+.status-chip {
+  display: inline-flex; align-items: center; height: 30px; padding: 0 12px;
+  border: 1px solid var(--divider); border-radius: 15px; font-size: 13px; color: var(--text-2);
+  background: var(--white);
+}
+.status-refresh {
+  width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--divider);
+  display: inline-flex; align-items: center; justify-content: center; color: var(--text-3); font-size: 14px;
+}
+.qr-entry { font-size: 20px; color: var(--text-2); margin-top: 6px; margin-right: 4px; }
 .tab-bar {
   position: absolute; left: 0; right: 0; bottom: 0; height: calc(var(--tab-h) + var(--safe-b));
-  padding-bottom: var(--safe-b); background: #f7f7f7; border-top: 0.5px solid var(--divider);
-  display: flex; z-index: 20;
+  padding-bottom: var(--safe-b); background: var(--white); border-top: 0.5px solid var(--divider);
+  display: flex; z-index: 30; align-items: stretch;
 }
 .tab-item {
   flex: 1; border: 0; background: transparent; display: flex; flex-direction: column; align-items: center;
-  justify-content: center; gap: 2px; color: var(--text-2); font-size: 10px; position: relative; min-height: 48px;
+  justify-content: center; gap: 2px; color: var(--text-2); font-size: 10px; position: relative; min-height: 52px;
 }
 .tab-item.active { color: var(--green); }
-.tab-ico { font-size: 20px; line-height: 1; }
+.tab-ico { font-size: 22px; line-height: 1; }
 .tab-badge {
-  position: absolute; top: 2px; right: 22%; min-width: 16px; height: 16px; padding: 0 4px;
+  position: absolute; top: 4px; left: calc(50% + 6px); min-width: 16px; height: 16px; padding: 0 4px;
   border-radius: 8px; background: var(--red); color: #fff; font-size: 10px; line-height: 16px; text-align: center;
+  font-weight: 500;
 }
-.tab-dot { position: absolute; top: 6px; right: 28%; width: 8px; height: 8px; border-radius: 4px; background: var(--red); }
+.tab-dot { position: absolute; top: 8px; left: calc(50% + 8px); width: 8px; height: 8px; border-radius: 4px; background: var(--red); }
 .mask { position: absolute; inset: 0; background: var(--mask); z-index: 30; }
 .pop-menu {
   position: absolute; top: 4px; right: 8px; width: 148px; background: #4c4c4c; border-radius: 6px; overflow: hidden;

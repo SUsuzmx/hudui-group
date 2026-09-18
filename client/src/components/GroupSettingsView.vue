@@ -25,7 +25,7 @@ const members = ref([]);
 const friends = ref([]);
 const aiList = ref([]);
 const picked = ref({});
-const prefs = ref({ muted: false, pinned: false, saved: false });
+const prefs = ref({ muted: false, pinned: false, saved: false, folded: false });
 const busy = ref(false);
 
 function resolveGroupId() {
@@ -127,6 +127,7 @@ async function loadAll() {
       prefs.value = {
         muted: Boolean(p.muted),
         pinned: Boolean(p.pinned),
+        folded: Boolean(p.folded),
         saved: false,
       };
     } catch { /* ignore */ }
@@ -165,16 +166,21 @@ async function saveRename() {
 }
 
 async function togglePref(key) {
-  if (!props.conversationId) return;
+  if (!props.conversationId && key !== 'folded') return;
   const next = { ...prefs.value, [key]: !prefs.value[key] };
   prefs.value = next;
+  if (key === 'folded' && !props.conversationId) {
+    toast(next.folded ? '已折叠' : '已取消折叠');
+    return;
+  }
   try {
     await api.chatPref({
       conversationId: props.conversationId,
       muted: next.muted,
       pinned: next.pinned,
+      folded: next.folded,
     });
-    toast(key === 'muted' ? (next.muted ? '已开启免打扰' : '已关闭免打扰') : (next.pinned ? '已置顶' : '已取消置顶'));
+    toast('已保存');
   } catch (e) {
     prefs.value = { ...prefs.value, [key]: !next[key] };
     toast(e.message || '设置失败');
@@ -255,34 +261,21 @@ onMounted(loadAll);
 <template>
   <div class="page">
     <header class="nav">
-      <button class="nav-back" @click="emit('back')">‹</button>
-      <div class="nav-title">聊天信息</div>
-      <div class="nav-right"></div>
+      <button class="nav-back" type="button" @click="emit('back')">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path d="M15 4.5L7.5 12 15 19.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="nav-title">
+        <span>聊天信息({{ members.length || 0 }})</span>
+        <span v-if="prefs.muted" class="nav-mute">🔕</span>
+      </div>
+      <button class="nav-right icon-btn" type="button" aria-label="搜索">
+        <svg viewBox="0 0 24 24" width="22" height="22"><circle cx="11" cy="11" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M15.8 15.8L20 20" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
     </header>
 
     <main class="content">
-      <section class="card notice-card">
-        <div class="notice-head">
-          <span class="notice-title">群公告</span>
-          <button class="notice-edit" type="button" @click="editingNotice = true; noticeDraft = notice">
-            {{ notice ? '编辑' : '设置' }}
-          </button>
-        </div>
-        <div v-if="!editingNotice" class="notice-body">
-          {{ notice || '未设置群公告，成员进群后可在此查看' }}
-        </div>
-        <div v-else class="notice-edit-box">
-          <textarea v-model="noticeDraft" rows="3" maxlength="500" placeholder="输入群公告，发送后会通知群成员"></textarea>
-          <div class="notice-actions">
-            <button type="button" @click="editingNotice = false">取消</button>
-            <button type="button" class="primary" :disabled="savingNotice" @click="saveNotice">
-              {{ savingNotice ? '保存中…' : '发布' }}
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <section class="card">
+      <!-- 成员头像墙 + 添加 -->
+      <section class="card members-card">
         <div class="member-grid">
           <div
             v-for="m in members"
@@ -295,18 +288,12 @@ onMounted(loadAll);
               :avatar="m.avatar"
               :emoji="m.emoji"
               :color="m.color || '#07c160'"
-              :size="52"
+              :size="56"
             />
-            <span class="member-name">{{ m.nickname }}{{ m.role === 'owner' ? '·群主' : '' }}</span>
           </div>
           <div class="member-cell action" @click="showInvite = true">
             <div class="icon-btn plus">+</div>
-            <span class="member-name">添加</span>
           </div>
-        </div>
-        <div class="cell-row static">
-          <span class="cell-label">全部群成员</span>
-          <span class="cell-value">{{ members.length }}人</span>
         </div>
       </section>
 
@@ -318,17 +305,25 @@ onMounted(loadAll);
         </div>
         <div class="cell-row" @click="showQR = true">
           <span class="cell-label">群二维码</span>
-          <span class="cell-value"></span>
+          <span class="cell-value qr-mini">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#888" stroke-width="1.3"><rect x="4" y="4" width="6" height="6"/><rect x="14" y="4" width="6" height="6"/><rect x="4" y="14" width="6" height="6"/><path d="M14 14h2v2h-2zM18 14h2v2h-2zM14 18h2v2h-2zM18 18h2v2h-2z" fill="#888" stroke="none"/></svg>
+          </span>
           <span class="arrow">›</span>
         </div>
         <div class="cell-row" @click="editingNotice = true; noticeDraft = notice">
           <span class="cell-label">群公告</span>
-          <span class="cell-value muted">{{ notice ? '已设置' : '未设置' }}</span>
           <span class="arrow">›</span>
         </div>
         <div class="cell-row" @click="showInvite = true">
-          <span class="cell-label">邀请成员</span>
-          <span class="cell-value"></span>
+          <span class="cell-label">备注</span>
+          <span class="cell-value">{{ notice ? '已设置' : '' }}</span>
+          <span class="arrow">›</span>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="cell-row" @click="showInvite = true">
+          <span class="cell-label">查找聊天记录</span>
           <span class="arrow">›</span>
         </div>
       </section>
@@ -338,9 +333,36 @@ onMounted(loadAll);
           <span class="cell-label">消息免打扰</span>
           <button class="switch" :class="{ on: prefs.muted }" type="button" aria-label="消息免打扰"></button>
         </div>
+        <div class="cell-row indent" @click="togglePref('folded')">
+          <span class="cell-label">折叠该聊天</span>
+          <button class="switch" :class="{ on: prefs.folded }" type="button" aria-label="折叠该聊天"></button>
+        </div>
+        <div class="cell-row indent" @click="toast('@我、@所有人和群公告 · 演示')">
+          <span class="cell-label">
+            以下消息仍通知
+            <span class="cell-sub">@我、@所有人和群公告</span>
+          </span>
+          <span class="arrow">›</span>
+        </div>
         <div class="cell-row" @click="togglePref('pinned')">
           <span class="cell-label">置顶聊天</span>
           <button class="switch" :class="{ on: prefs.pinned }" type="button" aria-label="置顶聊天"></button>
+        </div>
+        <div class="cell-row" @click="toast('已保存到通讯录（演示）')">
+          <span class="cell-label">保存到通讯录</span>
+          <button class="switch" type="button" aria-label="保存到通讯录"></button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="cell-row" @click="renaming = true; nameDraft = groupName">
+          <span class="cell-label">我在群里的昵称</span>
+          <span class="cell-value">{{ me?.nickname || '—' }}</span>
+          <span class="arrow">›</span>
+        </div>
+        <div class="cell-row" @click="toast('已开启显示群成员昵称')">
+          <span class="cell-label">显示群成员昵称</span>
+          <button class="switch on" type="button" aria-label="显示群成员昵称"></button>
         </div>
       </section>
 
@@ -413,32 +435,28 @@ onMounted(loadAll);
   width: 100%;
 }
 .nav {
-  height: var(--nav-h, 52px);
+  height: var(--nav-h, 44px);
   background: var(--bg, #ededed);
   border-bottom: 0.5px solid var(--divider, #d9d9d9);
   display: flex;
   align-items: center;
-  padding: 0 14px;
+  padding: 0 4px;
   flex-shrink: 0;
+  position: relative;
 }
 .nav-back {
-  width: 36px;
-  background: none;
-  font-size: 30px;
-  color: var(--text, #111);
-  line-height: 1;
-  padding-bottom: 4px;
-  margin-left: -8px;
-  border: 0;
+  width: 44px; height: 44px; border: 0; background: transparent; color: var(--text, #111);
+  display: flex; align-items: center; justify-content: center; z-index: 2;
 }
 .nav-title {
-  flex: 1;
-  text-align: center;
-  font-size: 17px;
-  font-weight: 500;
-  color: var(--text, #111);
+  position: absolute; left: 50%; top: 0; bottom: 0; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 6px;
+  font-size: 17px; font-weight: 600; color: var(--text, #111); pointer-events: none;
+  max-width: 70%;
 }
-.nav-right { width: 36px; }
+.nav-mute { font-size: 13px; opacity: 0.7; }
+.nav-right { width: 44px; height: 44px; margin-left: auto; z-index: 2; display: flex; align-items: center; justify-content: center; }
+.icon-btn { border: 0; background: transparent; color: var(--text); }
 
 .content {
   flex: 1;
@@ -509,7 +527,18 @@ onMounted(loadAll);
   font-size: 16px;
   color: var(--text, #111);
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
+.cell-sub { font-size: 12px; color: var(--text-3); font-weight: 400; }
+.cell-row.indent { padding-left: 28px; }
+.cell-row.indent .cell-label { position: relative; }
+.cell-row.indent .cell-label::before {
+  content: '−'; position: absolute; left: -16px; color: var(--text-3);
+}
+.members-card { margin-top: 0; padding: 14px 12px 8px; }
+.cell-value.qr-mini { display: flex; align-items: center; }
 .cell-value {
   font-size: 15px;
   color: var(--text-2, #999);

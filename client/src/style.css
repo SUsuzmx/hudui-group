@@ -22,7 +22,7 @@
   --mask: rgba(0, 0, 0, 0.45);
   --status-h: 0px;
   --nav-h: 44px;
-  --tab-h: 50px;
+  --tab-h: 52px;
   --safe-b: env(safe-area-inset-bottom, 0px);
   --dur: 200ms;
   --ease: cubic-bezier(0.25, 0.1, 0.25, 1);
