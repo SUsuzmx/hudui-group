@@ -1,7 +1,7 @@
 <script setup>
 import { ref, nextTick, onMounted, onBeforeUnmount, computed } from 'vue';
 import { api, compressImage } from '../api.js';
-import { EMOJI_LIST } from '../chat-shared.js';
+import { EMOJI_LIST, renderContent } from '../chat-shared.js';
 import { useVoicePlayer } from '../voice-player.js';
 import { ensureNotifyPermission, notifyMessage, playMsgSound } from '../notify.js';
 import { toast } from '../toast.js';
@@ -55,6 +55,10 @@ let typingTimer = null;
 let peerReadTimer = null;
 
 const emojiList = EMOJI_LIST;
+const favEmojis = (() => {
+  try { return JSON.parse(localStorage.getItem('hudui_stickers') || '[]'); }
+  catch { return []; }
+})();
 const { playingKey, playVoice, disposeVoice, parseVoiceSeconds } = useVoicePlayer();
 const previewImages = ref([]);
 const previewIndex = ref(0);
@@ -74,6 +78,19 @@ let longPressTimer = null;
 let composing = false;
 
 const showConnHint = computed(() => everConnected.value && !connected.value);
+
+function parseMergeItems(m) {
+  try {
+    if (m?.ext?.mergeItems) return m.ext.mergeItems;
+    const raw = typeof m?.ext === 'string' ? JSON.parse(m.ext) : m?.ext;
+    if (raw?.mergeItems) return raw.mergeItems;
+  } catch { /* ignore */ }
+  const lines = String(m?.content || '').split('\n').filter((l) => l && !l.startsWith('「'));
+  return lines.map((l) => {
+    const i = l.indexOf(': ');
+    return i > 0 ? { name: l.slice(0, i), content: l.slice(i + 2) } : { name: '', content: l };
+  });
+}
 
 function onCompositionStart() { composing = true; }
 function onCompositionEnd() {
@@ -534,11 +551,14 @@ const payOverlay = ref({
 });
 const createPay = ref({
   kind: 'redpacket',
-  amount: 1,
+  amount: 0,
   amountText: '',
   note: '',
   open: false,
   balance: null,
+  rpType: 'exclusive',
+  rpCount: 1,
+  cover: 'classic',
 });
 const peerWxid = ref('');
 
@@ -578,13 +598,27 @@ function openPayOverlay(m) {
     open: true,
     kind,
     mode: 'claim',
-    amount: ext.amount,
+    amount: ext.amount ?? ext.totalAmount,
+    totalAmount: ext.totalAmount ?? ext.amount,
+    remaining: ext.remaining,
+    claimedCount: ext.claimedCount,
+    totalCount: ext.totalCount,
+    leftCount: ext.leftCount,
+    rpType: ext.rpType || 'exclusive',
+    cover: ext.cover || 'classic',
+    coverEmoji: ext.coverEmoji || '🧧',
+    coverFrom: ext.coverFrom || '#e8534a',
+    coverTo: ext.coverTo || '#c20c0c',
+    coverLabel: ext.coverLabel || '经典红包',
+    claims: ext.claims || [],
+    expired: ext.status === 'expired',
+    isBest: false,
     note: ext.note || (kind === 'redpacket' ? '恭喜发财，大吉大利' : ''),
     status: ext.status || '',
     isMine: mine,
     senderName: mine ? (props.me?.nickname || '我') : (m.senderName || props.target?.nickname || '好友'),
     senderAvatar: mine ? (props.me?.avatar || null) : (props.target?.avatarUrl || props.target?.avatar || null),
-    senderEmoji: '🧧',
+    senderEmoji: ext.coverEmoji || '🧧',
     packetId: ext.packetId,
     transferId: ext.transferId,
     messageId: m.id,
@@ -605,10 +639,25 @@ function onPayConfirm() {
     : { messageId: info.messageId, transferId: info.transferId };
   socket.emit(ev, payload, (res) => {
     if (res?.ok) {
-      showToast(info.kind === 'redpacket' ? `已领取 ¥${res.amount}` : `已收款 ¥${res.amount}`);
+      const bestTip = res.isBest ? '，手气最佳 👑' : '';
+      showToast(info.kind === 'redpacket' ? `已领取 ¥${res.amount}${bestTip}` : `已收款 ¥${res.amount}`);
       const row = messages.value.find((x) => x.id === info.messageId);
-      if (row) row.ext = { ...parseExt(row), status: 'claimed' };
-      payOverlay.value = { ...payOverlay.value, open: false };
+      if (row) {
+        const p = res.payload || {};
+        row.ext = { ...parseExt(row), ...p, status: p.status || 'claimed', amount: res.amount ?? p.amount };
+      }
+      payOverlay.value = {
+        ...payOverlay.value,
+        status: res.payload?.status || 'claimed',
+        amount: res.amount,
+        claims: res.payload?.claims || payOverlay.value.claims,
+        claimedCount: res.payload?.claimedCount,
+        totalCount: res.payload?.totalCount,
+        remaining: res.payload?.remaining,
+        leftCount: res.payload?.leftCount,
+        isBest: !!res.isBest,
+        tip: res.isBest ? '手气最佳！' : '',
+      };
       return;
     }
     showToast(res?.error || '操作失败');
@@ -620,11 +669,13 @@ function openCreatePay(kind) {
     kind,
     amount: 0,
     amountText: '',
-    note: kind === 'redpacket' ? '' : '',
+    note: '',
     open: true,
     balance: createPay.value.balance,
+    rpType: kind === 'redpacket' ? 'exclusive' : 'exclusive',
+    rpCount: 1,
+    cover: 'classic',
   };
-  // 拉零钱余额
   api.wallet().then((w) => {
     createPay.value = { ...createPay.value, balance: w.balance };
   }).catch(() => {});
@@ -649,11 +700,20 @@ function submitCreatePay() {
   }
   const isRP = info.kind === 'redpacket';
   const note = info.note || (isRP ? '恭喜发财，大吉大利' : '');
+  const rpType = info.rpType || 'exclusive';
+  const rpCount = Number(info.rpCount) || 1;
+  if (isRP && rpType === 'lucky' && amount < rpCount * 0.01) {
+    showToast(`拼手气总额至少 ¥${(rpCount * 0.01).toFixed(2)}`);
+    return;
+  }
+  const ext = isRP
+    ? { amount, note, rpType, rpCount: rpType === 'lucky' ? rpCount : 1, cover: info.cover || 'classic' }
+    : { amount, note };
   socket.emit('private:send', {
     conversationId,
-    content: isRP ? `[微信红包]${note}` : `[转账]¥${amount}`,
+    content: isRP ? `[微信红包]${rpType === 'lucky' ? '拼手气' : ''}${note}` : `[转账]¥${amount}`,
     mediaType: info.kind,
-    ext: { amount, note },
+    ext,
   }, (res) => {
     if (res?.error) {
       showToast(res.error);
@@ -975,13 +1035,31 @@ onBeforeUnmount(() => {
               v-else-if="payKindOf(m)"
               class="bubble"
               :kind="payKindOf(m)"
-              :amount="parseExt(m).amount"
+              :amount="parseExt(m).amount ?? parseExt(m).totalAmount"
               :note="parseExt(m).note"
               :status="parseExt(m).status"
               :is-mine="isMine(m)"
               :content="m.content"
+              :rp-type="parseExt(m).rpType || 'exclusive'"
+              :claimed-count="parseExt(m).claimedCount"
+              :total-count="parseExt(m).totalCount"
+              :cover-emoji="parseExt(m).coverEmoji"
+              :remaining="parseExt(m).remaining"
+              :expired="parseExt(m).status === 'expired'"
               @open="openPayOverlay(m)"
             />
+            <div
+              v-else-if="m.mediaType === 'merge' || (m.ext && m.ext.mergeItems)"
+              class="bubble merge-bubble"
+            >
+              <div class="merge-title">聊天记录</div>
+              <div class="merge-preview">
+                <div v-for="(it, mi) in parseMergeItems(m).slice(0, 4)" :key="mi" class="merge-line">
+                  {{ it.name }}: {{ it.content }}
+                </div>
+              </div>
+              <div class="merge-foot">{{ parseMergeItems(m).length }} 条聊天记录 ›</div>
+            </div>
             <div v-else class="bubble">{{ m.content }}</div>
             <div v-if="showReadTip(m)" class="read-tip">已读</div>
           </div>
@@ -1043,6 +1121,7 @@ onBeforeUnmount(() => {
       <div v-if="dockMode === 1" class="dock-panel emoji-panel">
         <div class="emoji-grid">
           <button v-for="(e, i) in emojiList" :key="i" class="emoji-item" @click="insertEmoji(e)">{{ e }}</button>
+          <button v-for="e in favEmojis" :key="'fav-'+e" class="emoji-item fav" @click="insertEmoji(e)">{{ e }}</button>
         </div>
         <div class="emoji-footer">
           <button class="emoji-del" @click="deleteEmoji">删除</button>
@@ -1133,6 +1212,21 @@ onBeforeUnmount(() => {
       :kind="payOverlay.kind"
       mode="claim"
       :amount="payOverlay.amount"
+      :total-amount="payOverlay.totalAmount"
+      :remaining="payOverlay.remaining"
+      :claimed-count="payOverlay.claimedCount"
+      :total-count="payOverlay.totalCount"
+      :left-count="payOverlay.leftCount"
+      :rp-type="payOverlay.rpType"
+      :cover="payOverlay.cover"
+      :cover-emoji="payOverlay.coverEmoji"
+      :cover-from="payOverlay.coverFrom"
+      :cover-to="payOverlay.coverTo"
+      :cover-label="payOverlay.coverLabel"
+      :claims="payOverlay.claims"
+      :is-best="payOverlay.isBest"
+      :expired="payOverlay.expired"
+      :tip="payOverlay.tip"
       :note="payOverlay.note"
       :status="payOverlay.status"
       :is-mine="payOverlay.isMine"
@@ -1148,6 +1242,10 @@ onBeforeUnmount(() => {
       mode="create"
       :create-amount-text="createPay.amountText"
       :create-note="createPay.note"
+      :rp-type="createPay.rpType"
+      :rp-count="createPay.rpCount"
+      :cover="createPay.cover"
+      :is-group="false"
       :sender-name="target.nickname"
       :sender-avatar="target.avatarUrl || target.avatar"
       :peer-wxid="peerWxid"
@@ -1155,6 +1253,9 @@ onBeforeUnmount(() => {
       @close="createPay = { ...createPay, open: false }"
       @update:create-amount-text="(v) => (createPay.amountText = v)"
       @update:create-note="(v) => (createPay.note = v)"
+      @update:rp-type="(v) => (createPay.rpType = v)"
+      @update:rp-count="(v) => (createPay.rpCount = v)"
+      @update:cover="(v) => (createPay.cover = v)"
       @submit="submitCreatePay"
     />
   </div>
@@ -1278,6 +1379,12 @@ onBeforeUnmount(() => {
   height: 40px; font-size: 24px; display: flex; align-items: center; justify-content: center;
 }
 .emoji-item:active { background: #e0e0e0; }
+.emoji-item.fav { background: rgba(7,193,96,0.08); border-radius: 8px; }
+.merge-bubble { min-width: 200px; max-width: 260px; background: var(--white) !important; cursor: pointer; }
+.merge-title { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.merge-preview { font-size: 12px; color: var(--text-2); line-height: 1.45; }
+.merge-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.merge-foot { margin-top: 8px; padding-top: 6px; border-top: 0.5px solid var(--divider-soft); font-size: 12px; color: var(--text-3); }
 .emoji-footer {
   height: 40px; display: flex; justify-content: flex-end; align-items: center;
   padding: 0 10px; background: #f0f0f0;

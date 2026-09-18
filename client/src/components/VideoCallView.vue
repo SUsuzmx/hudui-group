@@ -1,7 +1,6 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount } from 'vue';
-import { io } from 'socket.io-client';
-import { getToken } from '../api.js';
+import { getSocket } from '../socket-store.js';
 import { startRingtone, stopRingtone } from '../call-ring.js';
 import UserAvatar from './UserAvatar.vue';
 
@@ -42,8 +41,11 @@ let socket = null;
 let pc = null;
 let localStream = null;
 let timer = null;
+let ringTimeout = null;
 let cid = props.callId || props.incoming?.callId || '';
 let closed = false;
+let unbinders = [];
+const NO_ANSWER_MS = 45000;
 
 const isVideo = () => props.mode !== 'voice';
 const peerId = () => {
@@ -82,6 +84,7 @@ function finish(opts = {}) {
   closed = true;
   stopRingtone();
   stopTimer();
+  clearTimeout(ringTimeout);
   cleanupMedia();
   if (socket && cid) {
     try {
@@ -126,6 +129,7 @@ function ensurePc() {
     if (st === 'connected') {
       connected.value = true;
       connecting.value = false;
+      clearTimeout(ringTimeout);
       statusText.value = fmt(seconds.value);
       startTimer();
     } else if (st === 'failed' || st === 'disconnected') {
@@ -148,11 +152,12 @@ function attachLocalTracks() {
 }
 
 async function startAsCaller() {
+  if (closed || connected.value || callFailed.value) return;
   connecting.value = true;
   statusText.value = '正在呼叫…';
   const to = peerId();
   if (!to) {
-    failedTip.value = '无法确定对方';
+    failedTip.value = '无法确定对方（需好友 userId，不支持呼叫 AI）';
     callFailed.value = true;
     connecting.value = false;
     return;
@@ -160,7 +165,7 @@ async function startAsCaller() {
   try {
     await getMedia();
   } catch (e) {
-    failedTip.value = '无法访问摄像头/麦克风';
+    failedTip.value = '无法访问摄像头/麦克风（需 HTTPS 且允许权限）';
     callFailed.value = true;
     connecting.value = false;
     return;
@@ -175,6 +180,19 @@ async function startAsCaller() {
     return;
   }
   cid = ack.callId;
+  // 无应答超时
+  clearTimeout(ringTimeout);
+  ringTimeout = setTimeout(() => {
+    if (closed || connected.value) return;
+    failedTip.value = '对方无应答';
+    callFailed.value = true;
+    connecting.value = false;
+    if (socket && cid) {
+      const id = cid;
+      cid = '';
+      socket.emit('call:end', { callId: id, duration: 0 });
+    }
+  }, NO_ANSWER_MS);
 }
 
 async function onAccepted() {
@@ -331,44 +349,63 @@ onMounted(() => {
   if (props.role === 'callee' || props.incoming) {
     startRingtone();
   }
-  socket = io('/', {
-    auth: { token: getToken() },
-    transports: ['polling', 'websocket'],
-    upgrade: true,
-  });
-  socket.on('connect', () => {
-    if (props.role === 'caller') startAsCaller();
-  });
-  socket.on('call:accepted', () => {
+  // 复用全局共享 Socket, 保证与在线状态/信令房间一致
+  socket = getSocket();
+  const kick = () => {
+    if (props.role === 'caller' && !closed && !connected.value && !callFailed.value) {
+      startAsCaller();
+    }
+  };
+  const onAccepted = (payload) => {
+    if (payload?.callId && cid && payload.callId !== cid) return;
     stopRingtone();
-    if (props.role === 'caller') onAccepted();
-  });
-  socket.on('call:rejected', () => {
+    if (props.role === 'caller' && !closed) {
+      onAccepted();
+    }
+  };
+  const onRejected = (payload) => {
+    if (payload?.callId && cid && payload.callId !== cid) return;
     stopRingtone();
     failedTip.value = '对方已拒绝';
     callFailed.value = true;
     connecting.value = false;
-  });
-  socket.on('call:ended', () => {
+  };
+  const onEnded = (payload) => {
+    if (payload?.callId && cid && payload.callId !== cid) return;
     stopRingtone();
     finish({ remoteEnded: true });
-  });
+  };
+  socket.on('connect', kick);
+  socket.on('call:accepted', onAccepted);
+  socket.on('call:rejected', onRejected);
+  socket.on('call:ended', onEnded);
   socket.on('call:offer', onOffer);
   socket.on('call:answer', onAnswer);
   socket.on('call:ice', onIce);
+  unbinders = [
+    () => { try { socket?.off('connect', kick); } catch { /* ignore */ } },
+    () => { try { socket?.off('call:accepted', onAccepted); } catch { /* ignore */ } },
+    () => { try { socket?.off('call:rejected', onRejected); } catch { /* ignore */ } },
+    () => { try { socket?.off('call:ended', onEnded); } catch { /* ignore */ } },
+    () => { try { socket?.off('call:offer', onOffer); } catch { /* ignore */ } },
+    () => { try { socket?.off('call:answer', onAnswer); } catch { /* ignore */ } },
+    () => { try { socket?.off('call:ice', onIce); } catch { /* ignore */ } },
+  ];
 
-  // 信令兜底: socket 已连接时
-  if (socket.connected && props.role === 'caller') startAsCaller();
+  if (socket.connected) kick();
 });
 
 onBeforeUnmount(() => {
   stopRingtone();
   stopTimer();
+  clearTimeout(ringTimeout);
   if (socket && cid && !closed) {
     socket.emit('call:end', { callId: cid, duration: connected.value ? seconds.value : 0 });
   }
   cleanupMedia();
-  socket?.disconnect();
+  unbinders.forEach((fn) => { try { fn(); } catch { /* ignore */ } });
+  unbinders = [];
+  // 不 disconnect 共享 Socket, 避免把主界面实时消息也断掉
 });
 </script>
 

@@ -53,18 +53,51 @@ const discoverSections = [
   { icon: '📷', label: '朋友圈', key: 'moments', color: '#3a7' },
   { icon: '▦', label: '扫一扫', key: 'scan', color: '#3a7' },
   { icon: '🔍', label: '搜一搜', key: 'search', color: '#3a7' },
+  { icon: '🛒', label: '购物', key: 'shopping', color: '#e6a23c' },
+  { icon: '🎮', label: '游戏', key: 'games', color: '#5b7' },
+  { icon: '📦', label: '小程序', key: 'miniapp', color: '#57c' },
+  { icon: '👀', label: '看一看', key: 'look', color: '#f85' },
+  { icon: '📍', label: '附近的人', key: 'nearby', color: '#3a7' },
 ];
 const meSections = [
   { icon: '⭐', label: '收藏', key: 'favorites', color: '#f85' },
   { icon: '🖼', label: '相册', key: 'album', color: '#3a7' },
   { icon: '📷', label: '朋友圈', key: 'moments-mine', color: '#3a7' },
+  { icon: '💬', label: '状态', key: 'statusHome', color: '#5b9' },
   { icon: '💳', label: '服务', key: 'services', color: '#5b9' },
   { icon: '💰', label: '钱包', key: 'wallet', color: '#e6a23c' },
+  { icon: '🎴', label: '卡包', key: 'cards', color: '#57c' },
+  { icon: '😊', label: '表情', key: 'stickers', color: '#f85' },
   { icon: '🏷', label: '标签', key: 'tags', color: '#57c' },
 ];
 const settingsSections = [
   { icon: '⚙️', label: '设置', key: 'settings', color: '#999' },
 ];
+
+const floatChats = ref([]);
+const foldedOpen = ref(false);
+
+const foldedChats = computed(() => chats.value.filter((c) => c.folded && !c.pinned));
+const visibleChats = computed(() => {
+  const foldedIds = new Set(foldedChats.value.map((c) => c.id));
+  return chats.value.filter((c) => !foldedIds.has(c.id) || foldedOpen.value);
+});
+
+function toggleFloatChat(c) {
+  const exists = floatChats.value.find((x) => x.id === c.id);
+  if (exists) {
+    floatChats.value = floatChats.value.filter((x) => x.id !== c.id);
+    return;
+  }
+  if (floatChats.value.length >= 3) {
+    floatChats.value = floatChats.value.slice(1);
+  }
+  floatChats.value = [...floatChats.value, { id: c.id, name: c.name, type: c.type, conversationId: c.conversationId, peerId: c.peerId, personaId: c.personaId, isAI: c.isAI, remark: c.remark, personaAvatar: c.personaAvatar, personaEmoji: c.personaEmoji, kind: c.kind, isDefault: c.isDefault, groupId: c.groupId }];
+}
+function openFloat(c) {
+  floatChats.value = floatChats.value.filter((x) => x.id !== c.id);
+  openChatItem(c);
+}
 
 function sortChats(list) {
   list.sort((a, b) => {
@@ -285,6 +318,19 @@ function openDiscover(s) {
     return;
   }
   if (s.key === 'search') { openSearch(); return; }
+  const deepMap = {
+    look: { feature: 'lookDetail', title: '看一看' },
+    nearby: { feature: 'nearbyHello', title: '附近的人' },
+    miniapp: { feature: 'miniappHome', title: '小程序' },
+    games: { feature: 'miniappHome', title: '游戏' },
+    shopping: { feature: 'servicesHome', title: '购物' },
+    scan: null,
+  };
+  if (s.key === 'look' || s.key === 'nearby' || s.key === 'miniapp' || s.key === 'games' || s.key === 'shopping') {
+    const d = deepMap[s.key];
+    emit('open-view', { type: 'deep-feature', feature: d.feature, title: d.title || s.label });
+    return;
+  }
   openFeature(s.key, s.label);
 }
 
@@ -295,7 +341,13 @@ function openMeCell(s) {
     emit('open-view', { type: 'settings' });
   } else if (s.key === 'wallet') {
     emit('open-view', { type: 'feature', feature: 'wallet', title: '钱包' });
-  } else if (s.key === 'album' || s.key === 'services' || s.key === 'favorites' || s.key === 'tags') {
+  } else if (s.key === 'services') {
+    emit('open-view', { type: 'deep-feature', feature: 'servicesHome', title: '服务' });
+  } else if (s.key === 'cards') {
+    emit('open-view', { type: 'feature', feature: 'cards', title: '卡包' });
+  } else if (s.key === 'statusHome') {
+    emit('open-view', { type: 'deep-feature', feature: 'statusHome', title: '状态' });
+  } else if (['album', 'favorites', 'tags', 'stickers', 'scan', 'shopping', 'games', 'miniapp', 'look', 'nearby'].includes(s.key)) {
     emit('open-view', { type: 'feature', feature: s.key, title: s.label });
   } else {
     openFeature(s.key, s.label);
@@ -502,6 +554,15 @@ function doChatAction(kind) {
     sortChats(chats.value);
     api.chatPref({ conversationId: conv, pinned: next }).catch(() => {});
   }
+  if (kind === 'float') {
+    toggleFloatChat(c);
+    return;
+  }
+  if (kind === 'fold') {
+    chats.value = chats.value.map((x) => (x.id === c.id ? { ...x, folded: true, pinned: false } : x));
+    api.chatPref({ conversationId: conv, folded: true, pinned: false }).catch(() => {});
+    return;
+  }
   if (kind === 'delete' || kind === 'hide') {
     hideSwiped(c.id);
   }
@@ -535,8 +596,13 @@ function doChatAction(kind) {
           <span>搜索</span>
         </button>
         <ul class="msg-list">
+          <li v-if="foldedChats.length && !foldedOpen" class="msg-item folded-bar">
+            <button type="button" class="folded-btn" @click="foldedOpen = true">
+              📁 折叠的群聊（{{ foldedChats.length }}）
+            </button>
+          </li>
           <li
-            v-for="c in chats"
+            v-for="c in visibleChats"
             :key="c.id"
             class="msg-item"
             :class="{ pinned: c.pinned, swiped: swipeId === c.id }"
@@ -600,6 +666,11 @@ function doChatAction(kind) {
           <span>搜索</span>
         </button>
         <div class="cell-group">
+          <button class="cell-row" @click="emit('open-view', { type: 'deep-feature', feature: 'groupList', title: '群聊' })">
+            <span class="cell-icon" style="background:#07c160">👥</span>
+            <span class="cell-label">群聊</span>
+            <span class="cell-arrow"></span>
+          </button>
           <button class="cell-row" @click="openSubNewFriends">
             <span class="cell-icon" style="background:#07c160">👤</span>
             <span class="cell-label">新的朋友</span>
@@ -644,7 +715,7 @@ function doChatAction(kind) {
             <span class="cell-arrow"></span>
           </button>
         </div>
-        <div class="discover-tip">已对齐微信发现页核心入口</div>
+        <div class="discover-tip">发现 · 演示内容可点开体验</div>
       </div>
 
       <div v-show="tab === 'me'" class="tab-pane scroll-y" ref="meScrollEl">
@@ -719,11 +790,23 @@ function doChatAction(kind) {
 
     <div v-if="chatActionTarget" class="mask" @click="chatActionTarget = null">
       <div class="pop-menu wide">
-        <button class="pop-item" @click="doChatAction('read')">标为已读</button>
+        <button class="pop-item" @click="doChatAction('read')">标为未读/已读</button>
         <button class="pop-item" @click="doChatAction('mute')">消息免打扰</button>
         <button class="pop-item" @click="doChatAction('pin')">置顶聊天</button>
+        <button class="pop-item" @click="doChatAction('float')">浮窗</button>
+        <button class="pop-item" @click="doChatAction('fold')">折叠该聊天</button>
         <button class="pop-item danger" @click="doChatAction('hide')">不显示该聊天</button>
       </div>
+    </div>
+
+    <div v-if="floatChats.length" class="float-stack">
+      <button
+        v-for="fc in floatChats"
+        :key="'float-' + fc.id"
+        class="float-bubble"
+        type="button"
+        @click="openFloat(fc)"
+      >{{ (fc.name || '会').slice(0, 2) }}</button>
     </div>
 
     <nav class="tab-bar">
@@ -778,6 +861,20 @@ function doChatAction(kind) {
   content: ''; position: absolute; width: 5px; height: 1.5px; background: var(--text-3); right: -4px; bottom: -1px; transform: rotate(45deg);
 }
 .msg-list { list-style: none; margin-top: 8px; background: var(--white); }
+.folded-bar { background: var(--white); }
+.folded-btn {
+  width: 100%; border: 0; background: transparent; color: var(--text-2);
+  min-height: 48px; font-size: 14px; text-align: left; padding: 0 16px;
+}
+.float-stack {
+  position: absolute; right: 10px; bottom: calc(var(--tab-h) + var(--safe-b) + 16px);
+  display: flex; flex-direction: column; gap: 8px; z-index: 20;
+}
+.float-bubble {
+  width: 44px; height: 44px; border-radius: 50%; border: 0;
+  background: #07c160; color: #fff; font-size: 12px; font-weight: 600;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+}
 .msg-item { position: relative; overflow: hidden; background: var(--white); touch-action: pan-y; }
 .msg-item + .msg-item .msg-swipe::before {
   content: ''; position: absolute; left: 72px; right: 0; top: 0; height: 0.5px; background: var(--divider); z-index: 1;

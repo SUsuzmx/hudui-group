@@ -129,10 +129,104 @@ export function setGroupNotice(groupId, notice) {
   return text;
 }
 
-// 用户自建群聊: 无独立成员表, 与种子群一致全局可见
-export function createGroup({ name, memberNames }) {
+export function renameGroup(groupId, name) {
+  const text = String(name || '').trim().slice(0, 20);
+  if (!text) return null;
+  stmts.setGroupName.run(text, Number(groupId));
+  return getGroup(groupId);
+}
+
+function memberRowToApi(r) {
+  return {
+    userId: r.user_id ?? null,
+    personaKey: r.persona_key || null,
+    nickname: r.nickname,
+    role: r.role || 'member',
+    isAI: Boolean(r.persona_key) && !r.user_id,
+  };
+}
+
+export function addGroupMembers(groupId, { userIds = [], aiNames = [], ownerNickname = null, ownerId = null } = {}) {
+  const gid = Number(groupId);
+  const now = Date.now();
+  const added = [];
+  if (ownerNickname) {
+    stmts.insertGroupMember.run(gid, ownerId || null, null, String(ownerNickname).slice(0, 32), 'owner', now);
+  }
+  for (const id of userIds || []) {
+    const uid = Number(id);
+    if (!Number.isInteger(uid) || uid <= 0) continue;
+    if (ownerId && uid === Number(ownerId)) continue;
+    const u = stmts.userById.get(uid);
+    if (!u) continue;
+    if (ownerNickname && u.nickname === ownerNickname) continue;
+    stmts.insertGroupMember.run(gid, uid, null, u.nickname, 'member', now);
+    added.push({ userId: uid, nickname: u.nickname, isAI: false });
+  }
+  for (const n of aiNames || []) {
+    const name = String(n || '').trim().slice(0, 32);
+    if (!name) continue;
+    if (ownerNickname && name === ownerNickname) continue;
+    const key = 'ai:' + name;
+    stmts.insertGroupMember.run(gid, null, key, name, 'member', now);
+    added.push({ personaKey: key, nickname: name, isAI: true });
+  }
+  return added;
+}
+
+export function listGroupMembers(groupId) {
+  const gid = Number(groupId);
+  const g = getGroup(gid);
+  if (!g) return null;
+  const rows = stmts.listGroupMembers.all(gid) || [];
+  if (rows.length) return rows.map(memberRowToApi);
+  // 兼容: 种子群/旧自建群无成员表时, 用头像墙 + 全局可见约定
+  const fallback = [];
+  try {
+    const avatars = JSON.parse(g.avatars || '[]');
+    for (const a of avatars) {
+      fallback.push({ userId: null, personaKey: null, nickname: String(a), role: 'member', isAI: false });
+    }
+  } catch { /* ignore */ }
+  return fallback;
+}
+
+export function leaveGroup(groupId, userId) {
+  const gid = Number(groupId);
+  const g = getGroup(gid);
+  if (!g) return { error: '群不存在' };
+  if (g.kind === DEFAULT_GROUP_KIND) return { error: '默认群不可退出' };
+  stmts.deleteGroupMemberByUser.run(gid, Number(userId));
+  return { ok: true, group: g };
+}
+
+export function removeGroupMember(groupId, key) {
+  const gid = Number(groupId);
+  const raw = String(key || '');
+  if (raw.startsWith('ai:')) {
+    stmts.deleteGroupMember.run(gid, -1, raw);
+  } else {
+    const uid = Number(raw.replace(/^u/, ''));
+    stmts.deleteGroupMember.run(gid, uid, raw);
+  }
+  return { ok: true };
+}
+
+// 用户自建群聊
+export function createGroup({ name, memberNames, userIds = [], aiNames = [], creatorNickname = null, creatorId = null }) {
   const cleanName = String(name || '').trim().slice(0, 20) || '新建群聊';
   const avatars = (memberNames || []).slice(0, 9).map((n) => String(n).slice(0, 12));
   const r = stmts.insertGroup.run(cleanName, 'custom', JSON.stringify(avatars), Date.now());
-  return getGroup(Number(r.lastInsertRowid));
+  const gid = Number(r.lastInsertRowid);
+  if (creatorNickname || creatorId) {
+    addGroupMembers(gid, {
+      userIds,
+      aiNames,
+      ownerNickname: creatorNickname,
+      ownerId: creatorId,
+    });
+  } else {
+    addGroupMembers(gid, { userIds, aiNames });
+  }
+  return getGroup(gid);
 }

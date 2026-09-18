@@ -152,6 +152,24 @@ db.exec(`
     created_at INTEGER NOT NULL,
     PRIMARY KEY (user_id, oa_id)
   );
+  CREATE TABLE IF NOT EXISTS group_members (
+    group_id    INTEGER NOT NULL,
+    user_id     INTEGER,
+    persona_key TEXT,
+    nickname    TEXT NOT NULL,
+    role        TEXT NOT NULL DEFAULT 'member',
+    created_at  INTEGER NOT NULL,
+    UNIQUE(group_id, user_id, persona_key)
+  );
+  CREATE TABLE IF NOT EXISTS user_cards (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    kind       TEXT NOT NULL DEFAULT 'member',
+    title      TEXT NOT NULL,
+    subtitle   TEXT NOT NULL DEFAULT '',
+    color      TEXT NOT NULL DEFAULT '#07c160',
+    created_at INTEGER NOT NULL
+  );
 `);
 
 // 增量迁移: 已有库补新列
@@ -180,6 +198,28 @@ try { db.exec('ALTER TABLE transfers ADD COLUMN to_user_id INTEGER'); } catch { 
 try { db.exec("ALTER TABLE moment_comments ADD COLUMN persona_key TEXT"); } catch { /* 列已存在 */ }
 try { db.exec("ALTER TABLE moment_likes ADD COLUMN persona_key TEXT"); } catch { /* 列已存在 */ }
 try { db.exec('ALTER TABLE users ADD COLUMN balance REAL NOT NULL DEFAULT 100'); } catch { /* 列已存在 */ }
+// 红包细节字段
+try { db.exec("ALTER TABLE red_packets ADD COLUMN rp_type TEXT DEFAULT 'exclusive'"); } catch { /* 列已存在 */ }
+try { db.exec('ALTER TABLE red_packets ADD COLUMN total_amount REAL'); } catch { /* 列已存在 */ }
+try { db.exec('ALTER TABLE red_packets ADD COLUMN total_count INTEGER DEFAULT 1'); } catch { /* 列已存在 */ }
+try { db.exec('ALTER TABLE red_packets ADD COLUMN claimed_count INTEGER DEFAULT 0'); } catch { /* 列已存在 */ }
+try { db.exec('ALTER TABLE red_packets ADD COLUMN remaining REAL'); } catch { /* 列已存在 */ }
+try { db.exec("ALTER TABLE red_packets ADD COLUMN cover TEXT DEFAULT 'classic'"); } catch { /* 列已存在 */ }
+try { db.exec('ALTER TABLE red_packets ADD COLUMN expired_at INTEGER'); } catch { /* 列已存在 */ }
+try { db.exec('ALTER TABLE red_packets ADD COLUMN best_amount REAL'); } catch { /* 列已存在 */ }
+try { db.exec('ALTER TABLE red_packets ADD COLUMN best_user_id INTEGER'); } catch { /* 列已存在 */ }
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS red_packet_claims (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    packet_id  INTEGER NOT NULL,
+    user_id    INTEGER NOT NULL,
+    nickname   TEXT NOT NULL DEFAULT '',
+    amount     REAL NOT NULL,
+    is_best    INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  )
+`); } catch { /* ignore */ }
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_rp_claims_packet ON red_packet_claims(packet_id, id)'); } catch { /* ignore */ }
 try { db.exec(`
   CREATE TABLE IF NOT EXISTS wallet_tx (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -290,6 +330,27 @@ export const stmts = {
   insertGroup: db.prepare(
     'INSERT INTO groups (name, kind, avatars, created_at) VALUES (?, ?, ?, ?)'
   ),
+  setGroupName: db.prepare('UPDATE groups SET name = ? WHERE id = ?'),
+  insertGroupMember: db.prepare(`
+    INSERT OR IGNORE INTO group_members (group_id, user_id, persona_key, nickname, role, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `),
+  listGroupMembers: db.prepare(
+    'SELECT * FROM group_members WHERE group_id = ? ORDER BY role DESC, nickname COLLATE NOCASE'
+  ),
+  deleteGroupMember: db.prepare(
+    'DELETE FROM group_members WHERE group_id = ? AND ((user_id IS NOT NULL AND user_id = ?) OR (persona_key IS NOT NULL AND persona_key = ?))'
+  ),
+  deleteGroupMemberByUser: db.prepare(
+    'DELETE FROM group_members WHERE group_id = ? AND user_id = ?'
+  ),
+  listUserCards: db.prepare(
+    'SELECT * FROM user_cards WHERE user_id = ? ORDER BY id DESC'
+  ),
+  insertUserCard: db.prepare(
+    'INSERT INTO user_cards (user_id, kind, title, subtitle, color, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ),
+  deleteUserCard: db.prepare('DELETE FROM user_cards WHERE id = ? AND user_id = ?'),
   groupMessages: db.prepare(
     'SELECT * FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?'
   ),
@@ -469,11 +530,52 @@ export const stmts = {
   ),
   // 红包 / 转账
   insertRedPacket: db.prepare(
-    'INSERT INTO red_packets (message_id, from_id, to_conv, amount, note, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+    `INSERT INTO red_packets
+      (message_id, from_id, to_conv, amount, note, created_at,
+       rp_type, total_amount, total_count, claimed_count, remaining, cover, expired_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`
   ),
   getRedPacket: db.prepare('SELECT * FROM red_packets WHERE id = ?'),
   claimRedPacket: db.prepare(
     "UPDATE red_packets SET status='claimed', claimed_by=?, claimed_at=? WHERE id=? AND status='pending' AND from_id != ?"
+  ),
+  claimRedPacketLucky: db.prepare(
+    `UPDATE red_packets SET
+       claimed_count = claimed_count + 1,
+       remaining = MAX(0, COALESCE(remaining, amount) - ?),
+       status = CASE WHEN claimed_count + 1 >= COALESCE(total_count, 1) THEN 'claimed' ELSE status END,
+       claimed_by = ?,
+       claimed_at = ?
+     WHERE id=? AND status='pending' AND from_id != ?`
+  ),
+  expireRedPacket: db.prepare(
+    `UPDATE red_packets SET status = CASE
+       WHEN COALESCE(claimed_count,0) >= COALESCE(total_count,1) THEN 'claimed'
+       ELSE 'expired'
+     END
+     WHERE id=? AND status='pending'`
+  ),
+  insertRedPacketClaim: db.prepare(
+    `INSERT INTO red_packet_claims (packet_id, user_id, nickname, amount, is_best, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ),
+  listRedPacketClaims: db.prepare(
+    `SELECT * FROM red_packet_claims WHERE packet_id = ? ORDER BY amount DESC, id ASC`
+  ),
+  hasRedPacketClaim: db.prepare(
+    'SELECT * FROM red_packet_claims WHERE packet_id = ? AND user_id = ?'
+  ),
+  setRedPacketBest: db.prepare(
+    'UPDATE red_packets SET best_amount=?, best_user_id=? WHERE id=?'
+  ),
+  listPendingPackets: db.prepare(
+    "SELECT * FROM red_packets WHERE status='pending' AND expired_at IS NOT NULL AND expired_at < ? LIMIT 50"
+  ),
+  listPendingTransfers: db.prepare(
+    "SELECT * FROM transfers WHERE status='pending' AND created_at < ? LIMIT 50"
+  ),
+  expireTransfer: db.prepare(
+    "UPDATE transfers SET status='expired' WHERE id=? AND status='pending'"
   ),
   insertTransfer: db.prepare(
     'INSERT INTO transfers (message_id, from_id, to_conv, amount, note, created_at) VALUES (?, ?, ?, ?, ?, ?)'

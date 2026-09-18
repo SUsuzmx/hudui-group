@@ -13,14 +13,14 @@ const meta = computed(() => {
   const map = {
     favorites: { title: '收藏', icon: '⭐', empty: '暂无收藏', tip: '在聊天中长按消息可收藏' },
     services: { title: '服务', icon: '💳', empty: '', tip: '' },
-    cards: { title: '卡包', icon: '🎴', empty: '暂无卡券', tip: '会员卡、优惠券会出现在这里' },
-    stickers: { title: '表情', icon: '😊', empty: '暂无添加的表情', tip: '可在这里管理收藏的表情' },
-    scan: { title: '扫一扫', icon: '▦', empty: '对准好友二维码添加', tip: '演示环境请用「添加朋友 → 搜索微信号」' },
-    nearby: { title: '附近的人', icon: '📍', empty: '附近暂无更多人', tip: '演示环境不获取真实位置' },
-    shopping: { title: '购物', icon: '🛒', empty: '暂无购物内容', tip: '' },
-    games: { title: '游戏', icon: '🎮', empty: '暂无游戏', tip: '' },
-    miniapp: { title: '小程序', icon: '📦', empty: '暂无使用过的小程序', tip: '' },
-    look: { title: '看一看', icon: '👀', empty: '暂无推荐内容', tip: '' },
+    cards: { title: '卡包', icon: '🎴', empty: '暂无卡券', tip: '可领取演示卡券' },
+    stickers: { title: '表情', icon: '😊', empty: '暂无添加的表情', tip: '点选即可添加到收藏表情' },
+    scan: { title: '扫一扫', icon: '▦', empty: '对准好友二维码添加', tip: '也可粘贴名片码解析用户' },
+    nearby: { title: '附近的人', icon: '📍', empty: '附近暂无更多人', tip: '演示环境展示模拟附近用户' },
+    shopping: { title: '购物', icon: '🛒', empty: '暂无购物内容', tip: '演示商城入口' },
+    games: { title: '游戏', icon: '🎮', empty: '暂无游戏', tip: '演示游戏中心' },
+    miniapp: { title: '小程序', icon: '📦', empty: '暂无使用过的小程序', tip: '演示小程序列表' },
+    look: { title: '看一看', icon: '👀', empty: '暂无推荐内容', tip: '演示资讯流' },
     search: { title: '搜一搜', icon: '🔍', empty: '请从微信首页搜索框使用全局搜索', tip: '联系人、群聊、聊天记录一处搜' },
     tags: { title: '标签', icon: '🏷', empty: '暂无标签', tip: '给联系人分组管理' },
     official: { title: '公众号', icon: '📢', empty: '暂无关注的公众号', tip: '' },
@@ -53,6 +53,10 @@ const albumPreview = ref(null);
 const paySheet = ref(null); // { note, amount }
 const payAmountText = ref('');
 const payBusy = ref(false);
+const cards = ref([]);
+const stickers = ref([]);
+const STICKER_KEY = 'hudui_stickers';
+const STICKER_POOL = ['😀','😂','🥰','😎','🤔','😴','🎉','🔥','👍','🙏','💪','🌈','🍀','🍜','🎮','📸','❤️','⭐'];
 let scanStream = null;
 let scanTimer = null;
 
@@ -151,6 +155,7 @@ async function refresh() {
         servicesBalance.value = 0;
       }
       demoList.value = [
+        { key: 'grid', title: '服务九宫格', icon: '🧩', action: 'open-deep', feature: 'servicesHome', sub: '完整服务页' },
         { key: 'w', title: '收付款', icon: '💳', action: 'wallet', sub: '零钱收付与流水' },
         { key: 'b', title: '钱包', icon: '💰', action: 'wallet', sub: `余额 ¥${Number(servicesBalance.value || 0).toFixed(2)}` },
         { key: 'm', title: '手机充值', icon: '📱', action: 'pay', pay: { note: '手机充值', amount: 50 } },
@@ -159,15 +164,51 @@ async function refresh() {
         { key: 't', title: '交通出行', icon: '🚌', action: 'pay', pay: { note: '交通出行', amount: 20 } },
       ];
     } else if (props.type === 'cards') {
-      demoList.value = [
-        { key: '1', title: '交通卡', sub: '未添加', action: 'noop' },
-        { key: '2', title: '会员卡', sub: '未添加', action: 'noop' },
-        { key: '3', title: '优惠券', sub: '未添加', action: 'noop' },
-      ];
+      try {
+        const d = await api.userCards();
+        cards.value = d.cards || [];
+      } catch { cards.value = []; }
+      demoList.value = cards.value.map((c) => ({
+        key: 'card-' + c.id,
+        title: c.title,
+        sub: c.subtitle || c.kind,
+        action: 'open-deep',
+        feature: 'cardDetail',
+        payload: { card: c },
+        cardId: c.id,
+        color: c.color,
+      }));
     } else if (props.type === 'stickers') {
+      try {
+        stickers.value = JSON.parse(localStorage.getItem(STICKER_KEY) || '[]');
+      } catch { stickers.value = []; }
       demoList.value = [
-        { key: '1', title: '添加的表情', sub: '0', action: 'noop' },
-        { key: '2', title: '聊天输入面板中的表情', sub: '已内置', action: 'noop' },
+        { key: 's-manage', title: `已收藏 ${stickers.value.length} 个`, sub: '点击下方表情可添加/移除', action: 'noop' },
+      ];
+    } else if (props.type === 'shopping') {
+      demoList.value = [
+        { key: 'open', title: '购物与服务', sub: '进入服务九宫格', action: 'open-deep', feature: 'servicesHome' },
+        { key: 'sp4', title: '充值中心', sub: '话费/流量', action: 'pay', pay: { note: '手机充值', amount: 50 } },
+      ];
+    } else if (props.type === 'games') {
+      demoList.value = [
+        { key: 'open', title: '游戏 / 小程序中心', sub: '进入小程序页', action: 'open-deep', feature: 'miniappHome' },
+        { key: 'g1', title: '欢乐斗地主', sub: '好友约局', action: 'open-deep', feature: 'miniappHome' },
+      ];
+    } else if (props.type === 'miniapp') {
+      demoList.value = [
+        { key: 'open', title: '打开小程序首页', sub: '最近使用', action: 'open-deep', feature: 'miniappHome' },
+      ];
+    } else if (props.type === 'look') {
+      demoList.value = [
+        { key: 'l1', title: 'AI 群友如何改变社交产品', sub: '科技早报 · 1.2万阅读', action: 'open-deep', feature: 'lookDetail', payload: { item: { title: 'AI 群友如何改变社交产品', sub: '科技早报 · 1.2万阅读' } } },
+        { key: 'l2', title: '周末城市徒步路线推荐', sub: '生活 · 8602阅读', action: 'open-deep', feature: 'lookDetail', payload: { item: { title: '周末城市徒步路线推荐', sub: '生活 · 8602阅读', body: '整理了五条适合周末的城市徒步路线，含补给点与拍照机位。' } } },
+        { key: 'l3', title: 'WebRTC 实战：从信令到通话', sub: '前端 · 5.4万阅读', action: 'open-deep', feature: 'lookDetail', payload: { item: { title: 'WebRTC 实战：从信令到通话', sub: '前端 · 5.4万阅读', body: '从 offer/answer/ICE 信令讲起，结合本项目的 Socket 中继实现音视频通话。' } } },
+        { key: 'l4', title: '今日热榜：朋友圈都在发什么', sub: '热点 · 实时', action: 'open-deep', feature: 'lookDetail', payload: { item: { title: '今日热榜：朋友圈都在发什么', sub: '热点 · 实时', body: '综合站内朋友圈关键词，生成今日热榜摘要（演示）。' } } },
+      ];
+    } else if (props.type === 'nearby') {
+      demoList.value = [
+        { key: 'n1', title: '附近的人 · 打招呼', sub: '0.3–2.1km 模拟用户', action: 'open-deep', feature: 'nearbyHello' },
       ];
     } else if (props.type === 'album') {
       try {
@@ -271,8 +312,44 @@ async function onItem(item) {
     }
     return;
   }
+  if (item.action === 'card-del') {
+    try {
+      await api.removeUserCard(item.cardId);
+      await refresh();
+    } catch (e) {
+      alert(e.message);
+    }
+    return;
+  }
+  if (item.action === 'card-claim') {
+    try {
+      await api.addUserCard(item.card);
+      alert('已放入卡包');
+      await refresh();
+    } catch (e) {
+      alert(e.message);
+    }
+    return;
+  }
+  if (item.action === 'sticker-toggle') {
+    const e = item.val;
+    const set = new Set(stickers.value);
+    if (set.has(e)) set.delete(e);
+    else set.add(e);
+    stickers.value = [...set];
+    localStorage.setItem(STICKER_KEY, JSON.stringify(stickers.value));
+    await refresh();
+    return;
+  }
+  if (item.action === 'noop') {
+    return;
+  }
   if (item.action === 'wallet') {
     emit('back', { then: 'wallet' });
+    return;
+  }
+  if (item.action === 'open-deep') {
+    emit('back', { then: 'deep', feature: item.feature, title: item.title || '详情', payload: item.payload || {} });
     return;
   }
   if (item.action === 'pay') {
@@ -378,8 +455,10 @@ function fmtTxType(t) {
   return {
     redpacket_send: '发出红包',
     redpacket_claim: '领取红包',
+    redpacket_refund: '红包超时退回',
     transfer_send: '转出',
     transfer_claim: '收款',
+    transfer_refund: '转账超时退回',
     pay: '消费支付',
     debit: '支出',
     credit: '收入',
@@ -568,6 +647,26 @@ async function saveTagMembers() {
         <div class="empty-icon">👤</div>
         <div class="empty-text">暂无新的朋友申请</div>
         <div class="empty-tip">可通过用户 ID 添加，或在上方创建群聊</div>
+      </div>
+
+      <div v-if="type === 'cards'" class="claim-row">
+        <button type="button" @click="onItem({ action: 'card-claim', card: { kind: 'member', title: '演示会员卡', subtitle: '有效期 365 天', color: '#5b7' } })">领取会员卡</button>
+        <button type="button" @click="onItem({ action: 'card-claim', card: { kind: 'coupon', title: '满 100 减 20 券', subtitle: '全场通用', color: '#e6a23c' } })">领取优惠券</button>
+        <button type="button" @click="onItem({ action: 'card-claim', card: { kind: 'traffic', title: '交通卡', subtitle: '演示卡 · 余额 ¥0', color: '#57c' } })">添加交通卡</button>
+      </div>
+
+      <div v-if="type === 'stickers'" class="sticker-grid">
+        <button
+          v-for="e in ['😀','😂','🥰','😎','🤔','😴','🎉','🔥','👍','🙏','💪','🌈','🍀','🍜','🎮','📸','❤️','⭐']"
+          :key="e"
+          type="button"
+          class="sticker-cell"
+          :class="{ on: stickers.includes(e) }"
+          @click="onItem({ action: 'sticker-toggle', val: e })"
+        >{{ e }}</button>
+      </div>
+      <div v-if="type === 'stickers' && stickers.length" class="sticker-saved">
+        已收藏：{{ stickers.join(' ') }}
       </div>
 
       <div v-if="type === 'services'" class="service-balance">
@@ -798,6 +897,25 @@ async function saveTagMembers() {
 .service-balance-label { font-size: 13px; opacity: 0.9; }
 .service-balance-num { margin-top: 6px; font-size: 28px; font-weight: 600; }
 .service-balance-tip { margin-top: 6px; font-size: 12px; opacity: 0.8; }
+.claim-row {
+  display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; background: var(--white); margin-top: 10px;
+}
+.claim-row button {
+  flex: 1; min-width: 100px; min-height: 40px; border: 0; border-radius: 8px;
+  background: #07c160; color: #fff; font-size: 13px;
+}
+.sticker-grid {
+  display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px;
+  padding: 14px; background: var(--white); margin-top: 10px;
+}
+.sticker-cell {
+  aspect-ratio: 1; border: 2px solid transparent; border-radius: 10px;
+  background: var(--divider-soft); font-size: 24px; min-height: 44px;
+}
+.sticker-cell.on { border-color: #07c160; background: rgba(7,193,96,0.12); }
+.sticker-saved {
+  padding: 10px 14px; font-size: 20px; background: var(--white); word-break: break-all;
+}
 .service-item {
   display: flex;
   flex-direction: column;

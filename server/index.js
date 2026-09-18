@@ -14,10 +14,11 @@ import { personas } from './ai/personas.js';
 import { createFriendsRouter } from './friends.js';
 import { createMomentsRouter } from './moments.js';
 import { createMetaRouter } from './meta.js';
-import { seedGroups, listGroups, getGroup, groupConvId, DEFAULT_GROUP_KIND, setGroupNotice, createGroup } from './groups.js';
+import { seedGroups, listGroups, getGroup, groupConvId, DEFAULT_GROUP_KIND, setGroupNotice, createGroup, listGroupMembers, addGroupMembers, leaveGroup, removeGroupMember, renameGroup } from './groups.js';
 import { canAccessConversation } from './acl.js';
 import { mediaFromBodyJson, mediaFromMultipart, mediaFromRaw, normalizeKind } from './upload.js';
 import { getBalance, listTx, debit } from './wallet.js';
+import { expirePendingPayments, RP_COVERS } from './rp.js';
 
 const LOG_FILE = path.join(ROOT, 'data', 'app.log');
 let logQueue = [];
@@ -148,6 +149,43 @@ app.get('/api/wallet', (req, res) => {
   const user = requireUser(req, res);
   if (!user) return;
   res.json({ balance: getBalance(user.id), txs: listTx(user.id), demo: true });
+});
+
+app.get('/api/redpacket/covers', (req, res) => {
+  res.json({ covers: RP_COVERS });
+});
+
+// 卡包（演示券）
+app.get('/api/cards', (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+  const rows = stmts.listUserCards.all(user.id) || [];
+  res.json({
+    cards: rows.map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      title: r.title,
+      subtitle: r.subtitle,
+      color: r.color,
+      createdAt: r.created_at,
+    })),
+  });
+});
+app.post('/api/cards', (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+  const kind = ['member', 'coupon', 'traffic', 'gift'].includes(req.body?.kind) ? req.body.kind : 'coupon';
+  const title = String(req.body?.title || '').trim().slice(0, 24) || '演示卡券';
+  const subtitle = String(req.body?.subtitle || '').trim().slice(0, 40);
+  const color = String(req.body?.color || '#07c160').slice(0, 20);
+  const r = stmts.insertUserCard.run(user.id, kind, title, subtitle, color, Date.now());
+  res.json({ card: { id: Number(r.lastInsertRowid), kind, title, subtitle, color } });
+});
+app.post('/api/cards/delete', (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+  stmts.deleteUserCard.run(Number(req.body?.id), user.id);
+  res.json({ ok: true });
 });
 
 // 演示支付: 手机充值 / 生活缴费等, 扣零钱记流水
@@ -382,7 +420,14 @@ app.post('/api/groups', (req, res) => {
     if (!members.includes(n)) members.push(n);
   }
   if (members.length < 3) return res.status(400).json({ error: '至少再选择 2 位成员（好友或 AI 均可）' });
-  const g = createGroup({ name: name || members.slice(0, 3).join('、') + '的群聊', memberNames: members });
+  const g = createGroup({
+    name: name || members.slice(0, 3).join('、') + '的群聊',
+    memberNames: members,
+    userIds: memberIds,
+    aiNames: aiMembers,
+    creatorNickname: user.nickname,
+    creatorId: user.id,
+  });
   log(`创建群聊: ${g.name} (创建者 ${user.nickname}, 共 ${members.length} 人)`);
   try {
     chatApi?.addSystemMessage?.(
@@ -399,6 +444,76 @@ app.get('/api/groups/:id', (req, res) => {
   const g = getGroup(req.params.id);
   if (!g) return res.status(404).json({ error: '群不存在' });
   res.json({ group: g });
+});
+
+app.get('/api/groups/:id/members', (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+  const members = listGroupMembers(req.params.id);
+  if (!members) return res.status(404).json({ error: '群不存在' });
+  res.json({ members, count: members.length });
+});
+
+app.post('/api/groups/:id/members', (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+  const g = getGroup(req.params.id);
+  if (!g) return res.status(404).json({ error: '群不存在' });
+  const memberIds = Array.isArray(req.body?.userIds) ? req.body.userIds.slice(0, 50) : [];
+  const aiNames = Array.isArray(req.body?.aiNames)
+    ? req.body.aiNames.map((n) => String(n || '').trim()).filter(Boolean).slice(0, 20)
+    : [];
+  if (!memberIds.length && !aiNames.length) return res.status(400).json({ error: '请选择要邀请的成员' });
+  const added = addGroupMembers(g.id, { userIds: memberIds, aiNames });
+  const names = added.map((a) => a.nickname);
+  if (names.length) {
+    try {
+      chatApi?.addSystemMessage?.(
+        `${user.nickname} 邀请 ${names.slice(0, 3).join('、')}${names.length > 3 ? '等' : ''} 加入群聊`,
+        g.conversationId
+      );
+    } catch { /* ignore */ }
+  }
+  log(`群 ${g.id} 邀请成员: ${names.join(',') || '(无)'}`);
+  res.json({ ok: true, added, members: listGroupMembers(g.id) });
+});
+
+app.post('/api/groups/:id/leave', (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+  const r = leaveGroup(req.params.id, user.id);
+  if (r.error) return res.status(400).json({ error: r.error });
+  try {
+    chatApi?.addSystemMessage?.(`${user.nickname} 退出了群聊`, r.group.conversationId);
+  } catch { /* ignore */ }
+  log(`用户 ${user.nickname} 退出群 ${r.group.id}`);
+  res.json({ ok: true });
+});
+
+app.post('/api/groups/:id/rename', (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+  const g = renameGroup(req.params.id, req.body?.name);
+  if (!g) return res.status(400).json({ error: '群名称不合法' });
+  try {
+    chatApi?.addSystemMessage?.(`${user.nickname} 修改群名为「${g.name}」`, g.conversationId);
+  } catch { /* ignore */ }
+  res.json({ ok: true, group: g });
+});
+
+app.post('/api/groups/:id/members/remove', (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+  const g = getGroup(req.params.id);
+  if (!g) return res.status(404).json({ error: '群不存在' });
+  const key = String(req.body?.key || '');
+  if (!key) return res.status(400).json({ error: '缺少成员标识' });
+  removeGroupMember(g.id, key);
+  const label = key.startsWith('ai:') ? key.slice(3) : key.replace(/^u/, '');
+  try {
+    chatApi?.addSystemMessage?.(`${user.nickname} 移除了群成员 ${label}`, g.conversationId);
+  } catch { /* ignore */ }
+  res.json({ ok: true, members: listGroupMembers(g.id) });
 });
 
 // 群公告 (在 chatApi 就绪后由下方补挂广播)
@@ -534,6 +649,15 @@ const engine = createEngine({
 chatApi = initChat(io, { config, engine });
 
 setInterval(() => engine.tick(), 30_000).unref();
+// 红包/转账 24h 超时退回
+setInterval(() => {
+  try {
+    const r = expirePendingPayments({ log });
+    if (r.packets || r.transfers) log(`超时退回: 红包 ${r.packets} 笔, 转账 ${r.transfers} 笔`);
+  } catch (e) {
+    log(`超时退回异常: ${e.message}`);
+  }
+}, 60_000).unref();
 
 process.on('uncaughtException', (err) => {
   log(`未捕获异常: ${err.stack || err}`);

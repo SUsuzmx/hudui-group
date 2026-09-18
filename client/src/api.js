@@ -166,7 +166,18 @@ export const api = {
   groupInfo: (groupId) => request(`/api/groups/${groupId}`, { method: 'GET' }),
   createGroup: (name, memberIds, aiMembers) =>
     request('/api/groups', { body: { name, memberIds, aiMembers } }),
+  groupMembers: (id) => request(`/api/groups/${id}/members`, { method: 'GET' }),
+  inviteGroupMembers: (id, userIds, aiNames) =>
+    request(`/api/groups/${id}/members`, { body: { userIds, aiNames } }),
+  leaveGroup: (id) => request(`/api/groups/${id}/leave`, { body: {} }),
+  renameGroup: (id, name) => request(`/api/groups/${id}/rename`, { body: { name } }),
+  removeGroupMember: (id, key) =>
+    request(`/api/groups/${id}/members/remove`, { body: { key } }),
+  userCards: () => request('/api/cards', { method: 'GET' }),
+  addUserCard: (payload) => request('/api/cards', { body: payload }),
+  removeUserCard: (id) => request('/api/cards/delete', { body: { id } }),
   wallet: () => request('/api/wallet', { method: 'GET' }),
   walletPay: (amount, note) => request('/api/wallet/pay', { body: { amount, note } }),
   resolveUser: (code) => request('/api/users/resolve', { method: 'GET', query: { code } }),
+  aiContacts: () => request('/api/ai-contacts', { method: 'GET' }),
 };

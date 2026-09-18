@@ -21,6 +21,7 @@ const SettingsView = defineAsyncComponent(() => import('./components/SettingsVie
 const QrCodeView = defineAsyncComponent(() => import('./components/QrCodeView.vue'));
 const ChatInfoView = defineAsyncComponent(() => import('./components/ChatInfoView.vue'));
 const FeaturePage = defineAsyncComponent(() => import('./components/FeaturePage.vue'));
+const DeepFeatureView = defineAsyncComponent(() => import('./components/DeepFeatureView.vue'));
 const VideoCallView = defineAsyncComponent(() => import('./components/VideoCallView.vue'));
 const GlobalSearchView = defineAsyncComponent(() => import('./components/GlobalSearchView.vue'));
 
@@ -200,6 +201,24 @@ function onFeatureBack(payload) {
     view.value = 'sub';
     return;
   }
+  if (payload.then === 'services') {
+    subView.value = { type: 'deep-feature', feature: 'servicesHome', title: '服务' };
+    transitionName.value = 'page-push';
+    view.value = 'sub';
+    return;
+  }
+  if (payload.then === 'cards') {
+    subView.value = { type: 'feature', feature: 'cards', title: '卡包' };
+    transitionName.value = 'page-push';
+    view.value = 'sub';
+    return;
+  }
+  if (payload.then === 'deep') {
+    subView.value = { type: 'deep-feature', feature: payload.feature, title: payload.title, payload: payload.payload || {} };
+    transitionName.value = 'page-push';
+    view.value = 'sub';
+    return;
+  }
   if (payload.then === 'create-group') {
     subView.value = { type: 'create-group' };
     transitionName.value = 'page-push';
@@ -224,6 +243,15 @@ function onGroupCreated(group) {
     name: group.name,
     isDefault: false,
   }), 60);
+}
+
+function onLeftGroup() {
+  transitionName.value = 'page-pop';
+  nav.reset('main');
+  view.value = 'main';
+  subView.value = null;
+  activeChat.value = null;
+  try { localStorage.setItem('hudui_main_tab', 'chats'); } catch { /* ignore */ }
 }
 
 function openChatInfo(payload) {
@@ -339,6 +367,7 @@ async function onChatInfoToggle({ key, value }) {
       <GroupSettingsView
         v-else-if="view === 'sub' && subView?.type === 'group-settings'"
         key="group-settings"
+        :me="me"
         :group-name="subView.groupName || 'WeChat'"
         :group-id="subView.groupId || null"
         :conversation-id="subView.conversationId || null"
@@ -346,6 +375,7 @@ async function onChatInfoToggle({ key, value }) {
         @back="goBack"
         @open-private="openChatFromFriend"
         @open-profile="openProfileFromChat"
+        @left-group="onLeftGroup"
       />
       <GlobalSearchView
         v-else-if="view === 'sub' && subView?.type === 'global-search'"
@@ -417,6 +447,16 @@ async function onChatInfoToggle({ key, value }) {
         :type="subView.feature"
         :me="me"
         @back="onFeatureBack"
+      />
+      <DeepFeatureView
+        v-else-if="view === 'sub' && subView?.type === 'deep-feature'"
+        :key="'deep-' + (subView.feature || 'x')"
+        :type="subView.feature"
+        :me="me"
+        :payload="subView.payload || {}"
+        @back="onFeatureBack"
+        @open-chat="openChatFromSearch"
+        @open-private="openPrivateChat"
       />
       <VideoCallView
         v-else-if="view === 'sub' && subView?.type === 'video-call'"

@@ -15,13 +15,11 @@ onMounted(async () => {
   try {
     const [f, ai] = await Promise.all([
       api.friends().catch(() => ({ friends: [] })),
-      fetch('/api/ai-contacts', {
-        headers: { Authorization: `Bearer ${localStorage.getItem('hudui_token') || ''}` },
-      }).then((r) => r.json()).catch(() => ({ contacts: [] })),
+      api.aiContacts().catch(() => ({ contacts: [] })),
     ]);
     const list = [];
     for (const c of ai.contacts || []) {
-      list.push({ key: 'ai-' + c.id, nickname: c.nickname, avatar: c.avatar, isAI: true, userId: null });
+      list.push({ key: 'ai-' + c.id, nickname: c.nickname, avatar: c.avatar, emoji: c.emoji, isAI: true, userId: null });
     }
     for (const f2 of f.friends || []) {
       list.push({ key: 'u-' + f2.id, nickname: f2.remark || f2.nickname, avatar: f2.avatar, color: f2.avatarColor, isAI: false, userId: f2.id });
