@@ -1,0 +1,29 @@
+# deps
+node_modules/
+
+# build
+client-dist/
+client/client-dist/
+
+# runtime data & secrets
+data/
+config/ai.json
+config/ai.local.json
+.env
+.env.*
+
+# logs / local artifacts
+*.log
+img/*.png
+img/*.jpg
+img/*.jpeg
+img/*.webp
+img/*.gif
+!img/.gitkeep
+
+# editor / os / local agent
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.zcode/

@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <title>WeChat</title>
+  <link rel="stylesheet" href="wechat.css" />
+</head>
+<body>
+  <div id="app" class="phone">
+    <!-- 状态栏 -->
+    <div class="status-bar" id="statusBar">
+      <span class="status-time" id="statusTime">9:41</span>
+      <div class="status-right">
+        <span class="status-signal" aria-hidden="true">
+          <i></i><i></i><i></i><i></i>
+        </span>
+        <span class="status-wifi" aria-hidden="true"></span>
+        <span class="status-battery" aria-hidden="true"><b></b></span>
+      </div>
+    </div>
+
+    <!-- ========== 主界面四 Tab ========== -->
+    <div id="mainShell" class="main-shell">
+      <!-- 消息 -->
+      <section class="tab-page" id="pageMessages" data-page="messages">
+        <header class="nav-bar">
+          <div class="nav-title">微信</div>
+          <div class="nav-actions">
+            <button class="icon-btn" id="btnSearchOpen" aria-label="搜索">
+              <svg viewBox="0 0 24 24" width="22" height="22"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M16 16l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </button>
+            <button class="icon-btn" id="btnMoreOpen" aria-label="更多">
+              <svg viewBox="0 0 24 24" width="22" height="22"><circle cx="5" cy="12" r="1.7" fill="currentColor"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/><circle cx="19" cy="12" r="1.7" fill="currentColor"/></svg>
+            </button>
+          </div>
+        </header>
+        <div class="page-body scroll-y" id="msgListScroll">
+          <div class="search-entry" id="btnSearchEntry">
+            <span class="search-entry-icon"></span>
+            <span>搜索</span>
+          </div>
+          <ul class="msg-list" id="msgList"></ul>
+          <div class="empty-state" id="msgEmpty" hidden>暂无消息</div>
+        </div>
+      </section>
+
+      <!-- 通讯录 -->
+      <section class="tab-page" id="pageContacts" data-page="contacts" hidden>
+        <header class="nav-bar">
+          <div class="nav-title">通讯录</div>
+          <div class="nav-actions">
+            <button class="icon-btn" id="btnContactAdd" aria-label="添加朋友">
+              <svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+        </header>
+        <div class="page-body contacts-body">
+          <div class="scroll-y contacts-scroll" id="contactsScroll">
+            <div class="search-entry" id="btnContactSearch">
+              <span class="search-entry-icon"></span>
+              <span>搜索</span>
+            </div>
+            <div class="contact-shortcuts">
+              <button class="shortcut-row" data-toast="新的朋友">
+                <span class="shortcut-icon" style="background:#fa9d3b">👤</span>
+                <span class="shortcut-label">新的朋友</span>
+              </button>
+              <button class="shortcut-row" data-toast="群聊">
+                <span class="shortcut-icon" style="background:#07c160">👥</span>
+                <span class="shortcut-label">群聊</span>
+              </button>
+              <button class="shortcut-row" data-toast="标签">
+                <span class="shortcut-icon" style="background:#576b95">🏷</span>
+                <span class="shortcut-label">标签</span>
+              </button>
+              <button class="shortcut-row" data-toast="公众号">
+                <span class="shortcut-icon" style="background:#10aeff">📢</span>
+                <span class="shortcut-label">公众号</span>
+              </button>
+            </div>
+            <div id="contactGroups"></div>
+            <div class="alpha-footer">共 <span id="contactCount">0</span> 位联系人</div>
+          </div>
+          <div class="alpha-index" id="alphaIndex" aria-hidden="true"></div>
+        </div>
+      </section>
+
+      <!-- 发现 -->
+      <section class="tab-page" id="pageDiscover" data-page="discover" hidden>
+        <header class="nav-bar">
+          <div class="nav-title">发现</div>
+        </header>
+        <div class="page-body scroll-y">
+          <div class="cell-group">
+            <button class="cell-row" data-toast="朋友圈">
+              <span class="cell-icon" style="background:#3a7">📷</span>
+              <span class="cell-label">朋友圈</span>
+              <span class="cell-badge">2</span>
+              <span class="cell-arrow"></span>
+            </button>
+          </div>
+          <div class="cell-group">
+            <button class="cell-row" data-toast="扫一扫">
+              <span class="cell-icon" style="background:#3a7">▦</span>
+              <span class="cell-label">扫一扫</span>
+              <span class="cell-arrow"></span>
+            </button>
+            <button class="cell-row" data-toast="摇一摇">
+              <span class="cell-icon" style="background:#3a7">📳</span>
+              <span class="cell-label">摇一摇</span>
+              <span class="cell-arrow"></span>
+            </button>
+          </div>
+          <div class="cell-group">
+            <button class="cell-row" data-toast="看一看">
+              <span class="cell-icon" style="background:#f85">👀</span>
+              <span class="cell-label">看一看</span>
+              <span class="cell-arrow"></span>
+            </button>
+            <button class="cell-row" data-toast="搜一搜">
+              <span class="cell-icon" style="background:#3a7">🔍</span>
+              <span class="cell-label">搜一搜</span>
+              <span class="cell-arrow"></span>
+            </button>
+          </div>
+          <div class="cell-group">
+            <button class="cell-row" data-toast="附近的人">
+              <span class="cell-icon" style="background:#3a7">📍</span>
+              <span class="cell-label">附近的人</span>
+              <span class="cell-arrow"></span>
+            </button>
+          </div>
+          <div class="cell-group">
+            <button class="cell-row" data-toast="购物">
+              <span class="cell-icon" style="background:#e55">🛒</span>
+              <span class="cell-label">购物</span>
+              <span class="cell-arrow"></span>
+            </button>
+            <button class="cell-row" data-toast="游戏">
+              <span class="cell-icon" style="background:#57c">🎮</span>
+              <span class="cell-label">游戏</span>
+              <span class="cell-arrow"></span>
+            </button>
+          </div>
+          <div class="cell-group">
+            <button class="cell-row" data-toast="小程序">
+              <span class="cell-icon" style="background:#57c">📦</span>
+              <span class="cell-label">小程序</span>
+              <span class="cell-arrow"></span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 我的 -->
+      <section class="tab-page" id="pageMe" data-page="me" hidden>
+        <header class="nav-bar">
+          <div class="nav-title">我</div>
+        </header>
+        <div class="page-body scroll-y">
+          <button class="me-card" data-toast="个人信息">
+            <div class="me-avatar" id="meAvatar"></div>
+            <div class="me-info">
+              <div class="me-name">张小北</div>
+              <div class="me-id">微信号：zhang_xiaobei</div>
+            </div>
+            <span class="me-qr" aria-hidden="true">▢</span>
+            <span class="cell-arrow"></span>
+          </button>
+          <div class="cell-group">
+            <button class="cell-row" data-toast="服务">
+              <span class="cell-icon" style="background:#3a7">💳</span>
+              <span class="cell-label">服务</span>
+              <span class="cell-arrow"></span>
+            </button>
+          </div>
+          <div class="cell-group">
+            <button class="cell-row" data-toast="收藏">
+              <span class="cell-icon" style="background:#f85">⭐</span>
+              <span class="cell-label">收藏</span>
+              <span class="cell-arrow"></span>
+            </button>
+            <button class="cell-row" data-toast="朋友圈">
+              <span class="cell-icon" style="background:#3a7">🖼</span>
+              <span class="cell-label">朋友圈</span>
+              <span class="cell-arrow"></span>
+            </button>
+            <button class="cell-row" data-toast="卡包">
+              <span class="cell-icon" style="background:#e55">🎴</span>
+              <span class="cell-label">卡包</span>
+              <span class="cell-arrow"></span>
+            </button>
+            <button class="cell-row" data-toast="表情">
+              <span class="cell-icon" style="background:#fc3">😊</span>
+              <span class="cell-label">表情</span>
+              <span class="cell-arrow"></span>
+            </button>
+          </div>
+          <div class="cell-group">
+            <button class="cell-row" data-toast="设置">
+              <span class="cell-icon" style="background:#999">⚙</span>
+              <span class="cell-label">设置</span>
+              <span class="cell-arrow"></span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 底部导航 -->
+      <nav class="tab-bar" id="tabBar">
+        <button class="tab-item active" data-tab="messages">
+          <span class="tab-icon">
+            <svg viewBox="0 0 24 24" width="26" height="26"><path class="tab-stroke" d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4 3v-3H6.5A2.5 2.5 0 0 1 4 14.5v-8z" fill="none" stroke-width="1.6"/></svg>
+            <span class="tab-badge" id="tabBadgeMsg">3</span>
+          </span>
+          <span class="tab-text">微信</span>
+        </button>
+        <button class="tab-item" data-tab="contacts">
+          <span class="tab-icon">
+            <svg viewBox="0 0 24 24" width="26" height="26"><circle class="tab-stroke" cx="12" cy="9" r="3.2" fill="none" stroke-width="1.6"/><path class="tab-stroke" d="M6 18.5c1.5-3 4-4.5 6-4.5s4.5 1.5 6 4.5" fill="none" stroke-width="1.6" stroke-linecap="round"/></svg>
+          </span>
+          <span class="tab-text">通讯录</span>
+        </button>
+        <button class="tab-item" data-tab="discover">
+          <span class="tab-icon">
+            <svg viewBox="0 0 24 24" width="26" height="26"><circle class="tab-stroke" cx="12" cy="12" r="8" fill="none" stroke-width="1.6"/><path class="tab-stroke" d="M12 4c2 2.5 2 13 0 16M4.5 12h15M6.2 7.5h11.6M6.2 16.5h11.6" fill="none" stroke-width="1.2"/></svg>
+          </span>
+          <span class="tab-text">发现</span>
+        </button>
+        <button class="tab-item" data-tab="me">
+          <span class="tab-icon">
+            <svg viewBox="0 0 24 24" width="26" height="26"><circle class="tab-stroke" cx="12" cy="8.5" r="3.5" fill="none" stroke-width="1.6"/><path class="tab-stroke" d="M5.5 19c1.2-3.2 3.6-5 6.5-5s5.3 1.8 6.5 5" fill="none" stroke-width="1.6" stroke-linecap="round"/></svg>
+          </span>
+          <span class="tab-text">我</span>
+        </button>
+      </nav>
+    </div>
+
+    <!-- ========== 聊天详情页 ========== -->
+    <section class="chat-page" id="chatPage" hidden>
+      <header class="nav-bar chat-nav">
+        <button class="icon-btn nav-back" id="btnChatBack" aria-label="返回">
+          <svg viewBox="0 0 24 24" width="24" height="24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="nav-title chat-title">
+          <span id="chatTitle">会话</span>
+          <span class="chat-member-count" id="chatMemberCount" hidden></span>
+        </div>
+        <button class="icon-btn" id="btnChatMore" aria-label="更多">
+          <svg viewBox="0 0 24 24" width="22" height="22"><circle cx="5" cy="12" r="1.7" fill="currentColor"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/><circle cx="19" cy="12" r="1.7" fill="currentColor"/></svg>
+        </button>
+      </header>
+
+      <div class="chat-body scroll-y" id="chatBody">
+        <div class="chat-loading" id="chatLoading" hidden>加载中…</div>
+        <div id="chatMsgs"></div>
+      </div>
+
+      <!-- 面板区: 输入 / 表情 / 扩展 / 语音 -->
+      <div class="chat-dock" id="chatDock">
+        <div class="input-bar">
+          <button class="icon-btn voice-toggle" id="btnVoiceToggle" aria-label="语音">
+            <svg viewBox="0 0 24 24" width="24" height="24"><path d="M8 10a4 4 0 0 1 8 0v2a4 4 0 0 1-8 0v-2z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6 11a6 6 0 0 0 12 0M12 17v3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          </button>
+          <div class="input-wrap">
+            <textarea id="chatInput" class="chat-input" rows="1" placeholder="" maxlength="1000"></textarea>
+            <button class="hold-talk" id="holdTalk" hidden>按住 说话</button>
+          </div>
+          <button class="icon-btn" id="btnEmoji" aria-label="表情">
+            <svg viewBox="0 0 24 24" width="24" height="24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="9" cy="10.5" r="1.1" fill="currentColor"/><circle cx="15" cy="10.5" r="1.1" fill="currentColor"/><path d="M8.5 14c1.2 1.6 2.6 2.3 3.5 2.3s2.3-.7 3.5-2.3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+          <button class="icon-btn" id="btnPlus" aria-label="更多功能">
+            <svg viewBox="0 0 24 24" width="24" height="24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 8.5v7M8.5 12h7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          </button>
+          <button class="send-btn" id="btnSend" hidden>发送</button>
+        </div>
+
+        <div class="dock-panel emoji-panel" id="emojiPanel" hidden>
+          <div class="emoji-grid" id="emojiGrid"></div>
+          <div class="emoji-footer">
+            <button class="emoji-del" id="btnEmojiDel">删除</button>
+          </div>
+        </div>
+
+        <div class="dock-panel plus-panel" id="plusPanel" hidden>
+          <div class="plus-grid">
+            <button class="plus-item" data-toast="相册"><span class="plus-icon">🖼</span><span>相册</span></button>
+            <button class="plus-item" data-toast="拍摄"><span class="plus-icon">📷</span><span>拍摄</span></button>
+            <button class="plus-item" data-toast="视频通话"><span class="plus-icon">📹</span><span>视频通话</span></button>
+            <button class="plus-item" data-toast="位置"><span class="plus-icon">📍</span><span>位置</span></button>
+            <button class="plus-item" data-toast="红包"><span class="plus-icon">🧧</span><span>红包</span></button>
+            <button class="plus-item" data-toast="转账"><span class="plus-icon">💰</span><span>转账</span></button>
+            <button class="plus-item" data-toast="语音输入"><span class="plus-icon">🎤</span><span>语音输入</span></button>
+            <button class="plus-item" data-toast="收藏"><span class="plus-icon">⭐</span><span>收藏</span></button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 搜索浮层 ========== -->
+    <section class="overlay-page search-page" id="searchPage" hidden>
+      <header class="nav-bar search-nav">
+        <div class="search-field">
+          <span class="search-entry-icon"></span>
+          <input type="search" id="searchInput" placeholder="搜索" autocomplete="off" />
+        </div>
+        <button class="text-btn" id="btnSearchCancel">取消</button>
+      </header>
+      <div class="page-body scroll-y" id="searchBody">
+        <div class="search-hint" id="searchHint">搜索指定内容</div>
+        <div class="search-results" id="searchResults"></div>
+      </div>
+    </section>
+
+    <!-- ========== 图片预览 ========== -->
+    <div class="img-preview" id="imgPreview" hidden>
+      <button class="preview-close" id="btnPreviewClose" aria-label="关闭">✕</button>
+      <img id="previewImg" alt="预览" />
+    </div>
+
+    <!-- ========== 遮罩 + 弹层 ========== -->
+    <div class="mask" id="mask" hidden></div>
+
+    <!-- 更多菜单 -->
+    <div class="pop-menu" id="moreMenu" hidden>
+      <button class="pop-item" data-toast="发起群聊">发起群聊</button>
+      <button class="pop-item" data-toast="添加朋友">添加朋友</button>
+      <button class="pop-item" data-toast="扫一扫">扫一扫</button>
+      <button class="pop-item" data-toast="收付款">收付款</button>
+    </div>
+
+    <!-- 聊天右上角更多 -->
+    <div class="pop-menu" id="chatMoreMenu" hidden>
+      <button class="pop-item" data-toast="聊天信息">聊天信息</button>
+      <button class="pop-item" data-toast="查找聊天记录">查找聊天记录</button>
+      <button class="pop-item" data-toast="消息免打扰">消息免打扰</button>
+      <button class="pop-item" data-toast="置顶聊天">置顶聊天</button>
+      <button class="pop-item" data-toast="清空聊天记录">清空聊天记录</button>
+    </div>
+
+    <!-- 长按操作菜单 -->
+    <div class="action-sheet" id="actionSheet" hidden>
+      <div class="action-menu" id="actionMenu">
+        <button class="action-item" data-action="copy">复制</button>
+        <button class="action-item" data-action="forward">转发</button>
+        <button class="action-item" data-action="favorite">收藏</button>
+        <button class="action-item" data-action="quote">引用</button>
+        <button class="action-item" data-action="multi">多选</button>
+        <button class="action-item danger" data-action="delete">删除</button>
+        <button class="action-item" data-action="recall">撤回</button>
+      </div>
+      <div class="action-bubble-ref" id="actionBubbleRef"></div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast" hidden></div>
+  </div>
+
+  <script src="wechat.js"></script>
+</body>
+</html>
