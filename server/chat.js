@@ -37,7 +37,7 @@ const rowToMsg = (r) => {
   };
 };
 
-export const MEDIA_TYPES = new Set(['image', 'voice', 'video', 'card', 'file', 'redpacket', 'transfer', 'location', 'merge']);
+export const MEDIA_TYPES = new Set(['image', 'voice', 'video', 'card', 'file', 'redpacket', 'transfer', 'location', 'merge', 'jielong', 'groupcollect']);
 // 与 scripts/e2e-test.mjs 对齐: 60s 窗口内超过该条数则拒绝
 export const MSG_RATE = { limit: 20, windowMs: 60_000 };
 
@@ -309,7 +309,7 @@ export function initChat(io, { config, engine }) {
       content = typeof content === 'string' ? content.trim() : '';
       const extJson = ext ? JSON.stringify(ext).slice(0, 800) : null;
       // 卡片/红包/转账/位置等可无 mediaUrl
-      if ((!content && !mediaUrl && !extJson && !['redpacket', 'transfer', 'location', 'card'].includes(mediaType || '')) || content.length > 2000) {
+      if ((!content && !mediaUrl && !extJson && !['redpacket', 'transfer', 'location', 'card', 'jielong', 'groupcollect', 'merge'].includes(mediaType || '')) || content.length > 2000) {
         if (typeof ack === 'function') ack({ error: '消息内容不合法' });
         return;
       }
@@ -342,6 +342,8 @@ export function initChat(io, { config, engine }) {
         : mediaType === 'redpacket' ? '[微信红包]'
         : mediaType === 'transfer' ? '[转账]'
         : mediaType === 'location' ? '[位置]'
+        : mediaType === 'jielong' ? `接龙\n${String(ext?.title || content || '').slice(0, 80)}`
+        : mediaType === 'groupcollect' ? `[群收款]${ext?.note || ''}`
         : ''
       );
       const r = quote
@@ -774,36 +776,51 @@ export function initChat(io, { config, engine }) {
         : mType === 'transfer' ? '[转账]'
         : ''
       );
+
+      // 红包/转账: 先校验与扣款, 失败直接 ack, 不写脏消息
+      let preExt = null;
+      if (mType === 'redpacket' && ext) {
+        const norm = normalizeRedPacketInput(ext);
+        if (norm.error) {
+          if (typeof ack === 'function') ack({ error: norm.error });
+          return;
+        }
+        const bal = debit(user.id, norm.totalAmount, {
+          type: 'redpacket_send',
+          note: norm.note,
+          refType: 'pending',
+          refId: null,
+        });
+        if (!bal.ok) {
+          if (typeof ack === 'function') ack({ error: bal.error || '零钱不足' });
+          return;
+        }
+        preExt = { ...ext, ...norm, balance: bal.balance };
+      }
+      if (mType === 'transfer' && ext) {
+        const amount = Math.max(0.01, Math.round((Number(ext.amount) || 0) * 100) / 100);
+        const bal = debit(user.id, amount, {
+          type: 'transfer_send',
+          note: String(ext.note || '').slice(0, 30),
+          refType: 'pending',
+          refId: null,
+        });
+        if (!bal.ok) {
+          if (typeof ack === 'function') ack({ error: bal.error || '零钱不足' });
+          return;
+        }
+        preExt = { ...ext, amount, balance: bal.balance };
+      }
+
       const r = q
         ? stmts.insertMessageQuote.run('user', user.id, user.nickname, user.avatar || user.avatarColor, text, now, mType, mUrl, conversationId, q.id, q.name, q.content)
         : stmts.insertMessage.run('user', user.id, user.nickname, user.avatar || user.avatarColor, text, now, mType, mUrl, conversationId);
-      const msg = pushTo(conversationId, stmts.messageById.get(Number(r.lastInsertRowid)));
-      io.to(conversationId).emit('private:message', msg);
-      if (typeof ack === 'function') ack({ ok: true, id: msg.id });
-
-      // 私聊红包/转账落库 + 演示钱包
       const mid = Number(r.lastInsertRowid);
-      let extWithId = null;
+      let extWithId = preExt;
       try {
-        if (mType === 'redpacket' && ext) {
-          const norm = normalizeRedPacketInput(ext);
-          if (norm.error) {
-            if (typeof ack === 'function') ack({ error: norm.error });
-            stmts.recallMessage.run(norm.error, mid, user.id);
-            return;
-          }
+        if (mType === 'redpacket' && preExt) {
+          const norm = normalizeRedPacketInput(preExt);
           const amount = norm.totalAmount;
-          const bal = debit(user.id, amount, {
-            type: 'redpacket_send',
-            note: norm.note,
-            refType: 'message',
-            refId: mid,
-          });
-          if (!bal.ok) {
-            if (typeof ack === 'function') ack({ error: bal.error || '零钱不足' });
-            stmts.recallMessage.run('红包发送失败：零钱不足', mid, user.id);
-            return;
-          }
           const pr = stmts.insertRedPacket.run(
             mid, user.id, conversationId, amount, norm.note, now,
             norm.rpType, amount, norm.count, amount, norm.cover, now + RP_EXPIRE_MS
@@ -811,7 +828,7 @@ export function initChat(io, { config, engine }) {
           const packetId = Number(pr.lastInsertRowid);
           const coverPayload = redPacketPayload(stmts.getRedPacket.get(packetId));
           extWithId = {
-            ...ext,
+            ...preExt,
             ...coverPayload,
             packetId,
             status: 'pending',
@@ -820,38 +837,46 @@ export function initChat(io, { config, engine }) {
           };
           try { stmts.updateMessageExt.run(JSON.stringify(extWithId).slice(0, 800), mid); } catch { /* ignore */ }
         }
-        if (mType === 'transfer' && ext) {
-          const amount = Math.max(0.01, Math.round((Number(ext.amount) || 0.01) * 100) / 100);
-          const bal = debit(user.id, amount, {
-            type: 'transfer_send',
-            note: String(ext.note || '').slice(0, 30),
-            refType: 'message',
-            refId: mid,
-          });
-          if (!bal.ok) {
-            if (typeof ack === 'function') ack({ error: bal.error || '零钱不足' });
-            stmts.recallMessage.run('转账发送失败：零钱不足', mid, user.id);
-            return;
-          }
+        if (mType === 'transfer' && preExt) {
+          const amount = preExt.amount;
+          const tr = stmts.insertTransfer.run(mid, user.id, conversationId, amount, String(preExt.note || '').slice(0, 30), now);
+          const transferId = Number(tr.lastInsertRowid);
           let toUserId = null;
-          const pp = String(conversationId).split('_');
-          if (pp[1] === 'u') {
-            const a = parseInt(pp[2], 10);
-            const b = parseInt(pp[3], 10);
-            toUserId = a === user.id ? b : a;
+          if (String(conversationId).startsWith('pv_')) {
+            const pp = String(conversationId).split('_');
+            if (pp[1] === 'u') {
+              const u1 = parseInt(pp[2], 10);
+              const u2 = parseInt(pp[3], 10);
+              toUserId = u1 === user.id ? u2 : u1;
+            } else if (pp[1] === 'ai') {
+              toUserId = null;
+            }
           }
-          const tr = stmts.insertTransfer.run(mid, user.id, conversationId, amount, String(ext.note || '').slice(0, 30), now);
+          extWithId = {
+            ...preExt,
+            transferId,
+            status: 'pending',
+            toUserId,
+            expiredAt: now + 24 * 60 * 60 * 1000,
+          };
           if (toUserId) {
-            try { stmts.updateTransferTarget.run(toUserId, 'pending', Number(tr.lastInsertRowid)); } catch { /* ignore */ }
+            try { stmts.updateTransferTarget.run(toUserId, 'pending', transferId); } catch { /* ignore */ }
           }
-          extWithId = { ...ext, amount, transferId: Number(tr.lastInsertRowid), status: 'pending', toUserId };
           try { stmts.updateMessageExt.run(JSON.stringify(extWithId).slice(0, 800), mid); } catch { /* ignore */ }
         }
-        if (extWithId) {
+      } catch (e) {
+        console.log('private pay persist', e.message);
+      }
+
+      const msg = pushTo(conversationId, stmts.messageById.get(mid));
+      io.to(conversationId).emit('private:message', msg);
+      if (extWithId) {
+        try {
           const msg2 = pushTo(conversationId, stmts.messageById.get(mid));
           io.to(conversationId).emit('private:message', msg2);
-        }
-      } catch { /* ignore */ }
+        } catch { /* ignore */ }
+      }
+      if (typeof ack === 'function') ack({ ok: true, id: mid });
 
       // 对端累计未读
       try {
@@ -957,9 +982,11 @@ export function initChat(io, { config, engine }) {
       const cid = callKey(callId);
       const call = activeCalls.get(cid);
       if (call) {
-        const other = call.callerId === user.id ? call.calleeId : call.callerId;
+        // 通知双方，保证两边都能关掉通话页
         activeCalls.delete(cid);
-        io.to(`user_${other}`).emit('call:ended', { callId: cid, by: user.id });
+        const payload = { callId: cid, by: user.id };
+        io.to(`user_${call.callerId}`).emit('call:ended', payload);
+        io.to(`user_${call.calleeId}`).emit('call:ended', payload);
         const dur = Number(duration) || (call.acceptedAt ? Math.round((Date.now() - call.acceptedAt) / 1000) : 0);
         if (call.state === 'accepted') {
           recordCallLog(call, 'end', { duration: dur });

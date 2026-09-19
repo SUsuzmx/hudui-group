@@ -4,6 +4,7 @@ import { io } from 'socket.io-client';
 import { getToken, api } from '../api.js';
 import UserAvatar from './UserAvatar.vue';
 import WxIcons from './WxIcons.vue';
+import { pinyinInitial, groupContactsByLetter } from '../pinyin-initial.js';
 
 const props = defineProps({
   me: { type: Object, required: true },
@@ -97,6 +98,37 @@ const navTitleText = computed(() => {
 });
 const showNav = computed(() => tab.value !== 'me');
 const starFriends = computed(() => contactPeople().filter((p) => p.isAI).slice(0, 4));
+const contactLetterIds = computed(() => {
+  const map = {};
+  for (const g of contactGroups.value) {
+    const first = g.people[0];
+    if (first) map[g.letter] = 'ct-' + first.key;
+  }
+  return map;
+});
+const refreshing = ref(false);
+const chatsPull = ref(0);
+const extraAi = ref([]);
+const contactIndexLetters = computed(() => {
+  const has = new Set(contactGroups.value.map((g) => g.letter));
+  return 'ABCDEFGHIJKLMNOPQRSTUVWXYZ#'.split('').map((L) => ({ L, on: has.has(L) }));
+});
+
+function jumpToLetter(L) {
+  const key = L === '↑' ? null : L;
+  const el = key
+    ? (contactsScrollEl.value?.querySelector(`#ct-letter-${CSS.escape(key)}`) || document.getElementById(`ct-letter-${key}`))
+    : contactsScrollEl.value;
+  el?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+  if (!key && contactsScrollEl.value) contactsScrollEl.value.scrollTop = 0;
+}
+
+async function refreshChats() {
+  if (refreshing.value) return;
+  refreshing.value = true;
+  try { await loadChats(); await loadFriendRequests(); }
+  finally { refreshing.value = false; chatsPull.value = 0; }
+}
 
 function toggleFloatChat(c) {
   const exists = floatChats.value.find((x) => x.id === c.id);
@@ -178,6 +210,10 @@ onMounted(async () => {
   loadChats();
   loadFriends();
   loadFriendRequests();
+  try {
+    const ai = await api.aiContacts().catch(() => ({ contacts: [] }));
+    extraAi.value = ai.contacts || [];
+  } catch { extraAi.value = []; }
   socket = io('/', {
     auth: { token: getToken() },
     transports: ['polling', 'websocket'],
@@ -435,7 +471,7 @@ function contactPeople() {
     seen.add(key);
     list.push(p);
   };
-  const aiMembers = members.value.aiMembers || [];
+  const aiMembers = (members.value.aiMembers?.length ? members.value.aiMembers : extraAi.value) || [];
   // 通讯录仅展示: 好友 + AI 联系人（对齐微信，不把全库用户塞进来）
   const friendList = friends.value || [];
   for (const f of friendList) {
@@ -468,55 +504,10 @@ function contactPeople() {
 }
 
 function alphaOf(name) {
-  const ch = (name || '?')[0];
-  if (/[\u4e00-\u9fa5]/.test(ch)) {
-    // 中文按拼音首字母：用简单映射不够准，微信也常用系统拼音；演示按 Unicode 分桶到 #
-    // 尽量把常见姓氏归到字母，其余 #
-    const map = {
-      阿: 'A', 艾: 'A', 安: 'A',
-      白: 'B', 包: 'B', 鲍: 'B', 毕: 'B', 边: 'B', 卞: 'B',
-      蔡: 'C', 曹: 'C', 岑: 'C', 常: 'C', 车: 'C', 陈: 'C', 成: 'C', 程: 'C', 池: 'C', 褚: 'C', 崔: 'C',
-      戴: 'D', 邓: 'D', 狄: 'D', 刁: 'D', 丁: 'D', 董: 'D', 杜: 'D', 段: 'D',
-      樊: 'F', 范: 'F', 方: 'F', 费: 'F', 冯: 'F', 凤: 'F', 符: 'F', 傅: 'F',
-      甘: 'G', 高: 'G', 葛: 'G', 耿: 'G', 龚: 'G', 巩: 'G', 古: 'G', 顾: 'G', 关: 'G', 郭: 'G',
-      韩: 'H', 杭: 'H', 郝: 'H', 何: 'H', 贺: 'H', 赫: 'H', 洪: 'H', 侯: 'H', 胡: 'H', 花: 'H', 华: 'H', 黄: 'H', 霍: 'H',
-      嵇: 'J', 吉: 'J', 纪: 'J', 季: 'J', 贾: 'J', 江: 'J', 姜: 'J', 蒋: 'J', 金: 'J', 荆: 'J',
-      康: 'K', 柯: 'K', 孔: 'K',
-      赖: 'L', 蓝: 'L', 郎: 'L', 劳: 'L', 雷: 'L', 黎: 'L', 李: 'L', 连: 'L', 梁: 'L', 廖: 'L', 林: 'L', 凌: 'L', 刘: 'L', 柳: 'L', 龙: 'L', 卢: 'L', 陆: 'L', 吕: 'L', 罗: 'L', 骆: 'L',
-      马: 'M', 毛: 'M', 梅: 'M', 孟: 'M', 米: 'M', 苗: 'M', 闵: 'M', 莫: 'M', 牟: 'M', 穆: 'M',
-      倪: 'N', 聂: 'N', 宁: 'N', 牛: 'N',
-      欧: 'O', 区: 'O',
-      潘: 'P', 庞: 'P', 裴: 'P', 彭: 'P', 皮: 'P',
-      戚: 'Q', 齐: 'Q', 钱: 'Q', 强: 'Q', 乔: 'Q', 秦: 'Q', 邱: 'Q', 裘: 'Q', 屈: 'Q',
-      饶: 'R', 任: 'R', 荣: 'R', 阮: 'R',
-      沙: 'S', 邵: 'S', 申: 'S', 沈: 'S', 盛: 'S', 师: 'S', 施: 'S', 石: 'S', 时: 'S', 史: 'S', 寿: 'S', 舒: 'S', 束: 'S', 双: 'S', 水: 'S', 宋: 'S', 苏: 'S', 孙: 'S',
-      谭: 'T', 汤: 'T', 唐: 'T', 陶: 'T', 滕: 'T', 田: 'T', 童: 'T', 涂: 'T',
-      万: 'W', 汪: 'W', 王: 'W', 危: 'W', 韦: 'W', 魏: 'W', 温: 'W', 文: 'W', 闻: 'W', 翁: 'W', 巫: 'W', 邬: 'W', 吴: 'W', 伍: 'W', 武: 'W',
-      奚: 'X', 习: 'X', 夏: 'X', 肖: 'X', 萧: 'X', 谢: 'X', 辛: 'X', 邢: 'X', 熊: 'X', 徐: 'X', 许: 'X', 薛: 'X',
-      严: 'Y', 言: 'Y', 阎: 'Y', 颜: 'Y', 杨: 'Y', 姚: 'Y', 叶: 'Y', 易: 'Y', 殷: 'Y', 尹: 'Y', 应: 'Y', 于: 'Y', 余: 'Y', 俞: 'Y', 虞: 'Y', 禹: 'Y', 喻: 'Y', 袁: 'Y', 岳: 'Y', 云: 'Y',
-      臧: 'Z', 曾: 'Z', 詹: 'Z', 张: 'Z', 章: 'Z', 赵: 'Z', 甄: 'Z', 郑: 'Z', 钟: 'Z', 周: 'Z', 朱: 'Z', 诸: 'Z', 庄: 'Z', 卓: 'Z',
-    };
-    return map[ch] || '#';
-  }
-  const up = String(ch || '?').toUpperCase();
-  return /[A-Z]/.test(up) ? up : '#';
+  return pinyinInitial(name);
 }
 
-const contactGroups = computed(() => {
-  const map = new Map();
-  for (const p of contactPeople()) {
-    const a = alphaOf(p.nickname);
-    if (!map.has(a)) map.set(a, []);
-    map.get(a).push(p);
-  }
-  return [...map.entries()]
-    .sort((x, y) => (x[0] === '#' ? 1 : y[0] === '#' ? -1 : x[0].localeCompare(y[0])))
-    .map(([letter, people]) => ({
-      letter,
-      people: [...people].sort((a, b) => String(a.nickname).localeCompare(String(b.nickname), 'zh')),
-    }));
-});
-
+const contactGroups = computed(() => groupContactsByLetter(contactPeople()));
 const contactCount = computed(() => contactGroups.value.reduce((s, g) => s + g.people.length, 0));
 
 function toggleMore() { showMore.value = !showMore.value; }
@@ -593,6 +584,23 @@ function hideSwiped(id) {
   swipeId.value = null;
 }
 
+let pullStartY = 0;
+function onChatsTouchStart(e) {
+  pullStartY = e.touches?.[0]?.clientY ?? 0;
+  chatsPull.value = 0;
+}
+function onChatsTouchMove(e) {
+  const y = e.touches?.[0]?.clientY ?? 0;
+  const el = chatsScrollEl.value;
+  if (el && el.scrollTop > 2) { chatsPull.value = 0; return; }
+  const dy = y - pullStartY;
+  chatsPull.value = dy > 0 ? Math.min(80, dy * 0.5) : 0;
+}
+function onChatsTouchEnd() {
+  if (chatsPull.value > 48) refreshChats();
+  else chatsPull.value = 0;
+}
+
 function doChatAction(kind) {
   const c = chatActionTarget.value;
   chatActionTarget.value = null;
@@ -644,7 +652,15 @@ function doChatAction(kind) {
 
     <main class="content">
       <!-- 微信会话列表 -->
-      <div v-show="tab === 'chats'" class="tab-pane scroll-y" ref="chatsScrollEl">
+      <div
+        v-show="tab === 'chats'"
+        class="tab-pane scroll-y"
+        ref="chatsScrollEl"
+        @touchstart.passive="onChatsTouchStart"
+        @touchmove.passive="onChatsTouchMove"
+        @touchend="onChatsTouchEnd"
+      >
+        <div v-if="chatsPull > 12 || refreshing" class="pull-tip">{{ refreshing ? '刷新中…' : '下拉刷新' }}</div>
         <ul class="msg-list">
           <li
             v-for="c in visibleChats"
@@ -712,7 +728,11 @@ function doChatAction(kind) {
             </div>
           </li>
         </ul>
-        <div v-if="!chats.length" class="empty-state">暂无消息</div>
+        <div v-if="!chats.length" class="empty-state">
+          <div class="empty-illu">💬</div>
+          <div class="empty-title">暂无消息</div>
+          <div class="empty-sub">可添加好友或进入群聊开始聊天</div>
+        </div>
       </div>
 
       <!-- 通讯录 -->
@@ -741,10 +761,11 @@ function doChatAction(kind) {
           </button>
         </div>
         <template v-for="g in contactGroups" :key="g.letter">
-          <div class="alpha-bar">{{ g.letter }}</div>
+          <div class="alpha-bar" :id="'ct-letter-' + g.letter">{{ g.letter }}</div>
           <button
             v-for="p in g.people"
             :key="p.key"
+            :id="'ct-' + p.key"
             class="contact-row"
             @click="openContact(p)"
           >
@@ -755,9 +776,15 @@ function doChatAction(kind) {
           </button>
         </template>
         <div class="alpha-footer">{{ contactCount }} 位联系人</div>
-        <div class="alpha-index" aria-hidden="true">
-          <span>↑</span><span>☆</span>
-          <span v-for="L in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ#'.split('')" :key="L">{{ L }}</span>
+        <div class="alpha-index" aria-hidden="false">
+          <button type="button" class="idx-up" @click="jumpToLetter('↑')">↑</button>
+          <button
+            v-for="it in contactIndexLetters"
+            :key="it.L"
+            type="button"
+            :class="{ on: it.on }"
+            @click="jumpToLetter(it.L)"
+          >{{ it.L }}</button>
         </div>
       </div>
 
@@ -964,6 +991,38 @@ function doChatAction(kind) {
   padding: 2px; box-sizing: border-box;
 }
 .group-avatar.n1 { display: flex; align-items: center; justify-content: center; padding: 0; }
+.alpha-index {
+  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 0;
+  z-index: 5; padding: 6px 2px;
+  background: transparent;
+}
+.alpha-index button {
+  border: 0; background: transparent; color: var(--text-3); font-size: 10px;
+  width: 20px; min-height: 17px; padding: 0; line-height: 17px; font-weight: 500;
+}
+.alpha-index button.on { color: var(--text); }
+.alpha-index button.idx-up { color: var(--text-2); }
+.alpha-index button:active { color: var(--green); }
+.contact-row {
+  width: 100%; display: flex; align-items: center; gap: 12px; padding: 0 20px 0 16px;
+  background: var(--white); border: 0; text-align: left; box-sizing: border-box; min-height: 60px;
+  position: relative;
+}
+.contact-row::after {
+  content: ''; position: absolute; left: 72px; right: 0; bottom: 0; height: 0.5px; background: var(--divider);
+}
+.contact-name { font-size: 17px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; }
+.pull-tip {
+  text-align: center; font-size: 12px; color: var(--text-3); padding: 8px 0 4px;
+  background: var(--bg);
+}
+.empty-state {
+  padding: 64px 24px; text-align: center; color: var(--text-2);
+}
+.empty-illu { font-size: 40px; margin-bottom: 10px; }
+.empty-title { font-size: 16px; color: var(--text); }
+.empty-sub { margin-top: 6px; font-size: 13px; color: var(--text-3); }
 .tab-pane { position: absolute; inset: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: calc(var(--tab-h) + var(--safe-b) + 8px); }
 #tab-contacts-relative, .tab-pane { position: absolute; }
 .content .tab-pane { position: absolute; }

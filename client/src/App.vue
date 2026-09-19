@@ -101,6 +101,7 @@ function openChat(chat = null) {
 
 function openPrivateChat(contact) {
   nav.push();
+  const uid = Number(contact.userId ?? contact.id ?? contact.peerId ?? 0);
   if (contact.isAI) {
     privateTarget.value = {
       nickname: contact.nickname,
@@ -117,7 +118,8 @@ function openPrivateChat(contact) {
       avatar: contact.avatar,
       color: contact.color,
       isAI: false,
-      userId: contact.userId,
+      userId: Number.isInteger(uid) && uid > 0 ? uid : contact.userId,
+      remark: contact.remark || null,
     };
   }
   transitionName.value = 'page-push';
@@ -255,7 +257,17 @@ function onLeftGroup() {
 }
 
 function openChatInfo(payload) {
-  openSub({ type: 'chat-info', ...payload });
+  // 群聊信息统一走 GroupSettingsView（成员头像墙 + 设置项）
+  const conv = payload?.conversationId || activeChat.value?.conversationId || '';
+  const gid = payload?.groupId
+    ?? (conv?.startsWith('grp_') ? Number(String(conv).replace(/^grp_/, '')) : activeChat.value?.groupId)
+    ?? null;
+  openSub({
+    type: 'group-settings',
+    conversationId: conv,
+    groupId: gid,
+    groupName: payload?.groupName || activeChat.value?.name || 'WeChat',
+  });
 }
 
 async function onChatInfoAction(action) {

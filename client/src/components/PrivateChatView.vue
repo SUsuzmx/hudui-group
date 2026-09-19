@@ -105,9 +105,16 @@ function onKeyDown(e) {
   send();
 }
 
+const peerUid = Number(props.target.userId ?? props.target.id ?? 0);
 const conversationId = props.target.isAI
   ? `pv_${props.me.id}_ai_${props.target.personaId}`
-  : `pv_u_${Math.min(props.me.id, props.target.userId)}_${Math.max(props.me.id, props.target.userId)}`;
+  : Number.isInteger(peerUid) && peerUid > 0 && peerUid !== props.me.id
+    ? `pv_u_${Math.min(props.me.id, peerUid)}_${Math.max(props.me.id, peerUid)}`
+    : `pv_u_${props.me.id}_${props.me.id}`;
+const canPay = computed(() => {
+  if (props.target.isAI) return Boolean(props.target.personaId);
+  return Number.isInteger(peerUid) && peerUid > 0;
+});
 
 function avatarProps() {
   if (props.target.isAI) {
@@ -665,23 +672,26 @@ function onPayConfirm() {
 }
 
 function openCreatePay(kind) {
+  if (!canPay.value) {
+    showToast('无法确定对方账号，暂不能发起支付');
+    return;
+  }
   createPay.value = {
     kind,
     amount: 0,
     amountText: '',
     note: '',
     open: true,
-    balance: createPay.value.balance,
-    rpType: kind === 'redpacket' ? 'exclusive' : 'exclusive',
-    rpCount: 1,
+    balance: createPay.value.balance ?? 0,
+    rpType: 'exclusive',
+    rpCount: kind === 'redpacket' && props.target.isAI ? 1 : 1,
     cover: 'classic',
   };
   api.wallet().then((w) => {
     createPay.value = { ...createPay.value, balance: w.balance };
   }).catch(() => {});
-  // 好友微信号
-  if (!props.target.isAI && props.target.userId) {
-    api.user(props.target.userId).then((d) => {
+  if (!props.target.isAI && peerUid) {
+    api.user(peerUid).then((d) => {
       peerWxid.value = d?.user?.wxid || '';
     }).catch(() => {});
   }
@@ -692,6 +702,10 @@ function submitCreatePay() {
   const amount = Number(info.amountText || info.amount);
   if (!(amount > 0)) {
     showToast('请输入金额');
+    return;
+  }
+  if (!canPay.value) {
+    showToast('无法确定对方账号，暂不能发起支付');
     return;
   }
   if (!socket?.connected) {
@@ -709,14 +723,19 @@ function submitCreatePay() {
   const ext = isRP
     ? { amount, note, rpType, rpCount: rpType === 'lucky' ? rpCount : 1, cover: info.cover || 'classic' }
     : { amount, note };
+  const conv = conversationId;
   socket.emit('private:send', {
-    conversationId,
-    content: isRP ? `[微信红包]${rpType === 'lucky' ? '拼手气' : ''}${note}` : `[转账]¥${amount}`,
+    conversationId: conv,
+    content: isRP ? `[微信红包]${rpType === 'lucky' ? '拼手气' : ''}${note}` : `[转账]¥${amount.toFixed(2)}`,
     mediaType: info.kind,
     ext,
   }, (res) => {
     if (res?.error) {
       showToast(res.error);
+      return;
+    }
+    if (!res?.ok && !res?.id) {
+      showToast('发送失败，请重试');
       return;
     }
     createPay.value = { ...info, open: false };
@@ -1133,13 +1152,11 @@ onBeforeUnmount(() => {
           <button class="plus-item" type="button" @click="pickChatPhoto"><span class="plus-icon">🖼</span><span>相册</span></button>
           <input ref="photoInput" type="file" accept="image/*" hidden @change="onChatPhoto" />
           <button class="plus-item" type="button" @click="pickChatPhoto"><span class="plus-icon">📷</span><span>拍摄</span></button>
-          <button class="plus-item" type="button" @click="emit('open-video-call', { callMode: 'video', role: 'caller', target: { nickname: target.nickname, avatar: target.avatarUrl || target.avatar, color: target.color, userId: target.userId } })"><span class="plus-icon">📹</span><span>视频通话</span></button>
-          <button class="plus-item" type="button" @click="emit('open-video-call', { callMode: 'voice', role: 'caller', target: { nickname: target.nickname, avatar: target.avatarUrl || target.avatar, color: target.color, userId: target.userId } })"><span class="plus-icon">📞</span><span>语音通话</span></button>
-          <button v-if="!target.isAI" class="plus-item" type="button" @click="openCreatePay('redpacket')"><span class="plus-icon">🧧</span><span>红包</span></button>
-          <button v-if="!target.isAI" class="plus-item" type="button" @click="openCreatePay('transfer')"><span class="plus-icon">💰</span><span>转账</span></button>
-          <button class="plus-item" type="button"><span class="plus-icon">📍</span><span>位置</span></button>
-          <button class="plus-item" type="button"><span class="plus-icon">🧧</span><span>红包</span></button>
-          <button class="plus-item" type="button"><span class="plus-icon">💰</span><span>转账</span></button>
+          <button v-if="!target.isAI && peerUid" class="plus-item" type="button" @click="emit('open-video-call', { callMode: 'video', role: 'caller', target: { nickname: target.nickname, avatar: target.avatarUrl || target.avatar, color: target.color, userId: peerUid } })"><span class="plus-icon">📹</span><span>视频通话</span></button>
+          <button v-if="!target.isAI && peerUid" class="plus-item" type="button" @click="emit('open-video-call', { callMode: 'voice', role: 'caller', target: { nickname: target.nickname, avatar: target.avatarUrl || target.avatar, color: target.color, userId: peerUid } })"><span class="plus-icon">📞</span><span>语音通话</span></button>
+          <button class="plus-item" type="button" @click="openCreatePay('redpacket')"><span class="plus-icon">🧧</span><span>红包</span></button>
+          <button class="plus-item" type="button" @click="openCreatePay('transfer')"><span class="plus-icon">💰</span><span>转账</span></button>
+          <button class="plus-item" type="button" @click="showToast('位置消息演示中')"><span class="plus-icon">📍</span><span>位置</span></button>
         </div>
       </div>
     </footer>

@@ -71,7 +71,16 @@ const favEmojis = (() => {
   try { return JSON.parse(localStorage.getItem('hudui_stickers') || '[]'); }
   catch { return []; }
 })();
-const { playingKey, playVoice, disposeVoice, parseVoiceSeconds } = useVoicePlayer();
+const mergeExpand = ref(null);
+const showJieleng = ref(false);
+const jielengTitle = ref('');
+const jielengItems = ref('');
+const showCollect = ref(false);
+const collectAmount = ref('');
+const collectNote = ref('');
+const collectingIds = ref({});
+const noticeShown = ref(false);
+const { playingKey, voiceProgress, playVoice, stopVoice, disposeVoice, parseVoiceSeconds } = useVoicePlayer();
 const previewImages = ref([]);
 const previewIndex = ref(0);
 const showImagePreview = ref(false);
@@ -497,6 +506,7 @@ function onChatMoreAction(label) {
   }
   emit('open-chat-info', {
     conversationId: conversationId.value,
+    groupId: gid,
     groupName: chatTitle.value,
     isGroup: true,
     action: label,
@@ -732,6 +742,112 @@ function parseMergeItems(m) {
     const i = l.indexOf(': ');
     return i > 0 ? { name: l.slice(0, i), content: l.slice(i + 2) } : { name: '', content: l };
   });
+}
+
+function openMergeExpand(m) {
+  mergeExpand.value = parseMergeItems(m);
+}
+
+function openFileMsg(m) {
+  const url = m?.mediaUrl;
+  if (url) {
+    window.open(url, '_blank');
+  } else {
+    showToast('演示文件消息（无附件）');
+  }
+}
+
+function jielengLines(m) {
+  const ext = parseExt(m);
+  const raw = ext.items || String(m?.content || '').split('\n').filter((l) => l && !l.startsWith('接龙') && !l.startsWith('【'));
+  return (Array.isArray(raw) ? raw : []).slice(0, 8).map((x, i) => `${i + 1}. ${x}`);
+}
+
+function openJielengMsg(m) {
+  const ext = parseExt(m);
+  const name = props.me?.nickname || '我';
+  const list = ext.items ? [...ext.items] : String(m.content || '').split('\n').filter((l) => /^\d+\./.test(l)).map((l) => l.replace(/^\d+\.\s*/, ''));
+  if (!list.includes(name)) list.push(name);
+  const title = ext.title || '群接龙';
+  const content = `【接龙】${title}\n${list.map((x, i) => `${i + 1}. ${x}`).join('\n')}`;
+  socket?.emit('message:send', {
+    conversationId: conversationId.value,
+    content,
+    mediaType: 'jielong',
+    ext: { jieleng: true, title, items: list, baseId: m.id },
+  }, (res) => {
+    if (res?.error) showToast(res.error);
+    else showToast('已参与接龙');
+  });
+  mergeExpand.value = null;
+}
+
+function openCollect(m) {
+  const ext = parseExt(m);
+  const amount = Number(ext.amount || 0);
+  if (!(amount > 0)) {
+    showToast('金额无效');
+    return;
+  }
+  if (isMineMsg(m)) {
+    showToast(`群收款单 ¥${amount.toFixed(2)} · ${collectingIds.value[m.id] ? '已收款' : '待成员支付'}`);
+    return;
+  }
+  if (collectingIds.value[m.id]) {
+    showToast('你已支付');
+    return;
+  }
+  // 演示: 扣零钱并标记
+  api.walletPay(amount, ext.note || '群收款').then(() => {
+    collectingIds.value = { ...collectingIds.value, [m.id]: true };
+    showToast(`已支付 ¥${amount.toFixed(2)}`);
+  }).catch((e) => showToast(e.message || '支付失败'));
+}
+
+function sendJieleng() {
+  const title = jielengTitle.value.trim() || '群接龙';
+  const items = jielengItems.value.split('\n').map((s) => s.trim()).filter(Boolean).slice(0, 20);
+  const list = items.length ? items : [props.me?.nickname || '我'];
+  if (!list.includes(props.me?.nickname)) list.push(props.me?.nickname || '我');
+  const content = `【接龙】${title}\n${list.map((x, i) => `${i + 1}. ${x}`).join('\n')}`;
+  socket?.emit('message:send', {
+    conversationId: conversationId.value,
+    content,
+    mediaType: 'jielong',
+    ext: { jieleng: true, title, items: list },
+  }, (res) => {
+    if (res?.error) showToast(res.error);
+    else showToast('接龙已发送');
+  });
+  showJieleng.value = false;
+  dockMode.value = 0;
+}
+
+function sendGroupCollect() {
+  const amount = Number(collectAmount.value);
+  if (!(amount > 0)) {
+    showToast('请输入金额');
+    return;
+  }
+  const note = collectNote.value.trim() || '活动费用';
+  const content = `[群收款]${note} ¥${amount.toFixed(2)}`;
+  socket?.emit('message:send', {
+    conversationId: conversationId.value,
+    content,
+    mediaType: 'groupcollect',
+    ext: { collect: true, amount, note },
+  }, (res) => {
+    if (res?.error) showToast(res.error);
+    else showToast('群收款已发出');
+  });
+  showCollect.value = false;
+  dockMode.value = 0;
+}
+
+function joinJielengFromExpand() {
+  if (!mergeExpand.value?.length) return;
+  // 扩展页仅展示; 参与在气泡上点击
+  mergeExpand.value = null;
 }
 
 let lastLocalDraft = '';
@@ -1281,7 +1397,14 @@ onMounted(() => {
     ? Number(conversationId.value.replace(/^grp_/, ''))
     : (props.chat?.groupId || null);
   if (gid) {
-    api.groupInfo(gid).then((d) => { groupNotice.value = d?.group?.notice || ''; }).catch(() => {});
+    api.groupInfo(gid).then((d) => {
+      const n = d?.group?.notice || '';
+      groupNotice.value = n;
+      if (n && !noticeShown.value) {
+        noticeShown.value = true;
+        showToast(`群公告：${String(n).slice(0, 60)}`);
+      }
+    }).catch(() => {});
   }
 
   // 3) 共享 socket
@@ -1489,17 +1612,15 @@ onBeforeUnmount(() => {
               <span v-if="!isMine(m)" class="voice-wave"><i></i><i></i><i></i></span>
               <span class="voice-dur">{{ parseVoiceSeconds(m.content) }}″</span>
               <span v-if="isMine(m)" class="voice-wave"><i></i><i></i><i></i></span>
+              <span
+                v-if="isVoicePlaying(m)"
+                class="voice-progress"
+                :style="{ width: `${Math.round((voiceProgress || 0) * 100)}%` }"
+              ></span>
             </div>
             <div v-else-if="m.mediaType === 'card'" class="bubble card-bubble" @click="showToast('名片：' + (m.ext?.nickname || m.content))">
               <div class="card-name">{{ m.ext?.nickname || m.content }}</div>
               <div class="card-sub">个人名片</div>
-            </div>
-            <div v-else-if="m.mediaType === 'file'" class="bubble file-bubble">
-              <div class="file-icon">📄</div>
-              <div class="file-main">
-                <div class="file-name">{{ m.ext?.name || m.content }}</div>
-                <div class="file-size">{{ m.ext?.sizeLabel || '' }}</div>
-              </div>
             </div>
             <WxPayCard
               v-else-if="payKindOf(m)"
@@ -1528,7 +1649,7 @@ onBeforeUnmount(() => {
             <div
               v-else-if="m.mediaType === 'file'"
               class="bubble file-bubble"
-              @click="m.mediaUrl ? window.open(m.mediaUrl, '_blank') : showToast('文件演示消息')"
+              @click="openFileMsg(m)"
             >
               <div class="file-icon">📄</div>
               <div class="file-main">
@@ -1537,9 +1658,35 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div
+              v-else-if="m.mediaType === 'jielong' || (m.ext && m.ext.jieleng)"
+              class="bubble jieleng-bubble"
+              @click="openJielengMsg(m)"
+            >
+              <div class="jl-head">
+                <span class="jl-tag">接龙</span>
+                <span class="jl-title">{{ parseExt(m).title || '群接龙' }}</span>
+              </div>
+              <div class="jl-body">
+                <div v-for="(line, li) in jielengLines(m)" :key="li" class="jl-line">{{ line }}</div>
+              </div>
+              <div class="jl-foot">参与接龙 ›</div>
+            </div>
+            <div
+              v-else-if="m.mediaType === 'groupcollect' || (m.ext && m.ext.collect)"
+              class="bubble collect-bubble"
+              @click="openCollect(m)"
+            >
+              <div class="gc-icon">💰</div>
+              <div class="gc-main">
+                <div class="gc-title">群收款</div>
+                <div class="gc-amt">¥{{ Number(parseExt(m).amount || 0).toFixed(2) }}</div>
+                <div class="gc-note">{{ parseExt(m).note || '活动费用' }}</div>
+              </div>
+            </div>
+            <div
               v-else-if="m.mediaType === 'merge' || (m.ext && m.ext.mergeItems)"
               class="bubble merge-bubble"
-              @click="showToast(parseMergeItems(m).map((x) => x.name + ': ' + x.content).join(' | ').slice(0, 120) || '聊天记录')"
+              @click="openMergeExpand(m)"
             >
               <div class="merge-title">聊天记录</div>
               <div class="merge-preview">
@@ -1640,6 +1787,8 @@ onBeforeUnmount(() => {
           <button class="plus-item" type="button" @click="openLocationSheet"><span class="plus-icon">📍</span><span>位置</span></button>
           <button class="plus-item" type="button" @click="openCreatePayGroup('redpacket')"><span class="plus-icon">🧧</span><span>红包</span></button>
           <button class="plus-item" type="button" @click="openCreatePayGroup('transfer')"><span class="plus-icon">💰</span><span>转账</span></button>
+          <button class="plus-item" type="button" @click="showJieleng = true; dockMode = 0"><span class="plus-icon">🐉</span><span>接龙</span></button>
+          <button class="plus-item" type="button" @click="showCollect = true; dockMode = 0"><span class="plus-icon">🧾</span><span>群收款</span></button>
           <button class="plus-item" type="button" @click="dockMode = 3"><span class="plus-icon">🎤</span><span>语音输入</span></button>
           <button class="plus-item" type="button" @click="insertAt"><span class="plus-icon">@</span><span>提醒</span></button>
         </div>
@@ -1670,17 +1819,53 @@ onBeforeUnmount(() => {
         <button class="pay-btn" @click="sendLocation">发送位置</button>
       </div>
     </div>
+    <div v-if="showJieleng" class="mask" @click.self="showJieleng = false">
+      <div class="pay-panel">
+        <div class="pay-title">群接龙</div>
+        <div class="pay-row"><span>主题</span><input v-model="jielengTitle" maxlength="30" placeholder="例如：周末爬山报名" /></div>
+        <div class="pay-row col">
+          <span>名单（每行一人，可选）</span>
+          <textarea v-model="jielengItems" rows="3" placeholder="思琪\nPerry"></textarea>
+        </div>
+        <button class="pay-btn" @click="sendJieleng">发送接龙</button>
+      </div>
+    </div>
+    <div v-if="showCollect" class="mask" @click.self="showCollect = false">
+      <div class="pay-panel">
+        <div class="pay-title">群收款</div>
+        <div class="pay-row"><span>人均</span><input v-model.number="collectAmount" type="number" min="0.01" step="0.01" placeholder="0.00" /></div>
+        <div class="pay-row"><span>说明</span><input v-model="collectNote" maxlength="20" placeholder="活动费用" /></div>
+        <button class="pay-btn" @click="sendGroupCollect">发起收款</button>
+      </div>
+    </div>
+
+    <!-- 合并转发展开 -->
+    <div v-if="mergeExpand" class="merge-expand-mask" @click.self="mergeExpand = null">
+      <div class="merge-expand">
+        <header class="merge-expand-bar">
+          <span>聊天记录</span>
+          <button type="button" @click="mergeExpand = null">关闭</button>
+        </header>
+        <div class="merge-expand-body scroll-y">
+          <div v-for="(it, i) in mergeExpand" :key="i" class="merge-expand-item">
+            <div class="me-name">{{ it.name || '消息' }}</div>
+            <div class="me-content">{{ it.content }}</div>
+            <div v-if="it.createdAt" class="me-time">{{ fmtTime(it.createdAt) }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- 长按菜单 -->
     <div v-if="actionMsg" class="action-sheet" @click.self="actionMsg = null">
       <div class="action-menu" ref="actionMenuEl">
-        <button class="action-item" @click="doAction('copy')">复制</button>
+        <button v-if="actionMsg.content" class="action-item" @click="doAction('copy')">复制</button>
         <button class="action-item" @click="doAction('forward')">转发</button>
         <button class="action-item" @click="doAction('favorite')">收藏</button>
-        <button class="action-item" @click="doAction('quote')">引用</button>
+        <button v-if="actionMsg.content" class="action-item" @click="doAction('quote')">引用</button>
         <button class="action-item" @click="doAction('multi')">多选</button>
+        <button v-if="isMine(actionMsg) && actionMsg.senderType === 'user'" class="action-item" @click="doAction('recall')">撤回</button>
         <button class="action-item danger" @click="doAction('delete')">删除</button>
-        <button class="action-item" @click="doAction('recall')">撤回</button>
       </div>
     </div>
 
@@ -2186,6 +2371,57 @@ onBeforeUnmount(() => {
   color: #fff;
   background: #e6a23c;
   padding: 4px 8px;
+}
+.voice-bubble { position: relative; overflow: hidden; }
+.voice-progress {
+  position: absolute; left: 0; bottom: 0; height: 2px;
+  background: rgba(7,193,96,0.85); border-radius: 0 1px 1px 0;
+}
+.msg-row.mine .voice-progress { background: rgba(255,255,255,0.7); }
+.jieleng-bubble {
+  min-width: 220px; max-width: 260px; background: var(--white) !important; cursor: pointer;
+}
+.jl-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.jl-tag {
+  font-size: 11px; background: #07c160; color: #fff; border-radius: 3px; padding: 1px 6px;
+}
+.jl-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.jl-body { font-size: 12px; color: var(--text-2); line-height: 1.5; }
+.jl-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jl-foot {
+  margin-top: 8px; padding-top: 6px; border-top: 0.5px solid var(--divider-soft);
+  font-size: 12px; color: var(--green);
+}
+.collect-bubble {
+  min-width: 220px; max-width: 260px; background: var(--white) !important; cursor: pointer;
+  display: flex !important; gap: 10px; align-items: center;
+}
+.gc-icon { font-size: 28px; }
+.gc-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.gc-amt { font-size: 18px; font-weight: 700; color: var(--red); margin-top: 2px; }
+.gc-note { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+.merge-expand-mask {
+  position: absolute; inset: 0; z-index: 60; background: var(--mask);
+  display: flex; align-items: stretch; justify-content: center;
+}
+.merge-expand {
+  width: min(420px, 100%); margin: 40px 12px; background: var(--white);
+  border-radius: 10px; display: flex; flex-direction: column; max-height: 70%;
+}
+.merge-expand-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px; border-bottom: 0.5px solid var(--divider); font-weight: 600;
+}
+.merge-expand-bar button { border: 0; background: transparent; color: var(--green); min-height: 40px; }
+.merge-expand-body { flex: 1; overflow: auto; padding: 8px 0; }
+.merge-expand-item { padding: 10px 14px; border-bottom: 0.5px solid var(--divider-soft); }
+.me-name { font-size: 13px; color: var(--text-2); margin-bottom: 4px; }
+.me-content { font-size: 15px; color: var(--text); line-height: 1.45; word-break: break-word; }
+.me-time { margin-top: 4px; font-size: 11px; color: var(--text-3); }
+.pay-row.col { flex-direction: column; align-items: stretch; gap: 6px; }
+.pay-row.col textarea {
+  width: 100%; min-height: 72px; border: 1px solid var(--divider); border-radius: 6px;
+  padding: 8px; font-size: 14px; resize: vertical; background: var(--white); color: var(--text);
 }
 .notice-bar {
   display: flex;

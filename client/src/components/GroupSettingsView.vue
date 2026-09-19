@@ -51,19 +51,42 @@ async function loadAll() {
     } catch { /* ignore */ }
     try {
       const d = await api.groupMembers(gid);
-      members.value = d.members || [];
+      members.value = (d.members || []).map((m) => ({
+        ...m,
+        color: m.color || (m.isAI ? '#07c160' : '#4f6ef7'),
+        avatar: m.avatar || null,
+        emoji: m.emoji || (m.isAI ? '🤖' : null),
+      }));
     } catch { members.value = []; }
   }
-  // 回退: 用 socket 广播的成员
+  // 回退: socket 成员 + AI 联系人, 保证头像墙非空
   if (!members.value.length) {
     const seen = new Set();
     const list = [];
-    for (const a of props.members.aiMembers ?? []) {
-      const key = 'ai:' + a.nickname;
-      if (seen.has(key)) continue;
+    const push = (m) => {
+      const key = memberKey(m);
+      if (seen.has(key)) return;
       seen.add(key);
-      list.push({
-        personaKey: key,
+      list.push(m);
+    };
+    try {
+      const ai = await api.aiContacts().catch(() => ({ contacts: [] }));
+      for (const a of ai.contacts || []) {
+        push({
+          personaKey: 'ai:' + a.nickname,
+          nickname: a.nickname,
+          avatar: a.avatar,
+          emoji: a.avatarUrl ? null : (a.emoji || '🤖'),
+          color: '#07c160',
+          isAI: true,
+          personaId: a.personaId || a.id,
+          role: 'member',
+        });
+      }
+    } catch { /* ignore */ }
+    for (const a of props.members.aiMembers ?? []) {
+      push({
+        personaKey: 'ai:' + a.nickname,
         nickname: a.nickname,
         avatar: a.avatarUrl,
         emoji: a.avatarUrl ? null : a.avatarEmoji,
@@ -73,32 +96,17 @@ async function loadAll() {
         role: 'member',
       });
     }
-    for (const u of props.members.allUsers ?? []) {
-      const key = 'u' + u.id;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      list.push({
-        userId: u.id,
-        nickname: u.nickname,
-        avatar: u.avatar,
-        color: u.avatarColor,
-        online: u.online,
+    if (props.me) {
+      push({
+        userId: props.me.id,
+        nickname: props.me.nickname,
+        avatar: props.me.avatar,
+        color: props.me.avatarColor || '#4f6ef7',
         isAI: false,
-        role: 'member',
+        role: 'owner',
       });
     }
     members.value = list;
-  } else {
-    members.value = members.value.map((m) => {
-      if (m.isAI) {
-        return {
-          ...m,
-          color: '#07c160',
-          emoji: m.emoji || '🤖',
-        };
-      }
-      return { ...m, color: m.color || '#4f6ef7' };
-    });
   }
 
   try {
@@ -281,6 +289,7 @@ onMounted(loadAll);
             v-for="m in members"
             :key="memberKey(m)"
             class="member-cell"
+            :title="m.nickname"
             @click="openMember(m)"
           >
             <UserAvatar
@@ -288,10 +297,10 @@ onMounted(loadAll);
               :avatar="m.avatar"
               :emoji="m.emoji"
               :color="m.color || '#07c160'"
-              :size="56"
+              :size="64"
             />
           </div>
-          <div class="member-cell action" @click="showInvite = true">
+          <div class="member-cell action" @click="showInvite = true" title="添加成员">
             <div class="icon-btn plus">+</div>
           </div>
         </div>
@@ -314,15 +323,14 @@ onMounted(loadAll);
           <span class="cell-label">群公告</span>
           <span class="arrow">›</span>
         </div>
-        <div class="cell-row" @click="showInvite = true">
+        <div class="cell-row" @click="toast('备注（演示）')">
           <span class="cell-label">备注</span>
-          <span class="cell-value">{{ notice ? '已设置' : '' }}</span>
           <span class="arrow">›</span>
         </div>
       </section>
 
       <section class="card">
-        <div class="cell-row" @click="showInvite = true">
+        <div class="cell-row" @click="toast('查找聊天记录 · 请在聊天页搜索')">
           <span class="cell-label">查找聊天记录</span>
           <span class="arrow">›</span>
         </div>
@@ -473,24 +481,21 @@ onMounted(loadAll);
 .member-grid {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 14px 8px;
-  padding: 16px 12px 8px;
+  gap: 16px 10px;
+  padding: 0;
 }
 .member-cell {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
   cursor: pointer;
 }
-.member-name {
-  font-size: 11px;
-  color: var(--text-3, #888);
-  max-width: 56px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: center;
+.member-name { display: none; }
+.icon-btn.plus {
+  width: 58px; height: 58px; border-radius: 8px;
+  border: 1px dashed #c7c7cc; display: flex; align-items: center; justify-content: center;
+  font-size: 28px; color: #999; background: #fafafa;
 }
 .icon-btn {
   width: 52px;
@@ -537,7 +542,8 @@ onMounted(loadAll);
 .cell-row.indent .cell-label::before {
   content: '−'; position: absolute; left: -16px; color: var(--text-3);
 }
-.members-card { margin-top: 0; padding: 14px 12px 8px; }
+.members-card { margin-top: 0; padding: 16px 12px 10px; }
+.member-count { padding: 2px 4px 6px; font-size: 12px; color: var(--text-3); }
 .cell-value.qr-mini { display: flex; align-items: center; }
 .cell-value {
   font-size: 15px;

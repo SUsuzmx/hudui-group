@@ -1,9 +1,12 @@
 // 群聊种子数据: 默认主群 + 多个业务群。非默认群 AI 不主动插话。
 import { stmts } from './db.js';
+import { personas, personasForGroup } from './ai/personas.js';
+import { aiAvatarFile } from './ai/avatars.js';
+import { stmts as allStmts } from './db.js';
 
 export const DEFAULT_GROUP_KIND = 'main';
 
-const SEED_GROUPS = [
+export const SEED_GROUPS = [
   {
     kind: 'main',
     name: 'WeChat',
@@ -60,6 +63,54 @@ export function groupConvId(groupId) {
   return `grp_${groupId}`;
 }
 
+function enrichMember(m) {
+  const name = m.nickname;
+  if (m.isAI || m.personaKey) {
+    const p = personas.find((x) => x.name === name) || personas.find((x) => m.personaKey === `ai:${x.name}`);
+    return {
+      ...m,
+      nickname: p?.name || name,
+      avatar: aiAvatarFile(p?.name || name),
+      emoji: p?.emoji || m.emoji || '🤖',
+      isAI: true,
+      personaId: p?.id || (m.personaKey || '').replace(/^ai:/, ''),
+      color: '#07c160',
+    };
+  }
+  if (m.userId) {
+    const u = stmts.userById.get(Number(m.userId));
+    return {
+      ...m,
+      nickname: u?.nickname || name,
+      avatar: u?.avatar || null,
+      emoji: null,
+      color: u?.avatar_color || '#4f6ef7',
+      wxid: u?.wxid || null,
+      isAI: false,
+    };
+  }
+  // 纯昵称: 优先匹配 AI 人设/头像文件
+  const p = personas.find((x) => x.name === name);
+  if (p) {
+    return {
+      ...m,
+      avatar: aiAvatarFile(p.name),
+      emoji: p.emoji,
+      isAI: true,
+      personaId: p.id,
+      personaKey: m.personaKey || `ai:${p.name}`,
+      color: '#07c160',
+    };
+  }
+  return {
+    ...m,
+    avatar: aiAvatarFile(name) || null,
+    emoji: /^\p{Extended_Pictographic}$/u.test(String(name)) ? name : null,
+    color: '#07c160',
+    isAI: Boolean(m.isAI),
+  };
+}
+
 export function seedGroups() {
   const now = Date.now();
   const created = [];
@@ -79,6 +130,34 @@ export function seedGroups() {
         );
       }
     }
+    // 播种成员表, 保证详情页能展示头像
+    try {
+      const existing = stmts.listGroupMembers.all(row.id) || [];
+      if (!existing.length) {
+        const pool = personasForGroup(g.kind);
+        const names = new Set((g.avatars || []).map(String));
+        // 种子消息里的人名也进成员
+        for (const s of g.seed || []) {
+          if (s.from === 'ai' && s.name) names.add(s.name);
+        }
+        for (const p of pool) {
+          if (!names.size || names.has(p.name) || names.has(p.emoji)) {
+            stmts.insertGroupMember.run(row.id, null, `ai:${p.name}`, p.name, 'member', now);
+          }
+        }
+        // 若 names 里还有未覆盖的 emoji/昵称, 也写入
+        for (const n of names) {
+          const already = stmts.listGroupMembers.all(row.id).some((m) => m.nickname === n);
+          if (already) continue;
+          const p = personas.find((x) => x.name === n || x.emoji === n);
+          if (p) {
+            stmts.insertGroupMember.run(row.id, null, `ai:${p.name}`, p.name, 'member', now);
+          } else {
+            stmts.insertGroupMember.run(row.id, null, null, String(n).slice(0, 32), 'member', now);
+          }
+        }
+      }
+    } catch { /* ignore */ }
     created.push(row);
   }
   return created;
@@ -179,16 +258,26 @@ export function listGroupMembers(groupId) {
   const g = getGroup(gid);
   if (!g) return null;
   const rows = stmts.listGroupMembers.all(gid) || [];
-  if (rows.length) return rows.map(memberRowToApi);
-  // 兼容: 种子群/旧自建群无成员表时, 用头像墙 + 全局可见约定
-  const fallback = [];
+  const seen = new Set();
+  const out = [];
+  const push = (m) => {
+    const key = m.personaKey || (m.userId ? `u${m.userId}` : `n:${m.nickname}`);
+    if (seen.has(key) || seen.has(`n:${m.nickname}`)) return;
+    seen.add(key);
+    seen.add(`n:${m.nickname}`);
+    out.push(m);
+  };
+  if (rows.length) {
+    for (const r of rows) push(enrichMember(memberRowToApi(r)));
+    return out;
+  }
   try {
     const avatars = JSON.parse(g.avatars || '[]');
     for (const a of avatars) {
-      fallback.push({ userId: null, personaKey: null, nickname: String(a), role: 'member', isAI: false });
+      push(enrichMember({ userId: null, personaKey: null, nickname: String(a), role: 'member', isAI: false }));
     }
   } catch { /* ignore */ }
-  return fallback;
+  return out;
 }
 
 export function leaveGroup(groupId, userId) {

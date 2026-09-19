@@ -11,6 +11,7 @@ export function parseVoiceSeconds(content) {
 
 export function useVoicePlayer() {
   const playingKey = ref(null);
+  const voiceProgress = ref(0); // 0-1
 
   function stopVoice() {
     if (audio) {
@@ -19,6 +20,7 @@ export function useVoicePlayer() {
     }
     currentKey = null;
     playingKey.value = null;
+    voiceProgress.value = 0;
   }
 
   function playVoice(m) {
@@ -33,11 +35,16 @@ export function useVoicePlayer() {
     audio = el;
     currentKey = key;
     playingKey.value = key;
+    voiceProgress.value = 0;
     const done = () => {
       if (currentKey === key) stopVoice();
     };
     el.onended = done;
     el.onerror = done;
+    el.ontimeupdate = () => {
+      if (!el.duration || !Number.isFinite(el.duration)) return;
+      voiceProgress.value = Math.min(1, el.currentTime / el.duration);
+    };
     el.play().catch(done);
   }
 
@@ -45,5 +52,5 @@ export function useVoicePlayer() {
     stopVoice();
   }
 
-  return { playingKey, playVoice, stopVoice, disposeVoice, parseVoiceSeconds };
+  return { playingKey, voiceProgress, playVoice, stopVoice, disposeVoice, parseVoiceSeconds };
 }
