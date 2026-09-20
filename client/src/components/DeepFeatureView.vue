@@ -20,7 +20,7 @@ const titleMap = {
   statusHome: '状态',
   groupList: '群聊',
   cardDetail: '卡包详情',
-  stickerSend: '', // handled in chat
+  stickerDetail: '表情',
 };
 const title = ref(titleMap[props.type] || '详情');
 
@@ -75,8 +75,63 @@ const groups = ref([]);
 const card = ref(props.payload.card || null);
 const helloText = ref('你好，可以交个朋友吗？');
 const helloSent = ref({});
+const balance = ref(0);
+const recentApps = ref([]);
+const stickerDetail = ref(props.payload.sticker || null);
+const favStickers = ref([]);
+const STICKER_KEY = 'hudui_stickers';
+const STICKER_POOL = ['😀','😂','🥰','😎','🤔','😴','🎉','🔥','👍','🙏','💪','🌈','🍀','🍜','🎮','📸','❤️','⭐','😇','🤩','😢','😤','🤝','✌️','💯','🥳'];
+const serviceGroups = [
+  {
+    title: '金融理财',
+    items: [
+      { key: 'credit', icon: '💳', label: '信用卡还款' },
+      { key: 'fund', icon: '📈', label: '理财通' },
+      { key: 'insurance', icon: '🛡️', label: '保险服务' },
+    ],
+  },
+  {
+    title: '生活服务',
+    items: [
+      { key: 'mobile', icon: '📱', label: '手机充值' },
+      { key: 'bills', icon: '✅', label: '生活缴费' },
+      { key: 'qcoin', icon: '🐧', label: 'Q币充值' },
+      { key: 'city', icon: '🏙️', label: '城市服务' },
+      { key: 'charity', icon: '🌺', label: '腾讯公益' },
+      { key: 'health', icon: '➕', label: '医疗健康' },
+    ],
+  },
+  {
+    title: '交通出行',
+    items: [
+      { key: 'travel', icon: '🧭', label: '出行服务' },
+      { key: 'train', icon: '🚄', label: '火车票机票' },
+      { key: 'didi', icon: '🚕', label: '滴滴出行' },
+      { key: 'hotel', icon: '🏨', label: '酒店民宿' },
+    ],
+  },
+  {
+    title: '购物消费',
+    items: [
+      { key: 'brand', icon: '🛍️', label: '品牌发现' },
+      { key: 'jd', icon: '🐶', label: '京东购物' },
+      { key: 'meituan', icon: '🐰', label: '美团外卖' },
+      { key: 'movie', icon: '🎬', label: '电影演出玩' },
+    ],
+  },
+];
 
 async function load() {
+  try { favStickers.value = JSON.parse(localStorage.getItem(STICKER_KEY) || '[]'); } catch { favStickers.value = []; }
+  if (props.type === 'servicesHome' || props.type === 'miniappHome' || props.type === 'stickerDetail') {
+    if (props.type === 'servicesHome') {
+      try {
+        const w = await api.wallet();
+        balance.value = w.balance ?? 0;
+      } catch { balance.value = 0; }
+    }
+    if (props.type === 'miniappHome') recentApps.value = miniapps.value.slice(0, 3);
+  }
   if (props.type === 'groupList') {
     try {
       const d = await api.chats();
@@ -93,11 +148,31 @@ async function load() {
 onMounted(load);
 
 function onService(s) {
-  if (s.key === 'wallet') emit('back', { then: 'wallet' });
-  else if (s.key === 'mobile' || s.key === 'bills' || s.key === 'traffic') {
-    toast(`${s.label}：请到「我 → 服务」演示支付`);
-    emit('back', { then: 'services' });
-  } else toast(`${s.label} · 演示入口`);
+  if (s.key === 'wallet' || s.key === 'pay') {
+    emit('back', { then: 'wallet' });
+    return;
+  }
+  if (['mobile', 'bills', 'traffic', 'qcoin', 'travel'].includes(s.key)) {
+    emit('back', { then: 'wallet' });
+    toast(`${s.label}：可从零钱演示支付`);
+    return;
+  }
+  toast(`${s.label} · 演示入口`);
+}
+
+function openMini(m) {
+  recentApps.value = [m, ...recentApps.value.filter((x) => x.id !== m.id)].slice(0, 6);
+  toast(`打开小程序：${m.name}`);
+}
+
+function toggleFavSticker(e) {
+  if (!e) return;
+  try { favStickers.value = JSON.parse(localStorage.getItem(STICKER_KEY) || '[]'); } catch { favStickers.value = []; }
+  const set = new Set(favStickers.value);
+  if (set.has(e)) set.delete(e); else set.add(e);
+  favStickers.value = [...set];
+  localStorage.setItem(STICKER_KEY, JSON.stringify(favStickers.value));
+  toast(set.has(e) ? '已添加到表情' : '已移出收藏');
 }
 
 async function sendHello(u) {
@@ -183,20 +258,76 @@ function openGroup(g) {
       </div>
 
       <!-- 小程序 -->
-      <div v-else-if="type === 'miniappHome'" class="mini-grid">
-        <button v-for="m in miniapps" :key="m.id" class="mini-cell" type="button" @click="toast(`打开小程序：${m.name}`)">
-          <span class="mini-icon">{{ m.icon }}</span>
-          <span class="mini-name">{{ m.name }}</span>
-          <span class="mini-desc">{{ m.desc }}</span>
-        </button>
+      <div v-else-if="type === 'miniappHome'" class="mini-page">
+        <div class="mini-head">小程序</div>
+        <div class="mini-section-title">最近使用</div>
+        <div class="mini-grid">
+          <button v-for="m in (recentApps.length ? recentApps : miniapps.slice(0,3))" :key="'r'+m.id" class="mini-cell" type="button" @click="openMini(m)">
+            <span class="mini-icon">{{ m.icon }}</span>
+            <span class="mini-name">{{ m.name }}</span>
+          </button>
+        </div>
+        <div class="mini-section-title">我的小程序</div>
+        <div class="mini-grid">
+          <button v-for="m in miniapps" :key="m.id" class="mini-cell" type="button" @click="openMini(m)">
+            <span class="mini-icon">{{ m.icon }}</span>
+            <span class="mini-name">{{ m.name }}</span>
+            <span class="mini-desc">{{ m.desc }}</span>
+          </button>
+        </div>
       </div>
 
-      <!-- 服务九宫格 -->
-      <div v-else-if="type === 'servicesHome'" class="svc-grid">
-        <button v-for="s in services" :key="s.key" class="svc-cell" type="button" @click="onService(s)">
-          <span class="svc-icon">{{ s.icon }}</span>
-          <span>{{ s.label }}</span>
-        </button>
+      <!-- 服务（对齐微信） -->
+      <div v-else-if="type === 'servicesHome'" class="svc-page">
+        <div class="svc-hero">
+          <button class="svc-hero-item" type="button" @click="onService({ key: 'pay', label: '收付款' })">
+            <div class="svc-hero-ico">
+              <svg viewBox="0 0 48 48" width="40" height="40" fill="none" stroke="#fff" stroke-width="2.2"><path d="M10 18V14a4 4 0 014-4h4M38 18V14a4 4 0 00-4-4h-4M10 30v4a4 4 0 004 4h4M38 30v4a4 4 0 01-4 4h-4"/><path d="M16 24l5 5 11-12"/></svg>
+            </div>
+            <div class="svc-hero-label">收付款</div>
+          </button>
+          <button class="svc-hero-item" type="button" @click="onService({ key: 'wallet', label: '钱包' })">
+            <div class="svc-hero-ico">
+              <svg viewBox="0 0 48 48" width="40" height="40" fill="none" stroke="#fff" stroke-width="2.2"><rect x="8" y="14" width="32" height="22" rx="3"/><path d="M8 20h32"/><circle cx="32" cy="28" r="2.2" fill="#fff" stroke="none"/></svg>
+            </div>
+            <div class="svc-hero-label">钱包</div>
+            <div class="svc-hero-sub">¥{{ Number(balance || 0).toFixed(2) }}</div>
+          </button>
+        </div>
+        <section v-for="g in serviceGroups" :key="g.title" class="svc-card">
+          <div class="svc-card-title">{{ g.title }}</div>
+          <div class="svc-grid">
+            <button v-for="s in g.items" :key="s.key" class="svc-cell" type="button" @click="onService({ key: s.key, label: s.label })">
+              <span class="svc-icon">{{ s.icon }}</span>
+              <span>{{ s.label }}</span>
+            </button>
+          </div>
+        </section>
+      </div>
+
+      <!-- 表情详情 -->
+      <div v-else-if="type === 'stickerDetail'" class="sticker-page">
+        <div class="sticker-hero">
+          <div class="sticker-preview">{{ stickerDetail?.emoji || favStickers[0] || '😊' }}</div>
+          <div class="sticker-name">{{ stickerDetail?.name || '我的收藏表情' }}</div>
+          <div class="sticker-desc">添加后可在聊天表情面板使用，与内置表情一致发送。</div>
+        </div>
+        <div class="sticker-actions">
+          <button type="button" class="sticker-btn primary" @click="toggleFavSticker(stickerDetail?.emoji || STICKER_POOL[0])">
+            {{ favStickers.includes(stickerDetail?.emoji || STICKER_POOL[0]) ? '移出收藏' : '添加到表情' }}
+          </button>
+        </div>
+        <div class="mini-section-title">全部表情</div>
+        <div class="sticker-grid">
+          <button
+            v-for="e in STICKER_POOL"
+            :key="e"
+            type="button"
+            class="sticker-cell"
+            :class="{ on: favStickers.includes(e) }"
+            @click="stickerDetail = { emoji: e, name: e }; toggleFavSticker(e)"
+          >{{ e }}</button>
+        </div>
       </div>
 
       <!-- 状态主页 -->
@@ -264,7 +395,87 @@ function openGroup(g) {
 .nav-back { position: absolute; left: 0; top: 0; bottom: 0; margin: auto 0; }
 .nav-right { width: 44px; }
 .nav-title { font-size: 17px; font-weight: 600; color: var(--text); }
-.content { flex: 1; min-height: 0; padding-bottom: 24px; }
+.content { flex: 1; min-height: 0; padding-bottom: 24px; background: var(--bg); }
+
+/* 服务页 */
+.svc-page { background: var(--bg); min-height: 100%; padding-bottom: 24px; }
+.svc-hero {
+  margin: 10px 12px 0; border-radius: 12px; padding: 28px 16px 24px;
+  background: linear-gradient(135deg, #55b685 0%, #3ea56f 55%, #2f9460 100%);
+  display: grid; grid-template-columns: 1fr 1fr; color: #fff;
+}
+.svc-hero-item {
+  border: 0; background: transparent; color: #fff;
+  display: flex; flex-direction: column; align-items: center; gap: 8px; min-height: 96px;
+}
+.svc-hero-ico { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; }
+.svc-hero-label { font-size: 18px; font-weight: 600; }
+.svc-hero-sub { font-size: 16px; opacity: 0.92; }
+.svc-card {
+  margin: 12px 12px 0; background: var(--white); border-radius: 12px; overflow: hidden;
+  padding: 8px 0 14px;
+}
+.svc-card-title {
+  padding: 10px 16px 6px; font-size: 14px; color: var(--text-2);
+}
+.svc-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px 6px; padding: 10px 8px 4px;
+}
+.svc-grid.three { grid-template-columns: repeat(3, 1fr); }
+.svc-cell {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  border: 0; background: transparent; font-size: 12px; color: var(--text); min-height: 72px;
+}
+.svc-icon {
+  width: 46px; height: 46px; border-radius: 12px; background: var(--divider-soft);
+  display: flex; align-items: center; justify-content: center; font-size: 22px;
+}
+
+/* 小程序 */
+.mini-page { background: var(--bg); min-height: 100%; padding-bottom: 24px; }
+.mini-head { padding: 14px 16px 4px; font-size: 20px; font-weight: 600; color: var(--text); }
+.mini-section-title { padding: 12px 16px 4px; font-size: 13px; color: var(--text-3); }
+.mini-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 8px 12px 4px;
+}
+.mini-cell {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 16px 8px; background: var(--white); border: 0; border-radius: 12px; min-height: 104px;
+}
+.mini-icon {
+  width: 48px; height: 48px; border-radius: 12px; background: var(--divider-soft);
+  display: flex; align-items: center; justify-content: center; font-size: 24px;
+}
+.mini-name { font-size: 13px; color: var(--text); }
+.mini-desc { font-size: 11px; color: var(--text-3); }
+
+/* 表情 */
+.sticker-page { background: var(--bg); min-height: 100%; padding-bottom: 24px; }
+.sticker-hero {
+  background: var(--white); margin-top: 0; padding: 28px 16px 20px; text-align: center;
+}
+.sticker-preview {
+  width: 96px; height: 96px; margin: 0 auto 12px; border-radius: 20px;
+  background: var(--divider-soft); display: flex; align-items: center; justify-content: center;
+  font-size: 48px;
+}
+.sticker-name { font-size: 18px; font-weight: 600; color: var(--text); }
+.sticker-desc { margin-top: 8px; font-size: 13px; color: var(--text-3); line-height: 1.5; }
+.sticker-actions { background: var(--white); padding: 0 16px 16px; }
+.sticker-btn {
+  width: 100%; min-height: 44px; border: 0; border-radius: 8px;
+  background: var(--divider-soft); color: var(--text); font-size: 15px;
+}
+.sticker-btn.primary { background: #07c160; color: #fff; }
+.sticker-grid {
+  display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; padding: 8px 12px 12px;
+}
+.sticker-cell {
+  aspect-ratio: 1; border: 2px solid transparent; border-radius: 12px;
+  background: var(--white); font-size: 26px; min-height: 48px;
+  display: flex; align-items: center; justify-content: center;
+}
+.sticker-cell.on { border-color: #07c160; background: rgba(7,193,96,0.08); }
 .card { background: var(--white); margin-top: 10px; }
 .row {
   width: 100%; display: flex; align-items: center; gap: 12px; padding: 12px 16px;
@@ -310,14 +521,53 @@ function openGroup(g) {
 }
 .hello-btn:disabled { background: var(--divider-soft); color: var(--text-3); }
 
-.mini-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 16px 12px; }
+.mini-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 8px 12px 16px; }
 .mini-cell {
   display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 16px 8px;
-  background: var(--white); border: 0; border-radius: 10px; min-height: 100px;
+  background: var(--white); border: 0; border-radius: 10px; min-height: 88px;
 }
 .mini-icon { font-size: 28px; }
 .mini-name { font-size: 14px; color: var(--text); }
 .mini-desc { font-size: 11px; color: var(--text-3); }
+.svc-page { padding-bottom: 24px; }
+.svc-hero {
+  display: flex; background: linear-gradient(135deg, #3ecf6e, #07c160);
+  margin: 0; padding: 28px 16px; gap: 24px;
+}
+.svc-hero-item {
+  flex: 1; border: 0; background: transparent; color: #fff;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+}
+.svc-hero-ico {
+  width: 48px; height: 48px; border-radius: 10px; background: rgba(255,255,255,0.2);
+  display: flex; align-items: center; justify-content: center; font-size: 22px;
+}
+.svc-hero-label { font-size: 15px; font-weight: 500; }
+.svc-hero-sub { font-size: 13px; opacity: 0.9; margin-top: -2px; }
+.svc-card { background: var(--white); margin-top: 10px; padding: 4px 0 8px; }
+.svc-card-title { padding: 12px 16px 4px; font-size: 14px; color: var(--text-2); }
+.mini-page { padding-bottom: 24px; }
+.mini-section-title { padding: 14px 16px 8px; font-size: 13px; color: var(--text-3); background: var(--bg); }
+.sticker-detail { padding: 24px 16px; text-align: center; }
+.sticker-preview {
+  font-size: 72px; line-height: 1; margin: 12px auto 16px;
+  width: 120px; height: 120px; border-radius: 24px; background: var(--white);
+  display: flex; align-items: center; justify-content: center;
+}
+.sticker-name { font-size: 18px; font-weight: 600; color: var(--text); }
+.sticker-desc { margin-top: 8px; font-size: 13px; color: var(--text-3); line-height: 1.5; }
+.sticker-actions { display: flex; gap: 10px; margin: 20px 0 8px; justify-content: center; flex-wrap: wrap; }
+.sticker-btn {
+  min-height: 42px; padding: 0 18px; border-radius: 8px; border: 1px solid var(--divider);
+  background: var(--white); color: var(--text); font-size: 14px;
+}
+.sticker-btn.primary { background: #07c160; border-color: #07c160; color: #fff; }
+.sticker-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; padding: 8px 8px 20px; }
+.sticker-cell {
+  aspect-ratio: 1; border: 2px solid transparent; border-radius: 10px;
+  background: var(--white); font-size: 24px; min-height: 44px;
+}
+.sticker-cell.on { border-color: #07c160; background: rgba(7,193,96,0.1); }
 
 .svc-grid {
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px 8px;

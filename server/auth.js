@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { stmts, ROOT } from './db.js';
+import { stmts, ROOT, db } from './db.js';
 
 const SESSION_DAYS = 30;
 const AVATAR_COLORS = [
@@ -78,6 +78,8 @@ export function publicUser(u) {
     wxid: u.wxid ?? null,
     region: u.region ?? null,
     signature: u.signature ?? null,
+    gender: u.gender ?? '',
+    momentsCover: u.moments_cover ?? null,
   };
 }
 
@@ -150,7 +152,7 @@ export function verifyToken(token) {
   };
 }
 
-export function updateProfile(userId, { nickname, avatar, wxid, region, signature }) {
+export function updateProfile(userId, { nickname, avatar, wxid, region, signature, gender, momentsCover }) {
   const user = stmts.userById.get(userId);
   if (!user) return { error: '用户不存在' };
 
@@ -169,6 +171,8 @@ export function updateProfile(userId, { nickname, avatar, wxid, region, signatur
       nextAvatar = null;
     } else if (listAvatars().some((a) => a.file === avatar)) {
       nextAvatar = avatar;
+    } else if (String(avatar).startsWith('/media/')) {
+      nextAvatar = String(avatar).slice(0, 200);
     } else {
       return { error: '头像不存在' };
     }
@@ -183,8 +187,18 @@ export function updateProfile(userId, { nickname, avatar, wxid, region, signatur
 
   const nextRegion = region !== undefined && region !== null ? String(region).trim().slice(0, 30) : (user.region ?? '');
   const nextSignature = signature !== undefined && signature !== null ? String(signature).trim().slice(0, 60) : (user.signature ?? '');
+  const nextGender = gender !== undefined && gender !== null
+    ? (['male', 'female', ''].includes(String(gender)) ? String(gender) : user.gender ?? '')
+    : (user.gender ?? '');
+  const nextCover = momentsCover !== undefined && momentsCover !== null
+    ? String(momentsCover).trim().slice(0, 300)
+    : (user.moments_cover ?? null);
 
   stmts.setUserProfile.run(nextNickname, nextAvatar, nextWxid, nextRegion, nextSignature, userId);
+  try {
+    db.prepare('UPDATE users SET gender = ?, moments_cover = ? WHERE id = ?')
+      .run(nextGender || '', nextCover, Number(userId));
+  } catch { /* ignore */ }
   const updated = stmts.userById.get(userId);
   return { user: publicUser(updated) };
 }
@@ -198,5 +212,7 @@ export function publicProfile(u) {
     wxid: u.wxid ?? null,
     region: u.region ?? null,
     signature: u.signature ?? null,
+    gender: u.gender ?? '',
+    momentsCover: u.moments_cover ?? null,
   };
 }

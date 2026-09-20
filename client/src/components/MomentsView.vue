@@ -3,6 +3,7 @@ import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
 import { io } from 'socket.io-client';
 import { getToken, api } from '../api.js';
 import UserAvatar from './UserAvatar.vue';
+import { toast } from '../toast.js';
 
 const props = defineProps({
   me: { type: Object, required: true },
@@ -54,6 +55,31 @@ function scheduleLiveRefresh() {
 }
 
 const title = computed(() => (props.mode === 'mine' ? '我的朋友圈' : '朋友圈'));
+const coverUrl = ref(props.me?.momentsCover || '');
+const coverInput = ref(null);
+
+async function replaceCover(file) {
+  if (!file) return;
+  try {
+    const { url } = await api.uploadMomentImage(file);
+    coverUrl.value = url;
+    const { user } = await api.updateMe({ momentsCover: url });
+    toastCoverOk();
+    console.log('cover saved', user?.momentsCover);
+  } catch (e) {
+    alert(e.message || '更换封面失败');
+  }
+}
+
+function toastCoverOk() {
+  toast('朋友圈封面已更换');
+}
+
+function onCoverPick(e) {
+  const file = e.target.files?.[0];
+  e.target.value = '';
+  replaceCover(file);
+}
 
 function likedByMe(m) {
   return Boolean(m.likedByMe ?? (m.likes || []).some((l) => l.userId === props.me?.id));
@@ -317,12 +343,25 @@ onBeforeUnmount(() => {
     </header>
 
     <main class="content" @scroll="onScroll">
-      <div class="cover">
-        <div class="cover-bg"></div>
+      <div
+        class="moments-cover"
+        :style="coverUrl ? { backgroundImage: `url(${coverUrl})` } : undefined"
+      >
+        <div class="cover-mask"></div>
         <div class="cover-user">
-          <span class="cover-name">{{ me.nickname }}</span>
-          <UserAvatar :name="me.nickname" :avatar="me.avatar" :color="me.avatarColor" :size="64" />
+          <div class="cover-name">{{ me?.nickname || '我' }}</div>
+          <UserAvatar
+            class="cover-avatar"
+            :name="me?.nickname"
+            :avatar="me?.avatar"
+            :color="me?.avatarColor"
+            :size="64"
+          />
         </div>
+        <button class="cover-cam" type="button" aria-label="更换封面" @click="coverInput?.click()">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#fff" stroke-width="1.6"><path d="M4 8h3l1.5-2h7L17 8h3v11H4V8z"/><circle cx="12" cy="13" r="3.2"/></svg>
+        </button>
+        <input ref="coverInput" type="file" accept="image/*" hidden @change="onCoverPick" />
       </div>
 
       <div v-if="moments.length === 0 && !loading" class="empty">还没有动态, 发一条吧</div>
@@ -658,6 +697,20 @@ onBeforeUnmount(() => {
   padding: 48px 0;
 }
 
+.moments-cover {
+  position: relative; height: 220px; background: linear-gradient(160deg, #3d4a5c, #1a222d);
+  background-size: cover; background-position: center; margin-bottom: 0;
+}
+.cover-mask { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,0.05), rgba(0,0,0,0.35)); }
+.cover-user {
+  position: absolute; right: 16px; bottom: 16px; display: flex; align-items: flex-end; gap: 10px;
+}
+.cover-name { color: #fff; font-size: 18px; font-weight: 600; text-shadow: 0 1px 4px rgba(0,0,0,0.35); padding-bottom: 8px; }
+.cover-avatar :deep(.avatar) { box-shadow: 0 4px 12px rgba(0,0,0,0.25); border: 2px solid rgba(255,255,255,0.85); }
+.cover-cam {
+  position: absolute; right: 16px; top: 16px; width: 40px; height: 40px; border-radius: 50%;
+  border: 0; background: rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center;
+}
 .moment {
   display: flex;
   gap: 12px;

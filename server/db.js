@@ -177,6 +177,8 @@ try { db.exec('ALTER TABLE users ADD COLUMN avatar TEXT'); } catch { /* 列已�
 try { db.exec('ALTER TABLE users ADD COLUMN wxid TEXT'); } catch { /* 列已存在 */ }
 try { db.exec('ALTER TABLE users ADD COLUMN region TEXT'); } catch { /* 列已存在 */ }
 try { db.exec('ALTER TABLE users ADD COLUMN signature TEXT'); } catch { /* 列已存在 */ }
+try { db.exec("ALTER TABLE users ADD COLUMN moments_cover TEXT"); } catch { /* 列已存在 */ }
+try { db.exec("ALTER TABLE users ADD COLUMN gender TEXT DEFAULT ''"); } catch { /* 列已存在 */ }
 try { db.exec('ALTER TABLE messages ADD COLUMN media_type TEXT'); } catch { /* 列已存在 */ }
 try { db.exec('ALTER TABLE messages ADD COLUMN media_url TEXT'); } catch { /* 列已存在 */ }
 try { db.exec('ALTER TABLE messages ADD COLUMN conversation_id TEXT'); } catch { /* 列已存在 */ }

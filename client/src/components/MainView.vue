@@ -401,6 +401,8 @@ function openMeCell(s) {
     emit('open-view', { type: 'feature', feature: 'cards', title: '小店与卡包' });
   } else if (s.key === 'statusHome') {
     emit('open-view', { type: 'deep-feature', feature: 'statusHome', title: '状态' });
+  } else if (s.key === 'stickers') {
+    emit('open-view', { type: 'deep-feature', feature: 'stickerDetail', title: '表情' });
   } else if (s.key === 'works' || s.key === 'album') {
     emit('open-view', { type: 'feature', feature: 'album', title: '作品' });
   } else if (['favorites', 'tags', 'stickers', 'scan'].includes(s.key)) {
@@ -810,7 +812,7 @@ function doChatAction(kind) {
             <div class="profile-wxid">微信号：{{ me?.wxid || '未设置' }}</div>
             <div class="profile-status">
               <span class="status-chip" @click.stop="emit('open-view', { type: 'deep-feature', feature: 'statusHome', title: '状态' })">+ 状态</span>
-              <span class="status-refresh">↻</span>
+              <span class="status-refresh" title="编辑资料" @click.stop="openEditProfile">↻</span>
             </div>
           </div>
           <span class="qr-entry" @click.stop="openQr"><WxIcons name="qr" :size="22" /></span>
