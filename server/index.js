@@ -5,7 +5,7 @@ import http from 'node:http';
 import express from 'express';
 import { Server } from 'socket.io';
 import { ROOT, stmts, db } from './db.js';
-import { register, login, verifyToken, publicUser, listAvatars, updateProfile, IMG_DIR, loginRateLimited, registerRateLimited } from './auth.js';
+import { register, login, verifyToken, publicUser, listAvatars, updateProfile, IMG_DIR, loginRateLimited, registerRateLimited, publicProfile, parseUserStatus } from './auth.js';
 import { initChat } from './chat.js';
 import { createEngine } from './ai/engine.js';
 import { isAiEnabled } from './ai/provider.js';
@@ -13,7 +13,8 @@ import { aiAvatarFile } from './ai/avatars.js';
 import { personas } from './ai/personas.js';
 import { createFriendsRouter } from './friends.js';
 import { createMomentsRouter } from './moments.js';
-import { createMetaRouter } from './meta.js';
+import { createMediaApi } from './media-api.js';
+import { createMetaRouter, getUserSettings, setUserSettings } from './meta.js';
 import { seedGroups, listGroups, getGroup, groupConvId, DEFAULT_GROUP_KIND, setGroupNotice, createGroup, listGroupMembers, addGroupMembers, leaveGroup, removeGroupMember, renameGroup } from './groups.js';
 import { canAccessConversation } from './acl.js';
 import { mediaFromBodyJson, mediaFromMultipart, mediaFromRaw, normalizeKind } from './upload.js';
@@ -373,6 +374,7 @@ app.get('/api/users/:id', (req, res) => {
       signature: target.signature,
       gender: target.gender ?? '',
       momentsCover: target.moments_cover ?? null,
+      status: parseUserStatus(target.status_json),
       isFriend: Boolean(fr),
       remark: fr?.remark || null,
       blacklisted: Boolean(fr?.blacklisted || peerFr?.blacklisted),
@@ -381,8 +383,23 @@ app.get('/api/users/:id', (req, res) => {
       friendSince: fr?.created_at || null,
       tags,
       commonGroupCount,
+      status: target.signature || '',
     },
   });
+});
+
+// 账号设置（隐私 / 通用）— 服务端持久化
+app.get('/api/settings', (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+  res.json({ settings: getUserSettings(user.id) });
+});
+app.put('/api/settings', (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+  const body = req.body?.settings || req.body || {};
+  const settings = setUserSettings(user.id, body);
+  res.json({ ok: true, settings });
 });
 
 // 好友 + 会话元数据
@@ -444,6 +461,19 @@ const momentsApi = createMomentsRouter({
 app.get('/api/moments', momentsApi.requireAuth, momentsApi.list);
 app.get('/api/moments/mine', momentsApi.requireAuth, momentsApi.mine);
 app.get('/api/moments/user/:userId', momentsApi.requireAuth, momentsApi.userMoments);
+
+// 发现页媒体: 听一听 / 看一看
+const mediaApi = createMediaApi();
+function mediaAuth(req, res, next) {
+  const user = verifyToken(req.get('Authorization')?.replace(/^Bearer /, ''));
+  if (!user) return res.status(401).json({ error: '未登录' });
+  req.user = user;
+  next();
+}
+app.get('/api/music/list', mediaAuth, (req, res) => mediaApi.musicList(req, res));
+app.get('/api/music/stream/:source/:id', mediaAuth, (req, res) => mediaApi.musicStreamInfo(req, res));
+app.get('/api/music/proxy', mediaAuth, (req, res) => mediaApi.musicProxy(req, res));
+app.get('/api/videos/look', mediaAuth, (req, res) => mediaApi.lookFeed(req, res));
 app.post('/api/moments', momentsApi.requireAuth, momentsApi.create);
 app.delete('/api/moments/:id', momentsApi.requireAuth, momentsApi.remove);
 app.post('/api/moments/like', momentsApi.requireAuth, momentsApi.like);

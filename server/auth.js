@@ -70,6 +70,27 @@ export function registerRateLimited(ip) {
   return rateLimited(`register:${ip}`, REGISTER_RATE.limit, REGISTER_RATE.windowMs);
 }
 
+export function parseUserStatus(raw) {
+  if (!raw) return null;
+  try {
+    const o = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!o || typeof o !== 'object') return null;
+    return {
+      key: o.key || 'custom',
+      label: o.label || o.text || '',
+      text: o.text || o.label || '',
+      icon: o.icon || 'smile',
+      topic: o.topic || '',
+      location: o.location || '',
+      visibility: o.visibility === 'friends' || o.visibility === 'private' ? o.visibility : 'public',
+      bgUrl: o.bgUrl || null,
+      bgType: o.bgType === 'video' ? 'video' : (o.bgUrl ? 'image' : null),
+      at: o.at || null,
+      expiresInHours: o.expiresInHours || 24,
+    };
+  } catch { return null; }
+}
+
 export function publicUser(u) {
   return {
     id: u.id,
@@ -81,6 +102,7 @@ export function publicUser(u) {
     signature: u.signature ?? null,
     gender: u.gender ?? '',
     momentsCover: u.moments_cover ?? null,
+    status: parseUserStatus(u.status_json),
   };
 }
 
@@ -155,10 +177,11 @@ export function verifyToken(token) {
     signature: row.signature,
     gender: row.gender ?? '',
     momentsCover: row.moments_cover ?? null,
+    status: parseUserStatus(row.status_json),
   };
 }
 
-export function updateProfile(userId, { nickname, avatar, wxid, region, signature, gender, momentsCover }) {
+export function updateProfile(userId, { nickname, avatar, wxid, region, signature, gender, momentsCover, status }) {
   const user = stmts.userById.get(userId);
   if (!user) return { error: '用户不存在' };
 
@@ -207,6 +230,21 @@ export function updateProfile(userId, { nickname, avatar, wxid, region, signatur
     db.prepare('UPDATE users SET gender = ?, moments_cover = ? WHERE id = ?')
       .run(nextGender || '', nextCover, Number(userId));
   } catch { /* ignore */ }
+  // 状态（含背景图/视频、位置、可见性）
+  if (status !== undefined) {
+    try {
+      if (status === null) {
+        db.prepare('UPDATE users SET status_json = NULL WHERE id = ?').run(Number(userId));
+      } else {
+        const clean = parseUserStatus(status) || parseUserStatus({ ...status, at: Date.now() });
+        if (clean) {
+          clean.at = Date.now();
+          db.prepare('UPDATE users SET status_json = ? WHERE id = ?')
+            .run(JSON.stringify(clean), Number(userId));
+        }
+      }
+    } catch { /* ignore */ }
+  }
   const updated = stmts.userById.get(userId);
   return { user: publicUser(updated) };
 }
@@ -222,5 +260,6 @@ export function publicProfile(u) {
     signature: u.signature ?? null,
     gender: u.gender ?? '',
     momentsCover: u.moments_cover ?? null,
+    status: parseUserStatus(u.status_json),
   };
 }

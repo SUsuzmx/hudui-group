@@ -12,7 +12,7 @@ const props = defineProps({
   callId: { type: String, default: '' },
   incoming: { type: Object, default: null },
 });
-const emit = defineEmits(['end']);
+const emit = defineEmits(['end', 'minimize']);
 
 const RTC_CONFIG = {
   iceServers: [
@@ -441,6 +441,13 @@ function hangup() {
   finish({ hungup: true, skipNotify: true });
 }
 
+function minimizeCall() {
+  // 不挂断，仅缩小到浮窗（组件保持挂载由 App 控制）
+  emit('minimize');
+}
+
+defineExpose({ hangup, rejectCall, minimizeCall, seconds });
+
 function toggleMute() {
   muted.value = !muted.value;
   localStream?.getAudioTracks?.().forEach((t) => { t.enabled = !muted.value; });
@@ -566,24 +573,29 @@ onBeforeUnmount(() => {
           : undefined,
       }"
     ></div>
-    <div class="call-float-btn" aria-hidden="true">
+    <button class="call-float-btn" type="button" aria-label="最小化通话" @click="minimizeCall">
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#fff" stroke-width="1.6">
         <rect x="4" y="7" width="10" height="8" rx="1.5"/>
         <path d="M14 10l5-2.5v9L14 14"/>
       </svg>
-    </div>
+    </button>
 
     <div class="call-main">
       <template v-if="!connected || !isVideo()">
-        <UserAvatar
-          class="call-avatar"
-          :name="target.nickname || incoming?.from?.nickname"
-          :avatar="target.avatar || incoming?.from?.avatar"
-          :emoji="target.emoji"
-          :color="target.color || incoming?.from?.avatarColor || '#07c160'"
-          :size="84"
-        />
+        <div class="incoming-ring" :class="{ active: role === 'callee' && !connected && !callFailed }">
+          <UserAvatar
+            class="call-avatar"
+            :name="target.nickname || incoming?.from?.nickname"
+            :avatar="target.avatar || incoming?.from?.avatar"
+            :emoji="target.emoji"
+            :color="target.color || incoming?.from?.avatarColor || '#07c160'"
+            :size="84"
+          />
+        </div>
         <div class="call-name">{{ target.nickname || incoming?.from?.nickname || '好友' }}</div>
+        <div v-if="role === 'callee' && !connected && !callFailed" class="call-type-line">
+          {{ mode === 'voice' ? '邀请你进行语音通话' : '邀请你进行视频通话' }}
+        </div>
       </template>
       <div class="call-status" :class="{ fail: callFailed }">
         <template v-if="callFailed">{{ failedTip || '通话失败' }}</template>
@@ -591,8 +603,14 @@ onBeforeUnmount(() => {
         <template v-else>{{ statusText }}</template>
       </div>
       <div v-if="role === 'callee' && canAccept && !callFailed && !connected" class="incoming-actions">
-        <button class="inc-btn reject" type="button" @click="rejectCall">拒绝</button>
-        <button class="inc-btn accept" type="button" @click="acceptCall">接听</button>
+        <button class="inc-btn reject" type="button" @click="rejectCall">
+          <span class="inc-ico">✕</span>
+          <span>拒绝</span>
+        </button>
+        <button class="inc-btn accept" type="button" @click="acceptCall">
+          <span class="inc-ico">✓</span>
+          <span>接听</span>
+        </button>
       </div>
     </div>
 
@@ -645,8 +663,34 @@ onBeforeUnmount(() => {
 .call-page.connected .call-bg { opacity: 0.25; }
 .call-float-btn {
   position: absolute; left: 16px; top: 18px; z-index: 5;
-  width: 40px; height: 40px; border-radius: 10px;
+  width: 40px; height: 40px; border-radius: 10px; border: 0;
   background: rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}
+.call-float-btn:active { background: rgba(0,0,0,0.5); }
+.incoming-ring {
+  position: relative;
+  border-radius: 50%;
+  padding: 8px;
+}
+.incoming-ring.active::before,
+.incoming-ring.active::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  border: 2px solid rgba(7, 193, 96, 0.55);
+  animation: ringPulse 1.6s ease-out infinite;
+}
+.incoming-ring.active::after {
+  animation-delay: 0.5s;
+}
+@keyframes ringPulse {
+  0% { transform: scale(0.85); opacity: 0.9; }
+  100% { transform: scale(1.25); opacity: 0; }
+}
+.call-type-line {
+  font-size: 14px; color: rgba(255,255,255,0.75);
 }
 .call-main {
   position: relative; z-index: 2; flex: 1;
@@ -657,13 +701,17 @@ onBeforeUnmount(() => {
 .call-name { font-size: 26px; font-weight: 600; color: #fff; max-width: 80%; }
 .call-status { margin-top: 8px; font-size: 16px; color: rgba(255,255,255,0.82); font-variant-numeric: tabular-nums; }
 .call-status.fail { color: #ffb0b0; }
-.incoming-actions { display: flex; gap: 20px; margin-top: 24px; }
+.incoming-actions { display: flex; gap: 28px; margin-top: 28px; }
 .inc-btn {
-  min-width: 96px; min-height: 48px; border: 0; border-radius: 24px;
-  font-size: 16px; color: #fff; font-weight: 600;
+  min-width: 88px; min-height: 88px; border: 0; border-radius: 50%;
+  font-size: 14px; color: #fff; font-weight: 600;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.25);
 }
+.inc-ico { font-size: 22px; line-height: 1; }
 .inc-btn.reject { background: #fa5151; }
 .inc-btn.accept { background: #07c160; }
+.inc-btn:active { transform: scale(0.96); }
 
 .video-stage {
   position: absolute; inset: 0; z-index: 1; background: #000;

@@ -3,6 +3,9 @@ import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue';
 import { io } from 'socket.io-client';
 import { getToken, api, compressImage } from '../api.js';
 import UserAvatar from './UserAvatar.vue';
+import ImagePreview from './ImagePreview.vue';
+import ImageCropper from './ImageCropper.vue';
+import UploadProgress from './UploadProgress.vue';
 import { toast } from '../toast.js';
 
 const props = defineProps({
@@ -24,7 +27,16 @@ const pickedImages = ref([]);
 const commentTarget = ref(null);
 const commentText = ref('');
 const fileInput = ref(null);
-const previewImage = ref(null);
+const previewImages = ref([]);
+const previewIndex = ref(0);
+const showPreview = ref(false);
+const likesMoment = ref(null);
+const cropSrc = ref('');
+const cropKind = ref('cover'); // cover | post
+const cropQueue = ref([]);
+const uploading = ref(false);
+const uploadPct = ref(0);
+const uploadLabel = ref('上传中');
 const expandedMap = ref({});
 const replyTo = ref(null); // { id, name }
 const visibility = ref('public');
@@ -106,25 +118,88 @@ async function replaceCover(file) {
     alert('请选择图片文件');
     return;
   }
-  try {
-    // 先压缩再上传, 避免大图触发 3MB 限制
-    const dataUrl = await compressImage(file, 1600, 0.82);
-    const { url } = await api.uploadMomentImage(dataUrl);
-    if (!url) throw new Error('上传失败');
-    coverUrl.value = url;
-    const { user } = await api.updateMe({ momentsCover: url });
-    if (user?.momentsCover) coverUrl.value = user.momentsCover;
-    emit('updated', user);
-    toast('朋友圈封面已更换');
-  } catch (e) {
-    alert(e.message || '更换封面失败');
-  }
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('读取图片失败'));
+    reader.readAsDataURL(file);
+  }).catch((e) => { alert(e.message || '读取图片失败'); return null; });
+  if (!dataUrl) return;
+  cropKind.value = 'cover';
+  cropSrc.value = dataUrl;
 }
 
 function onCoverPick(e) {
   const file = e.target.files?.[0];
   e.target.value = '';
   replaceCover(file);
+}
+
+async function uploadImageWithProgress(dataUrl, label) {
+  uploading.value = true;
+  uploadPct.value = 0;
+  uploadLabel.value = label || '上传中';
+  try {
+    const { url } = await api.uploadMomentImageWithProgress(dataUrl, (p) => { uploadPct.value = p; });
+    return url;
+  } finally {
+    uploading.value = false;
+    uploadPct.value = 0;
+  }
+}
+
+async function onCropConfirm(dataUrl) {
+  const kind = cropKind.value;
+  cropSrc.value = '';
+  try {
+    if (kind === 'cover') {
+      const url = await uploadImageWithProgress(dataUrl, '上传封面');
+      if (!url) throw new Error('上传失败');
+      coverUrl.value = url;
+      const { user } = await api.updateMe({ momentsCover: url });
+      if (user?.momentsCover) coverUrl.value = user.momentsCover;
+      emit('updated', user);
+      toast('朋友圈封面已更换');
+    } else {
+      if (pickedImages.value.length >= 9) {
+        alert('最多 9 张图片');
+        return;
+      }
+      const url = await uploadImageWithProgress(dataUrl, '上传配图');
+      if (!url) throw new Error('上传失败');
+      pickedImages.value = [...pickedImages.value, url];
+      // 队列：继续裁剪下一张
+      if (cropQueue.value.length) {
+        const next = cropQueue.value.shift();
+        cropKind.value = 'post';
+        cropSrc.value = next;
+      }
+    }
+  } catch (e) {
+    alert(e.message || '上传失败');
+  }
+}
+
+function onCropCancel() {
+  cropSrc.value = '';
+  cropQueue.value = [];
+}
+
+function openMomentPreview(m, idx) {
+  const imgs = (m.images || []).filter(Boolean);
+  if (!imgs.length) return;
+  previewImages.value = imgs;
+  previewIndex.value = Math.max(0, Math.min(idx || 0, imgs.length - 1));
+  showPreview.value = true;
+}
+
+function openLikes(m) {
+  likesMoment.value = m;
+}
+
+function friendMomentEmptyText() {
+  if (!props.user && !isUserMode.value) return '还没有动态, 发一条吧';
+  return '对方设置了朋友圈权限，或你们暂无可见动态';
 }
 
 function likedByMe(m) {
@@ -203,20 +278,24 @@ function pickImages() {
 async function onPickFiles(e) {
   const files = [...(e.target.files || [])].slice(0, 9 - pickedImages.value.length);
   e.target.value = '';
+  if (!files.length) return;
+  const dataUrls = [];
   for (const file of files) {
-    if (pickedImages.value.length >= 9) break;
+    if (dataUrls.length >= 9) break;
+    if (!file.type?.startsWith('image/')) continue;
     const data = await new Promise((resolve) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result);
+      reader.onerror = () => resolve(null);
       reader.readAsDataURL(file);
     });
-    try {
-      const { url } = await api.uploadMomentImage(data);
-      pickedImages.value = [...pickedImages.value, url];
-    } catch (err) {
-      alert(err.message);
-    }
+    if (data) dataUrls.push(data);
   }
+  if (!dataUrls.length) return;
+  // 逐张裁剪后上传
+  cropQueue.value = dataUrls.slice(1);
+  cropKind.value = 'post';
+  cropSrc.value = dataUrls[0];
 }
 
 function removePicked(i) {
@@ -516,7 +595,10 @@ onBeforeUnmount(() => {
         <div v-if="albumSignature()" class="album-signature">{{ albumSignature() }}</div>
 
         <div v-if="loading && !moments.length" class="album-empty">加载中…</div>
-        <div v-else-if="!moments.length" class="album-empty">对方还没有可见的动态</div>
+        <div v-else-if="!moments.length" class="album-empty">
+          <div class="empty-title">朋友仅展示最近三天的朋友圈</div>
+          <div class="empty-sub">或对方设置了权限，暂无可见内容</div>
+        </div>
 
         <div v-else class="album-body">
           <section v-for="g in albumYears" :key="g.year" class="album-year-block">
@@ -539,7 +621,7 @@ onBeforeUnmount(() => {
                     :src="img"
                     alt=""
                     loading="lazy"
-                    @click.stop="previewImage = img"
+                    @click.stop="openMomentPreview(m, i)"
                   />
                 </div>
                 <div v-if="m.content" class="album-text">{{ m.content }}</div>
@@ -623,7 +705,7 @@ onBeforeUnmount(() => {
               :src="img"
               alt="配图"
               loading="lazy"
-              @click.stop="previewImage = img"
+              @click.stop="openMomentPreview(m, i)"
             />
           </div>
           <div class="moment-meta">
@@ -635,7 +717,7 @@ onBeforeUnmount(() => {
                 @click.stop="toggleLike(m)"
               >
                 <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 20s-7-4.4-7-9.2C5 8 7 6 9.2 6c1.3 0 2.3.7 2.8 1.6C12.5 6.7 13.5 6 14.8 6 17 6 19 8 19 10.8 19 15.6 12 20 12 20z" fill="none" :stroke="likedByMe(m) ? '#fa5151' : '#576b95'" stroke-width="1.6"/></svg>
-                <span class="act-count">{{ m.likes?.length || 0 }}</span>
+                <span class="act-count" @click.stop="openLikes(m)">{{ m.likes?.length || 0 }}</span>
               </button>
               <button class="moment-act" @click.stop="openComment(m)">
                 <svg viewBox="0 0 24 24" width="16" height="16"><path d="M5 6h14v9H9l-4 3V6z" fill="none" stroke="#576b95" stroke-width="1.6" stroke-linejoin="round"/></svg>
@@ -644,7 +726,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div class="interact-box" v-if="likePreview(m) || m.comments?.length">
-            <div v-if="likePreview(m)" class="moment-likes">♥ {{ likePreview(m) }}</div>
+            <div v-if="likePreview(m)" class="moment-likes" @click="openLikes(m)">♥ {{ likePreview(m) }}</div>
             <div v-if="m.comments?.length" class="moment-comments">
               <div v-for="c in m.comments" :key="c.id" class="comment-line">
                 <span class="comment-name" @click="openComment(m, c)">
@@ -735,7 +817,7 @@ onBeforeUnmount(() => {
         <div class="composer-tools">
           <button class="add-photo" @click="pickImages">🖼 添加图片</button>
           <input ref="fileInput" type="file" accept="image/*" multiple hidden @change="onPickFiles" />
-          <span class="tool-hint">最多 9 张 · 长按动态可删除</span>
+          <span class="tool-hint">{{ pickedImages.length ? `${pickedImages.length}/9 张` : '可发纯文字' }} · 长按动态可删除</span>
         </div>
       </div>
     </div>
@@ -777,10 +859,44 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="previewImage" class="img-preview" @click="previewImage = null">
-      <button class="preview-close" @click.stop="previewImage = null">✕</button>
-      <img :src="previewImage" alt="预览" @click.stop />
+    <!-- 大图预览（支持左右滑） -->
+    <ImagePreview
+      v-if="showPreview && previewImages.length"
+      :images="previewImages"
+      :index="previewIndex"
+      @close="showPreview = false"
+      @change="(i) => (previewIndex = i)"
+    />
+
+    <!-- 点赞列表（微信底部半屏） -->
+    <div v-if="likesMoment" class="likes-mask" @click.self="closeLikes">
+      <div class="likes-sheet">
+        <div class="likes-head">
+          <span>{{ likesMoment.likes?.length || 0 }} 人觉得很赞</span>
+          <button type="button" class="likes-close" @click="closeLikes">关闭</button>
+        </div>
+        <div class="likes-body scroll-y">
+          <div v-if="!(likesMoment.likes || []).length" class="likes-empty">还没有人点赞</div>
+          <div v-for="(l, i) in (likesMoment.likes || [])" :key="i" class="likes-row">
+            <UserAvatar :name="l.nickname" :color="l.isAI ? '#07c160' : '#4f6ef7'" :size="40" :emoji="l.isAI ? '🤖' : null" />
+            <div class="likes-main">
+              <div class="likes-name">{{ l.nickname }}<em v-if="l.isAI" class="ai-tag">AI</em></div>
+              <div class="likes-time">{{ fmtTime(l.createdAt) }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
+
+    <ImageCropper
+      v-if="cropSrc"
+      :src="cropSrc"
+      :ratio="cropKind === 'cover' ? 'cover' : 'free'"
+      :title="cropKind === 'cover' ? '裁剪朋友圈封面' : '裁剪配图'"
+      @confirm="onCropConfirm"
+      @cancel="onCropCancel"
+    />
+    <UploadProgress v-if="uploading" :percent="uploadPct" :label="uploadLabel" />
   </div>
 </template>
 
@@ -800,6 +916,44 @@ onBeforeUnmount(() => {
 .moment-name { color: var(--blue); }
 .moment-time, .empty-tip { color: var(--text-3); }
 .moment-likes, .moment-comments { background: var(--divider-soft); }
+.moment-likes { cursor: pointer; }
+
+/* 点赞列表半屏 */
+.likes-mask {
+  position: fixed; inset: 0; z-index: 70;
+  background: rgba(0,0,0,0.4);
+  display: flex; align-items: flex-end;
+}
+.likes-sheet {
+  width: 100%; max-height: 62%;
+  background: var(--white, #fff);
+  border-radius: 12px 12px 0 0;
+  display: flex; flex-direction: column;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  animation: slideUp 200ms var(--ease);
+}
+@keyframes slideUp {
+  from { transform: translateY(40%); opacity: 0.6; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.likes-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; border-bottom: 0.5px solid var(--divider, #e5e5e5);
+  font-size: 15px; font-weight: 600; color: var(--text);
+}
+.likes-close {
+  border: 0; background: transparent; color: var(--text-2);
+  font-size: 14px; min-height: 36px; cursor: pointer;
+}
+.likes-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 0 12px; }
+.likes-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px;
+}
+.likes-name { font-size: 15px; color: var(--text); }
+.likes-time { margin-top: 2px; font-size: 12px; color: var(--text-3); }
+.likes-empty { padding: 28px; text-align: center; color: var(--text-3); font-size: 13px; }
+
 .interact-box {
   margin-top: 8px;
   border-radius: 6px;

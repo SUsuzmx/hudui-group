@@ -3,6 +3,8 @@ import { ref, onMounted } from 'vue';
 import { api, compressImage } from '../api.js';
 import { toast } from '../toast.js';
 import UserAvatar from './UserAvatar.vue';
+import ImageCropper from './ImageCropper.vue';
+import UploadProgress from './UploadProgress.vue';
 import { loadProfileExtras, saveProfileExtras, maskPhone } from '../profile-extras.js';
 
 const props = defineProps({
@@ -26,6 +28,11 @@ const pickerType = ref('');
 const editField = ref('');
 const editValue = ref('');
 const saving = ref(false);
+const avatarFileInput = ref(null);
+const cropSrc = ref('');
+const uploading = ref(false);
+const uploadPct = ref(0);
+const uploadLabel = ref('上传中');
 
 const genderText = () => {
   if (profile.value.gender === 'male') return '男';
@@ -139,17 +146,47 @@ async function pickAvatar(a) {
   await persistMe({ avatar: a });
 }
 
+function triggerAvatarUpload() {
+  showPicker.value = false;
+  avatarFileInput.value?.click();
+}
+
 async function onUploadAvatar(e) {
   const file = e.target.files?.[0];
   e.target.value = '';
   if (!file) return;
+  if (!file.type?.startsWith('image/')) {
+    toast('请选择图片文件');
+    return;
+  }
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('读取图片失败'));
+    reader.readAsDataURL(file);
+  }).catch((err) => {
+    toast(err.message || '读取图片失败');
+    return null;
+  });
+  if (!dataUrl) return;
+  cropSrc.value = dataUrl;
+}
+
+async function onCropConfirm(dataUrl) {
+  cropSrc.value = '';
+  uploading.value = true;
+  uploadPct.value = 0;
+  uploadLabel.value = '上传头像';
   try {
-    const data = await compressImage(file, 800, 0.85);
-    const { url } = await api.uploadMomentImage(data);
+    const { url } = await api.uploadMomentImageWithProgress(dataUrl, (p) => { uploadPct.value = p; });
     if (!url) throw new Error('上传失败');
     await persistMe({ avatar: url });
+    toast('头像已更新');
   } catch (err) {
     toast(err.message || '上传失败');
+  } finally {
+    uploading.value = false;
+    uploadPct.value = 0;
   }
 }
 
@@ -314,10 +351,8 @@ function onRow(key) {
           <button class="sheet-item" type="button" @click="pickGender('')">保密</button>
         </template>
         <template v-else>
-          <label class="sheet-item">
-            上传新头像
-            <input type="file" accept="image/*" hidden @change="onUploadAvatar" />
-          </label>
+          <button class="sheet-item" type="button" @click="triggerAvatarUpload">上传新头像（可裁剪）</button>
+          <input ref="avatarFileInput" type="file" accept="image/*" hidden @change="onUploadAvatar" />
           <div class="avatar-grid">
             <button
               v-for="a in avatarList"
@@ -334,6 +369,16 @@ function onRow(key) {
         <button class="sheet-item cancel" type="button" @click="showPicker = false">取消</button>
       </div>
     </div>
+
+    <ImageCropper
+      v-if="cropSrc"
+      :src="cropSrc"
+      ratio="avatar"
+      title="裁剪头像"
+      @confirm="onCropConfirm"
+      @cancel="cropSrc = ''"
+    />
+    <UploadProgress v-if="uploading" :percent="uploadPct" :label="uploadLabel" />
   </div>
 </template>
 
@@ -407,8 +452,9 @@ function onRow(key) {
   color: var(--text);
 }
 .cell-value {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
+  margin-left: auto;
   text-align: right;
   font-size: 16px;
   color: var(--text-2);
@@ -416,7 +462,13 @@ function onRow(key) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cell-value.clamp { max-width: 55%; }
+.cell-value.clamp {
+  flex: 0 1 auto;
+  max-width: 55%;
+  margin-left: auto;
+  margin-right: 0;
+  text-align: right;
+}
 .cell-avatar {
   margin-left: auto;
   border-radius: 6px !important;

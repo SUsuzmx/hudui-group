@@ -203,8 +203,8 @@ async function addFriend() {
     return;
   }
   try {
-    await api.addFriend(profile.value.id);
-    profile.value = { ...profile.value, isFriend: true };
+    await api.sendFriendRequest(profile.value.id, '我是' + (props.me?.nickname || ''));
+    alert('已发送添加申请，等待对方验证');
   } catch (e) { alert(e.message); }
 }
 
@@ -242,6 +242,7 @@ onMounted(load);
             <span class="hero-gender" aria-hidden="true">👤</span>
           </div>
           <div class="hero-wxid">微信号: {{ profile.wxid || '未设置' }}</div>
+          <div v-if="profile.signature" class="hero-status">状态：{{ profile.signature }}</div>
         </div>
       </section>
 

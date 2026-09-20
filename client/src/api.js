@@ -1,6 +1,7 @@
 const TOKEN_KEY = 'hudui_token';
 import { dataUrlToBlob } from './chat-shared.js';
 import { toast } from './toast.js';
+import { uploadWithProgress, dataUrlToBlobSync } from './upload-progress.js';
 
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY);
@@ -9,6 +10,8 @@ export function setToken(token) {
   if (token) localStorage.setItem(TOKEN_KEY, token);
   else localStorage.removeItem(TOKEN_KEY);
 }
+
+export { uploadWithProgress, dataUrlToBlobSync };
 
 /** 图片压缩到约 1MB 内, 返回 dataURL */
 export async function compressImage(file, maxEdge = 1600, quality = 0.82) {
@@ -160,7 +163,18 @@ export const api = {
   deleteMomentComment: (commentId) =>
     request('/api/moments/comment/delete', { body: { commentId } }),
   uploadMomentImage: (data) => uploadMedia('/api/moments/upload', data, 'image'),
+  /** 带进度的图片上传（dataURL/Blob），onProgress(0-100) */
+  uploadMomentImageWithProgress: async (data, onProgress) => {
+    const blob = data instanceof Blob ? data : dataUrlToBlobSync(data) || dataUrlToBlob(data);
+    if (!blob) throw new Error('图片数据无效');
+    return uploadWithProgress('/api/moments/upload', blob, { kind: 'image', filename: 'image.jpg', onProgress });
+  },
   uploadChatMedia: (data, kind) => uploadMedia('/api/chat/upload', data, kind || 'image'),
+  uploadChatMediaWithProgress: async (data, kind, onProgress) => {
+    const blob = data instanceof Blob ? data : dataUrlToBlobSync(data) || dataUrlToBlob(data);
+    if (!blob) throw new Error('文件数据无效');
+    return uploadWithProgress('/api/chat/upload', blob, { kind: kind || 'image', filename: 'file.bin', onProgress });
+  },
   searchChat: (q, conversationId) =>
     request('/api/chat/search', { method: 'GET', query: { q, conversationId } }),
   searchGlobal: (q) => request('/api/search/global', { body: { q } }),
@@ -185,4 +199,16 @@ export const api = {
   aiContacts: () => request('/api/ai-contacts', { method: 'GET' }),
   redpacketCovers: () => request('/api/redpacket/covers', { method: 'GET' }),
   redpacketDetail: (id) => request(`/api/redpacket/${Number(id)}`, { method: 'GET' }),
+  settings: () => request('/api/settings', { method: 'GET' }),
+  updateSettings: (settings) => request('/api/settings', { method: 'PUT', body: { settings } }),
+
+  // 发现页: 听一听 / 看一看
+  musicList: ({ q = '', source = 'all', limit = 30 } = {}) =>
+    request('/api/music/list', { method: 'GET', query: { q, source, limit } }),
+  musicStreamInfo: (source, id) =>
+    request(`/api/music/stream/${encodeURIComponent(source)}/${encodeURIComponent(id)}`, { method: 'GET' }),
+  musicProxyUrl: (source, id) =>
+    `/api/music/proxy?source=${encodeURIComponent(source)}&id=${encodeURIComponent(id)}`,
+  lookFeed: ({ refresh = false } = {}) =>
+    request('/api/videos/look', { method: 'GET', query: refresh ? { refresh: '1' } : {} }),
 };

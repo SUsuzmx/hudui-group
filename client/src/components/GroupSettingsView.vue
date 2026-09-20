@@ -25,7 +25,7 @@ const members = ref([]);
 const friends = ref([]);
 const aiList = ref([]);
 const picked = ref({});
-const prefs = ref({ muted: false, pinned: false, saved: false, folded: false });
+const prefs = ref({ muted: false, pinned: false, saved: false, folded: false, showNick: true });
 const busy = ref(false);
 
 function resolveGroupId() {
@@ -132,11 +132,13 @@ async function loadAll() {
     try {
       const d = await api.getChatPref(props.conversationId);
       const p = d?.pref || {};
+      const extra = p.extra || {};
       prefs.value = {
         muted: Boolean(p.muted),
         pinned: Boolean(p.pinned),
         folded: Boolean(p.folded),
-        saved: false,
+        saved: Boolean(extra.saved),
+        showNick: extra.showNick !== false,
       };
     } catch { /* ignore */ }
   }
@@ -187,10 +189,29 @@ async function togglePref(key) {
       muted: next.muted,
       pinned: next.pinned,
       folded: next.folded,
+      extra: { saved: !!next.saved, showNick: next.showNick !== false },
     });
     toast('已保存');
   } catch (e) {
     prefs.value = { ...prefs.value, [key]: !next[key] };
+    toast(e.message || '设置失败');
+  }
+}
+
+async function toggleExtra(key) {
+  const nextVal = key === 'showNick' ? prefs.value.showNick === false : !prefs.value[key];
+  const next = { ...prefs.value, [key]: nextVal };
+  prefs.value = next;
+  try {
+    await api.chatPref({
+      conversationId: props.conversationId || 'default',
+      extra: { saved: !!next.saved, showNick: next.showNick !== false },
+    });
+    toast(key === 'saved'
+      ? (nextVal ? '已保存到通讯录' : '已从通讯录移除')
+      : (nextVal ? '已显示群成员昵称' : '已隐藏群成员昵称'));
+  } catch (e) {
+    prefs.value = { ...prefs.value, [key]: !nextVal };
     toast(e.message || '设置失败');
   }
 }
@@ -356,9 +377,9 @@ onMounted(loadAll);
           <span class="cell-label">置顶聊天</span>
           <button class="switch" :class="{ on: prefs.pinned }" type="button" aria-label="置顶聊天"></button>
         </div>
-        <div class="cell-row" @click="toast('已保存到通讯录（演示）')">
+        <div class="cell-row" @click="toggleExtra('saved')">
           <span class="cell-label">保存到通讯录</span>
-          <button class="switch" type="button" aria-label="保存到通讯录"></button>
+          <button class="switch" :class="{ on: prefs.saved }" type="button" aria-label="保存到通讯录"></button>
         </div>
       </section>
 
@@ -368,9 +389,9 @@ onMounted(loadAll);
           <span class="cell-value">{{ me?.nickname || '—' }}</span>
           <span class="arrow">›</span>
         </div>
-        <div class="cell-row" @click="toast('已开启显示群成员昵称')">
+        <div class="cell-row" @click="toggleExtra('showNick')">
           <span class="cell-label">显示群成员昵称</span>
-          <button class="switch on" type="button" aria-label="显示群成员昵称"></button>
+          <button class="switch" :class="{ on: prefs.showNick !== false }" type="button" aria-label="显示群成员昵称"></button>
         </div>
       </section>
 

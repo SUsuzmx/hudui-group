@@ -179,6 +179,9 @@ try { db.exec('ALTER TABLE users ADD COLUMN region TEXT'); } catch { /* 列已�
 try { db.exec('ALTER TABLE users ADD COLUMN signature TEXT'); } catch { /* 列已存在 */ }
 try { db.exec("ALTER TABLE users ADD COLUMN moments_cover TEXT"); } catch { /* 列已存在 */ }
 try { db.exec("ALTER TABLE users ADD COLUMN gender TEXT DEFAULT ''"); } catch { /* 列已存在 */ }
+try { db.exec("ALTER TABLE users ADD COLUMN settings TEXT DEFAULT '{}'"); } catch { /* 列已存在 */ }
+try { db.exec("ALTER TABLE users ADD COLUMN status_json TEXT"); } catch { /* 列已存在 */ }
+try { db.exec("ALTER TABLE chat_prefs ADD COLUMN extra TEXT"); } catch { /* 列已存在 */ }
 try { db.exec('ALTER TABLE messages ADD COLUMN media_type TEXT'); } catch { /* 列已存在 */ }
 try { db.exec('ALTER TABLE messages ADD COLUMN media_url TEXT'); } catch { /* 列已存在 */ }
 try { db.exec('ALTER TABLE messages ADD COLUMN conversation_id TEXT'); } catch { /* 列已存在 */ }
@@ -257,7 +260,7 @@ export const stmts = {
   insertSession: db.prepare('INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)'),
   sessionByToken: db.prepare(
     `SELECT s.token, s.expires_at, u.id, u.nickname, u.avatar_color, u.avatar, u.wxid, u.region, u.signature,
-            u.gender, u.moments_cover
+            u.gender, u.moments_cover, u.status_json
      FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?`
   ),
   deleteSession: db.prepare('DELETE FROM sessions WHERE token = ?'),
@@ -398,16 +401,19 @@ export const stmts = {
     ORDER BY m.id DESC LIMIT 30
   `),
   upsertChatPref: db.prepare(`
-    INSERT INTO chat_prefs (user_id, conversation_id, muted, pinned, folded, draft, bg_key, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO chat_prefs (user_id, conversation_id, muted, pinned, folded, draft, bg_key, extra, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, conversation_id) DO UPDATE SET
       muted = COALESCE(?, muted),
       pinned = COALESCE(?, pinned),
       folded = COALESCE(?, folded),
       draft = COALESCE(?, draft),
       bg_key = COALESCE(?, bg_key),
+      extra = COALESCE(?, extra),
       updated_at = excluded.updated_at
   `),
+  setUserSettings: db.prepare('UPDATE users SET settings = ? WHERE id = ?'),
+  getUserSettingsRaw: db.prepare('SELECT settings FROM users WHERE id = ?'),
   getChatRead: db.prepare(
     'SELECT * FROM chat_reads WHERE user_id = ? AND conversation_id = ?'
   ),

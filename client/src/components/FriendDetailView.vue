@@ -424,8 +424,9 @@ onMounted(async () => {
   color: var(--text);
 }
 .cell-value {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
+  margin-left: auto;
   text-align: right;
   font-size: 16px;
   color: var(--text-2);
@@ -433,7 +434,13 @@ onMounted(async () => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cell-value.clamp { max-width: 58%; white-space: normal; text-align: right; }
+.cell-value.clamp {
+  flex: 0 1 auto;
+  max-width: 58%;
+  margin-left: auto;
+  white-space: normal;
+  text-align: right;
+}
 .cell-arrow {
   width: 8px;
   height: 8px;

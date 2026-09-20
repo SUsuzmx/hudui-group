@@ -5,6 +5,9 @@ import { getToken, api } from '../api.js';
 import UserAvatar from './UserAvatar.vue';
 import WxIcons from './WxIcons.vue';
 import { pinyinInitial, groupContactsByLetter } from '../pinyin-initial.js';
+import { statusGradient, statusIconPath, statusRemaining } from '../status-bg.js';
+import { loadProfileExtras, saveProfileExtras } from '../profile-extras.js';
+import { toast } from '../toast.js';
 
 const props = defineProps({
   me: { type: Object, required: true },
@@ -16,7 +19,60 @@ const emit = defineEmits([
   'open-group-settings',
   'open-private-chat',
   'open-view',
+  'status-updated',
 ]);
+
+const statusData = computed(() => props.me?.status || loadProfileExtras(props.me?.id).status || null);
+const statusLabel = computed(() => {
+  const st = statusData.value;
+  const sig = String(props.me?.signature || '').trim();
+  if (st?.label) return st.label;
+  if (sig) return sig.length > 10 ? sig.slice(0, 10) + '…' : sig;
+  return '';
+});
+const hasStatus = computed(() => Boolean(statusData.value?.key || statusData.value?.label || statusLabel.value));
+const statusBgUrl = computed(() => statusData.value?.bgUrl || '');
+const statusBgType = computed(() => statusData.value?.bgType || null);
+const statusKey = computed(() => statusData.value?.key || '');
+const statusIconD = computed(() => statusIconPath(statusData.value?.icon || statusKey.value || 'smile'));
+/** 无自定义图/视频时，整块头图使用状态对应渐变色 */
+const statusGradientCss = computed(() => {
+  if (!hasStatus.value) return '';
+  if (statusBgUrl.value) return '';
+  return statusGradient(statusKey.value, statusLabel.value);
+});
+const statusRemainText = computed(() => statusRemaining(statusData.value?.at, statusData.value?.expiresInHours));
+
+const showStatusSheet = ref(false);
+
+function openStatusMenu() {
+  if (hasStatus.value) {
+    showStatusSheet.value = true;
+  } else {
+    emit('open-view', { type: 'deep-feature', feature: 'statusHome', title: '设个状态' });
+  }
+}
+
+function goNewStatus() {
+  showStatusSheet.value = false;
+  emit('open-view', { type: 'deep-feature', feature: 'statusHome', title: '设个状态' });
+}
+
+function goEditStatus() {
+  showStatusSheet.value = false;
+  emit('open-view', { type: 'deep-feature', feature: 'statusHome', title: '修改状态' });
+}
+
+async function endStatus() {
+  showStatusSheet.value = false;
+  try {
+    saveProfileExtras(props.me?.id, { status: null });
+    const { user } = await api.updateMe({ status: null, signature: '' });
+    emit('status-updated', user || { ...(props.me || {}), status: null, signature: '' });
+  } catch (e) {
+    toast(e.message || '结束状态失败');
+  }
+}
 
 const TAB_KEY = 'hudui_main_tab';
 const savedTab = (() => {
@@ -441,8 +497,12 @@ function openDiscover(s) {
   }
   if (s.key === 'search') { openSearch(); return; }
   if (s.key === 'scan') { openFeature('scan', s.label); return; }
-  if (s.key === 'look' || s.key === 'listen') {
-    openFeature('look', s.key === 'listen' ? '听一听' : '看一看');
+  if (s.key === 'listen') {
+    emit('open-view', { type: 'listen' });
+    return;
+  }
+  if (s.key === 'look') {
+    emit('open-view', { type: 'look' });
     return;
   }
   if (s.key === 'nearby') {
@@ -493,7 +553,7 @@ function openMeCell(s) {
 
 function openContactEntry(s) {
   if (s.key === 'newfriends') {
-    emit('open-view', { type: 'feature', feature: 'newfriends', title: '新的朋友' });
+    openNewFriendsPage();
     return;
   }
   if (s.key === 'groupList') {
@@ -540,6 +600,17 @@ function openFriend(f) {
 }
 
 function openSubNewFriends() {
+  emit('open-view', { type: 'feature', feature: 'newfriends', title: '新的朋友' });
+}
+
+// 从子页返回时刷新好友申请角标
+defineExpose({
+  reloadFriendRequests: loadFriendRequests,
+});
+
+// 打开新的朋友时先刷新角标
+function openNewFriendsPage() {
+  loadFriendRequests();
   emit('open-view', { type: 'feature', feature: 'newfriends', title: '新的朋友' });
 }
 
@@ -926,19 +997,59 @@ function doChatAction(kind) {
 
       <!-- 我 -->
       <div v-show="tab === 'me'" class="tab-pane me-pane scroll-y" ref="meScrollEl">
-        <button class="profile-card" type="button" @click="openEditProfile">
-          <UserAvatar :name="me?.nickname" :avatar="me?.avatar" :color="me?.avatarColor" :size="72" />
-          <div class="profile-main">
-            <div class="profile-name">{{ me?.nickname }}</div>
-            <div class="profile-wxid">微信号：{{ me?.wxid || '未设置' }}</div>
-            <div class="profile-status">
-              <span class="status-chip" @click.stop="emit('open-view', { type: 'deep-feature', feature: 'statusHome', title: '状态' })">+ 状态</span>
-              <span class="status-refresh" title="编辑资料" @click.stop="openEditProfile">↻</span>
+        <section
+          class="me-hero"
+          :class="{ 'has-status-bg': !!(statusBgUrl || statusGradientCss) }"
+          :style="!statusBgUrl && statusGradientCss ? { backgroundImage: statusGradientCss } : undefined"
+        >
+          <video
+            v-if="statusBgUrl && statusBgType === 'video'"
+            class="status-bg-media"
+            :src="statusBgUrl"
+            autoplay
+            muted
+            loop
+            playsinline
+          ></video>
+          <img
+            v-else-if="statusBgUrl"
+            class="status-bg-media"
+            :src="statusBgUrl"
+            alt="状态背景"
+          />
+          <div class="me-hero-top">
+            <button class="me-profile-hit" type="button" @click="openEditProfile">
+              <UserAvatar
+                class="profile-avatar"
+                :name="me?.nickname"
+                :avatar="me?.avatar"
+                :color="me?.avatarColor"
+                :size="72"
+              />
+              <div class="profile-main">
+                <div class="profile-name">{{ me?.nickname }}</div>
+                <div class="profile-wxid">微信号：{{ me?.wxid || '未设置' }}</div>
+              </div>
+            </button>
+            <div class="profile-side">
+              <span class="qr-entry" @click.stop="openQr"><WxIcons name="qr" :size="22" /></span>
+              <span class="side-arrow" aria-hidden="true"></span>
             </div>
           </div>
-          <span class="qr-entry" @click.stop="openQr"><WxIcons name="qr" :size="22" /></span>
-          <span class="cell-arrow"></span>
-        </button>
+          <div class="me-hero-status">
+            <button class="status-hit" type="button" @click="openStatusMenu">
+              <svg v-if="hasStatus" class="status-ico" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path :d="statusIconD" />
+              </svg>
+              <span class="status-text">{{ hasStatus ? statusLabel : '设个状态' }}</span>
+              <span class="status-chev">›</span>
+            </button>
+            <button class="status-more" type="button" aria-label="状态菜单" @click="openStatusMenu">
+              <span></span><span></span><span></span>
+            </button>
+          </div>
+        </section>
+
         <div class="cell-group flat gap">
           <button v-for="s in meService" :key="s.key" class="cell-row" @click="openMeCell(s)">
             <WxIcons :name="s.icon" :size="24" />
@@ -962,6 +1073,20 @@ function doChatAction(kind) {
         </div>
       </div>
     </main>
+
+    <!-- 状态底部菜单（对齐微信截图） -->
+    <div v-if="showStatusSheet" class="status-sheet-mask" @click.self="showStatusSheet = false">
+      <div class="status-sheet">
+        <button type="button" class="sheet-row" @click="goNewStatus">设个新状态</button>
+        <button type="button" class="sheet-row" @click="goEditStatus">修改状态</button>
+        <button type="button" class="sheet-row" @click="endStatus">
+          <div class="sheet-row-main">结束状态</div>
+          <div v-if="statusRemainText" class="sheet-row-sub">{{ statusRemainText }}</div>
+        </button>
+        <div class="sheet-gap"></div>
+        <button type="button" class="sheet-row cancel" @click="showStatusSheet = false">取消</button>
+      </div>
+    </div>
 
     <div v-if="showMore" class="mask" @click="showMore = false">
       <div class="pop-menu">
@@ -1211,7 +1336,7 @@ function doChatAction(kind) {
   transition: transform 0.22s ease;
 }
 .msg-item.swiped .msg-swipe { transform: translateX(-72px); }
-.msg-item.pinned .msg-swipe { background: #f7f7f7; }
+.msg-item.pinned .msg-swipe { background: var(--divider-soft); }
 .msg-avatar-wrap { position: relative; width: 48px; height: 48px; flex-shrink: 0; }
 .msg-badge {
   position: absolute; top: -4px; right: -8px; min-width: 18px; height: 18px; padding: 0 5px;
@@ -1225,7 +1350,23 @@ function doChatAction(kind) {
 .msg-time-col { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; }
 .msg-time { font-size: 12px; color: var(--text-3); }
 .msg-bottom { margin-top: 4px; }
+.draft-tag { color: #fa5151; margin-right: 2px; font-weight: 500; }
+.msg-time { font-size: 12px; color: var(--text-3); white-space: nowrap; }
 .msg-preview { font-size: 14px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg-badge {
+  position: absolute; top: 0; right: 0;
+  min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 9px; background: #fa5151; color: #fff;
+  font-size: 11px; line-height: 18px; text-align: center;
+  box-sizing: border-box; z-index: 1;
+}
+.msg-badge.inline { position: static; display: inline-block; margin-right: 4px; }
+.folded-bar .folder-avatar {
+  width: 44px; height: 44px; border-radius: 6px;
+  background: #c8c9cc; color: #fff;
+  display: grid; place-items: center;
+}
+.mute-bell { margin-left: 4px; opacity: 0.45; vertical-align: middle; }
 .draft-tag { color: var(--red); }
 .swipe-del {
   position: absolute; right: 0; top: 0; bottom: 0; width: 72px;
@@ -1288,24 +1429,195 @@ function doChatAction(kind) {
 .alpha-index button.idx-up { color: var(--text-2); }
 .alpha-index button:active { color: var(--green); }
 .discover-pane, .me-pane { background: var(--bg); }
-.profile-card {
-  width: 100%; display: flex; align-items: flex-start; gap: 16px; padding: 28px 16px 20px;
-  background: var(--white); border: 0; text-align: left; margin-top: 0; box-sizing: border-box;
+/* 「我」页头图区（对齐微信：渐变铺满 + 状态行） */
+.me-hero {
+  position: relative;
+  padding: calc(20px + env(safe-area-inset-top, 0px)) 16px 16px;
+  background: var(--white);
+  overflow: hidden;
 }
-.profile-main { flex: 1; min-width: 0; padding-top: 4px; }
+.me-hero.has-status-bg {
+  background-color: transparent;
+  background-size: cover !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+}
+.me-hero-top {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+.me-profile-hit {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  border: 0;
+  background: transparent;
+  padding: 8px 0;
+  text-align: left;
+  cursor: pointer;
+}
+.profile-avatar {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  border-radius: 8px;
+}
+.me-hero.has-status-bg .profile-avatar {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.55);
+}
+.profile-main {
+  flex: 1;
+  min-width: 0;
+  padding-top: 4px;
+  position: relative;
+  z-index: 1;
+}
 .profile-name { font-size: 22px; font-weight: 600; color: var(--text); }
 .profile-wxid { margin-top: 8px; font-size: 14px; color: var(--text-2); }
-.profile-status { margin-top: 14px; display: flex; align-items: center; gap: 10px; }
-.status-chip {
-  display: inline-flex; align-items: center; height: 30px; padding: 0 12px;
-  border: 1px solid var(--divider); border-radius: 15px; font-size: 13px; color: var(--text-2);
-  background: var(--white);
+.me-hero.has-status-bg .profile-name,
+.me-hero.has-status-bg .profile-wxid {
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
-.status-refresh {
-  width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--divider);
-  display: inline-flex; align-items: center; justify-content: center; color: var(--text-3); font-size: 14px;
+.profile-side {
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding-top: 10px;
+  flex-shrink: 0;
+  min-width: 28px;
+  position: relative;
+  z-index: 1;
 }
-.qr-entry { font-size: 20px; color: var(--text-2); margin-top: 6px; margin-right: 4px; }
+.qr-entry {
+  font-size: 20px;
+  color: var(--text-2);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+}
+.side-arrow {
+  width: 8px;
+  height: 8px;
+  border-right: 1.5px solid #c7c7cc;
+  border-top: 1.5px solid #c7c7cc;
+  transform: rotate(45deg);
+  display: block;
+}
+.me-hero.has-status-bg .qr-entry,
+.me-hero.has-status-bg .side-arrow {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.85);
+}
+.me-hero-status {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 18px;
+  min-height: 36px;
+}
+.status-hit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  padding: 4px 0;
+  font-size: 15px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.me-hero.has-status-bg .status-hit { color: rgba(255, 255, 255, 0.95); }
+.status-ico { opacity: 0.95; }
+.status-chev { opacity: 0.75; font-size: 16px; }
+.status-more {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  cursor: pointer;
+  padding: 0;
+}
+.me-hero.has-status-bg .status-more { background: rgba(255, 255, 255, 0.22); }
+.status-more span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.me-hero.has-status-bg .status-more span { background: #fff; }
+
+.status-bg-media {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* 状态底部菜单 */
+.status-sheet-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: flex-end;
+}
+.status-sheet {
+  width: 100%;
+  background: #f7f7f7;
+  border-radius: 12px 12px 0 0;
+  overflow: hidden;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.sheet-row {
+  width: 100%;
+  min-height: 54px;
+  border: 0;
+  border-bottom: 0.5px solid #e5e5e5;
+  background: #fff;
+  color: var(--text);
+  font-size: 17px;
+  text-align: center;
+  cursor: pointer;
+  padding: 10px 16px;
+}
+.sheet-row:last-child { border-bottom: 0; }
+.sheet-row-main { font-size: 17px; color: var(--text); }
+.sheet-row-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.sheet-gap {
+  height: 8px;
+  background: #f0f0f0;
+}
+.sheet-row.cancel {
+  margin-top: 0;
+  font-weight: 500;
+}
 .tab-bar {
   position: absolute; left: 0; right: 0; bottom: 0; height: calc(var(--tab-h) + var(--safe-b));
   padding-bottom: var(--safe-b); background: var(--white); border-top: 0.5px solid var(--divider);
@@ -1325,7 +1637,22 @@ function doChatAction(kind) {
 .tab-dot { position: absolute; top: 8px; left: calc(50% + 8px); width: 8px; height: 8px; border-radius: 4px; background: var(--red); }
 .mask { position: absolute; inset: 0; background: var(--mask); z-index: 30; }
 .pop-menu {
-  position: absolute; top: 4px; right: 8px; width: 148px; background: #4c4c4c; border-radius: 6px; overflow: hidden;
+  position: absolute; top: 4px; right: 8px; width: 168px;
+  background: #4c4c4c; border-radius: 6px; overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  z-index: 45; transform-origin: top right; animation: popIn 160ms var(--ease);
+}
+.pop-menu.wide { width: 176px; }
+.pop-item {
+  width: 100%; height: 48px; padding: 0 14px; color: #fff; font-size: 15px;
+  text-align: left; display: flex; align-items: center; position: relative;
+  border: 0; background: transparent; cursor: pointer;
+}
+.pop-item:active { background: rgba(255,255,255,0.12); }
+.pop-item.danger { color: #ff6b6b; }
+.pop-item + .pop-item::before {
+  content: ""; position: absolute; left: 14px; right: 0; top: 0;
+  height: 0.5px; background: rgba(255,255,255,0.12);
 }
 .pop-menu.wide { width: 168px; }
 .pop-item { width: 100%; height: 48px; padding: 0 14px; color: #fff; font-size: 15px; border: 0; background: transparent; text-align: left; display: flex; align-items: center; }

@@ -11,6 +11,7 @@ import { saveMsgCache, loadMsgCache } from '../chat-cache.js';
 import UserAvatar from './UserAvatar.vue';
 import ForwardSheet from './ForwardSheet.vue';
 import ImagePreview from './ImagePreview.vue';
+import FilePreview from './FilePreview.vue';
 import WxPayCard from './WxPayCard.vue';
 import WxPayOverlay from './WxPayOverlay.vue';
 
@@ -32,7 +33,13 @@ const noMoreHistory = ref(false);
 const listEl = ref(null);
 const textareaRef = ref(null);
 const dockMode = ref(0); // 0 none 1 emoji 2 plus 3 voice
+const showLoc = ref(false);
+const locName = ref('');
+const locDetail = ref(null);
+const fileInput = ref(null);
+const showNicknames = ref(true);
 const previewSrc = ref(null);
+const filePreview = ref(null);
 const actionMsg = ref(null);
 const showMore = ref(false);
 const chatPrefs = ref({ muted: false, pinned: false, folded: false });
@@ -107,6 +114,39 @@ function onKeyDown(e) {
 }
 
 const peerUid = Number(props.target.userId ?? props.target.id ?? 0);
+/** 非好友提示（对齐微信删除好友后进会话） */
+const notFriend = ref(false);
+const peerInfo = ref(null);
+const addingFriend = ref(false);
+
+async function refreshFriendState() {
+  if (props.target.isAI || !peerUid) {
+    notFriend.value = false;
+    return;
+  }
+  try {
+    const d = await api.user(peerUid);
+    const u = d?.user || null;
+    peerInfo.value = u;
+    notFriend.value = u ? u.isFriend === false : true;
+  } catch {
+    notFriend.value = false;
+  }
+}
+
+async function sendFriendVerify() {
+  if (!peerUid || addingFriend.value) return;
+  addingFriend.value = true;
+  try {
+    await api.sendFriendRequest(peerUid, '你好，我是…');
+    toast('已发送朋友验证');
+    notFriend.value = false;
+  } catch (e) {
+    toast(e.message || '发送失败');
+  } finally {
+    addingFriend.value = false;
+  }
+}
 const conversationId = props.target.isAI
   ? `pv_${props.me.id}_ai_${props.target.personaId}`
   : Number.isInteger(peerUid) && peerUid > 0 && peerUid !== props.me.id
@@ -292,6 +332,10 @@ function onInputFocus() {
 function send() {
   const content = draft.value.trim();
   if (!content) return;
+  if (notFriend.value) {
+    showToast('你们还不是朋友，请先发送朋友验证');
+    return;
+  }
   if (!socket?.connected) {
     showToast('网络连接中，发送可能稍延迟');
   }
@@ -426,9 +470,17 @@ async function sendImageFile(file) {
 }
 
 function openFileMsg(m) {
-  const url = m?.mediaUrl;
-  if (url) window.open(url, '_blank');
-  else showToast('演示文件消息（无附件）');
+  const url = m?.mediaUrl || '';
+  const raw = String(m?.ext?.name || m.content || '文件').replace(/^\[文件\]/, '').trim();
+  filePreview.value = {
+    name: raw || '文件',
+    url,
+    sender: m?.senderName || props.target?.nickname || '',
+  };
+}
+
+function openLocDetail(m) {
+  locDetail.value = { name: m.ext?.name || m.content || '位置' };
 }
 
 function onPreviewForward(url) {
@@ -439,6 +491,16 @@ function onPreviewForward(url) {
   } else {
     showToast('无法转发该图片');
   }
+}
+
+function openPreview(url) {
+  const imgs = messages.value
+    .filter((m) => m.mediaType === 'image' && m.mediaUrl)
+    .map((m) => m.mediaUrl);
+  if (url && !imgs.includes(url)) imgs.unshift(url);
+  previewImages.value = imgs.filter(Boolean);
+  previewIndex.value = Math.max(0, previewImages.value.indexOf(url));
+  showImagePreview.value = true;
 }
 
 function showSendTip(m) {
@@ -511,6 +573,8 @@ function doAction(kind) {
   if (!m) return;
   if (kind === 'copy' && m.content && navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(m.content).catch(() => {});
+    showToast('已复制');
+    return;
   }
   if (kind === 'quote') {
     setQuote(m);
@@ -538,14 +602,94 @@ function doAction(kind) {
   }
 }
 
-function openPreview(url) {
-  const imgs = messages.value
-    .filter((m) => m.mediaType === 'image' && m.mediaUrl)
-    .map((m) => m.mediaUrl);
-  if (url && !imgs.includes(url)) imgs.unshift(url);
-  previewImages.value = imgs.filter(Boolean);
-  previewIndex.value = Math.max(0, previewImages.value.indexOf(url));
-  showImagePreview.value = true;
+function pickChatFile() {
+  fileInput.value?.click();
+}
+
+async function onChatFile(e) {
+  const file = e.target.files?.[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const buf = await file.arrayBuffer();
+    const { url, mediaType } = await api.uploadChatMedia(new Blob([buf], { type: file.type || 'application/octet-stream' }), 'file').catch(async () => {
+      const data = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('读取文件失败'));
+        reader.readAsDataURL(file);
+      });
+      return api.uploadChatMedia(data, 'file');
+    });
+    if (!url) throw new Error('上传失败');
+    const sizeLabel = file.size > 1024 * 1024
+      ? (file.size / 1024 / 1024).toFixed(1) + 'MB'
+      : Math.max(1, Math.round(file.size / 1024)) + 'KB';
+    socket.emit('private:send', {
+      conversationId,
+      content: `[文件]${file.name}`,
+      mediaType: mediaType || 'file',
+      mediaUrl: url,
+      ext: { name: file.name, sizeLabel },
+    }, (res) => {
+      if (res?.error) showToast(res.error);
+      else playSendSound();
+    });
+    dockMode.value = 0;
+  } catch (err) {
+    showToast(err.message || '发送文件失败');
+  }
+}
+
+function openLocPick() {
+  if (!navigator.geolocation) {
+    locName.value = '手动位置';
+    showLoc.value = true;
+    return;
+  }
+  showToast('正在获取位置…');
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const { latitude, longitude } = pos.coords;
+      locName.value = `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+      showLoc.value = true;
+    },
+    () => {
+      locName.value = '手动位置';
+      showLoc.value = true;
+    },
+    { timeout: 5000, enableHighAccuracy: false }
+  );
+}
+
+function sendLocation() {
+  const name = locName.value.trim() || '位置';
+  const local = makeLocalMsg({
+    me: props.me,
+    conversationId,
+    content: name,
+    mediaType: 'location',
+    ext: { name },
+  });
+  messages.value.push(local);
+  scrollToBottom();
+  socket.emit('private:send', {
+    conversationId,
+    content: name,
+    mediaType: 'location',
+    ext: { name },
+  }, (res) => {
+    if (res?.error) {
+      patchLocalMsg(messages.value, local.id, { sendStatus: 'failed' });
+      messages.value = [...messages.value];
+      showToast(res.error);
+    } else {
+      playSendSound();
+    }
+  });
+  showLoc.value = false;
+  locName.value = '';
+  dockMode.value = 0;
 }
 
 function voiceWidth(m) {
@@ -1055,6 +1199,7 @@ function stopRecord() {
 }
 
 onMounted(() => {
+  refreshFriendState();
   ensureNotifyPermission().catch(() => {});
   if (props.pendingSearch) {
     showSearch.value = true;
@@ -1215,6 +1360,15 @@ onBeforeUnmount(() => {
     </header>
 
     <div v-if="showConnHint" class="conn-bar">连接已断开，正在重连…</div>
+    <div v-if="notFriend && !target.isAI" class="not-friend-bar">
+      <div class="nf-text">
+        <div class="nf-title">你们还不是朋友</div>
+        <div class="nf-sub">由于你已将对方删除，或对方已将你删除，你们已不是朋友。请先发送朋友验证。</div>
+      </div>
+      <button class="nf-btn" type="button" :disabled="addingFriend" @click="sendFriendVerify">
+        {{ addingFriend ? '发送中…' : '添加朋友' }}
+      </button>
+    </div>
     <div v-if="peerTyping" class="typing-bar">{{ target.nickname }} 正在输入…</div>
 
     <main class="chat-body scroll-y" ref="listEl" @scroll="onScroll" @click="onChatBodyClick">
@@ -1287,6 +1441,16 @@ onBeforeUnmount(() => {
                 <div class="file-name">{{ String(m.ext?.name || m.content || '文件').replace(/^\[文件\]/, '') }}</div>
                 <div class="file-sub">点击预览 / 下载</div>
               </div>
+            </div>
+            <div
+              v-else-if="m.mediaType === 'location'"
+              class="bubble loc-bubble"
+              @click="openLocDetail(m)"
+            >
+              <div class="loc-map">
+                <div class="loc-pin">📍</div>
+              </div>
+              <div class="loc-name">{{ m.ext?.name || m.content || '位置' }}</div>
             </div>
             <WxPayCard
               v-else-if="payKindOf(m)"
@@ -1406,19 +1570,52 @@ onBeforeUnmount(() => {
           <button v-if="!target.isAI && peerUid" class="plus-item" type="button" @click="openCall('voice')"><span class="plus-icon">📞</span><span>语音通话</span></button>
           <button class="plus-item" type="button" @click="openCreatePay('redpacket')"><span class="plus-icon">🧧</span><span>红包</span></button>
           <button class="plus-item" type="button" @click="openCreatePay('transfer')"><span class="plus-icon">💰</span><span>转账</span></button>
-          <button class="plus-item" type="button" @click="showToast('位置消息演示中')"><span class="plus-icon">📍</span><span>位置</span></button>
+          <button class="plus-item" type="button" @click="pickChatFile"><span class="plus-icon">📁</span><span>文件</span></button>
+          <input ref="fileInput" type="file" accept="*" hidden @change="onChatFile" />
+          <button class="plus-item" type="button" @click="openLocPick"><span class="plus-icon">📍</span><span>位置</span></button>
         </div>
       </div>
     </footer>
 
+    <div v-if="showLoc" class="mask" @click.self="showLoc = false">
+      <div class="pay-panel">
+        <div class="pay-title">位置</div>
+        <div class="pay-row"><span>地点</span><input v-model="locName" maxlength="60" placeholder="当前位置或手动填写" /></div>
+        <button class="pay-btn" @click="sendLocation">发送位置</button>
+      </div>
+    </div>
+    <div v-if="locDetail" class="mask" @click.self="locDetail = null">
+      <div class="pay-panel">
+        <div class="pay-title">位置</div>
+        <div class="pay-row"><span class="cell-label">{{ locDetail.name }}</span></div>
+        <div class="pay-row"><span class="cell-sub">演示位置消息，可复制坐标后在地图应用打开</span></div>
+        <button class="pay-btn" @click="navigator.clipboard?.writeText(locDetail.name); locDetail = null; showToast('已复制位置')">复制位置</button>
+        <button class="pay-btn" style="background:transparent;color:#576b95" @click="locDetail = null">关闭</button>
+      </div>
+    </div>
+
     <div v-if="actionMsg" class="action-sheet" @click.self="actionMsg = null">
-      <div class="action-menu">
-        <button class="action-item" @click="doAction('copy')">复制</button>
-        <button class="action-item" @click="doAction('forward')">转发</button>
-        <button class="action-item" @click="doAction('favorite')">收藏</button>
-        <button class="action-item" @click="doAction('quote')">引用</button>
-        <button class="action-item" @click="doAction('recall')">撤回</button>
-        <button class="action-item danger" @click="doAction('delete')">删除</button>
+      <div class="action-menu" @click.stop>
+        <div class="action-grid">
+          <button v-if="actionMsg.content && !actionMsg.mediaType" class="action-item" @click="doAction('copy')">
+            <span class="ai-ico">⧉</span><span>复制</span>
+          </button>
+          <button class="action-item" @click="doAction('forward')">
+            <span class="ai-ico">↗</span><span>转发</span>
+          </button>
+          <button class="action-item" @click="doAction('favorite')">
+            <span class="ai-ico">☆</span><span>收藏</span>
+          </button>
+          <button v-if="actionMsg.content && actionMsg.mediaType !== 'image' && actionMsg.mediaType !== 'voice'" class="action-item" @click="doAction('quote')">
+            <span class="ai-ico">❝</span><span>引用</span>
+          </button>
+          <button v-if="isMine(actionMsg) && actionMsg.senderType === 'user'" class="action-item" @click="doAction('recall')">
+            <span class="ai-ico">↩</span><span>撤回</span>
+          </button>
+          <button class="action-item danger" @click="doAction('delete')">
+            <span class="ai-ico">🗑</span><span>删除</span>
+          </button>
+        </div>
       </div>
     </div>
 
@@ -1525,6 +1722,13 @@ onBeforeUnmount(() => {
       @update:rp-count="(v) => (createPay.rpCount = v)"
       @update:cover="(v) => (createPay.cover = v)"
       @submit="submitCreatePay"
+    />
+    <FilePreview
+      :open="!!filePreview"
+      :name="filePreview?.name"
+      :url="filePreview?.url"
+      :sender="filePreview?.sender"
+      @close="filePreview = null"
     />
   </div>
 </template>
@@ -1700,18 +1904,22 @@ onBeforeUnmount(() => {
 }
 .plus-item:active .plus-icon { background: #e5e5e5; }
 
-.action-sheet { position: absolute; inset: 0; z-index: 46; background: var(--mask); }
+.action-sheet { position: absolute; inset: 0; z-index: 46; background: rgba(0,0,0,0.35); }
 .action-menu {
-  position: absolute; left: 50%; top: 30%; transform: translateX(-50%);
-  width: min(240px, calc(100% - 40px)); background: #4c4c4c; border-radius: 6px;
-  overflow: hidden; animation: popIn 160ms var(--ease);
+  position: absolute; left: 50%; top: 28%; transform: translateX(-50%);
+  width: min(280px, calc(100% - 36px)); background: #4c4c4c; border-radius: 8px;
+  overflow: hidden; animation: popIn 200ms var(--ease);
+  box-shadow: 0 8px 28px rgba(0,0,0,0.28);
 }
+.action-grid { display: flex; flex-wrap: wrap; padding: 4px 0; }
 .action-item {
-  width: 100%; height: 44px; padding: 0 14px; color: #fff; font-size: 15px;
-  text-align: left; display: flex; align-items: center;
+  flex: 0 0 25%; min-width: 25%; height: 64px; padding: 8px 4px;
+  color: #fff; font-size: 12px; border: 0; background: transparent;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  cursor: pointer;
 }
 .action-item:active { background: rgba(255,255,255,0.12); }
-.action-item + .action-item { border-top: 0.5px solid rgba(255,255,255,0.12); }
+.action-item .ai-ico { font-size: 20px; line-height: 1; }
 .action-item.danger { color: #ff6b6b; }
 
 .typing-bar {
@@ -2006,6 +2214,30 @@ onBeforeUnmount(() => {
   background: #e6a23c;
   padding: 4px 8px;
 }
+.not-friend-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #fff7e6;
+  border-bottom: 0.5px solid #f0e0c0;
+}
+.nf-text { flex: 1; min-width: 0; }
+.nf-title { font-size: 13px; color: #8a6a2a; font-weight: 600; }
+.nf-sub { margin-top: 2px; font-size: 12px; color: #a8894a; line-height: 1.35; }
+.nf-btn {
+  flex-shrink: 0;
+  min-height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 4px;
+  background: #07c160;
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+.nf-btn:disabled { opacity: 0.55; }
 .pay-bubble {
   cursor: pointer !important;
   touch-action: manipulation !important;
@@ -2061,6 +2293,25 @@ onBeforeUnmount(() => {
 }
 .pay-icon { font-size: 40px; }
 .pay-title2 { margin-top: 8px; font-size: 16px; font-weight: 600; color: var(--text); }
+.pay-panel {
+  position: absolute; left: 12px; right: 12px; top: 20%;
+  background: var(--white); border-radius: 12px; padding: 16px;
+  z-index: 41;
+}
+.pay-title { text-align: center; font-size: 16px; font-weight: 600; margin-bottom: 12px; color: var(--text); }
+.pay-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 14px; color: var(--text); }
+.pay-row input { flex: 1; border: 0; background: var(--divider-soft); border-radius: 6px; min-height: 36px; padding: 0 10px; color: var(--text); }
+.pay-btn {
+  width: 100%; min-height: 42px; border: 0; border-radius: 8px;
+  background: #07c160; color: #fff; font-size: 15px;
+}
+.loc-bubble { padding: 0 !important; overflow: hidden; width: 200px; background: var(--white) !important; }
+.loc-map {
+  height: 80px; background: linear-gradient(135deg, #cfe3d8, #b8d4e8);
+  display: flex; align-items: center; justify-content: center;
+}
+.loc-pin { font-size: 28px; }
+.loc-name { padding: 8px 10px; font-size: 13px; color: var(--text); }
 .pay-amt { margin-top: 8px; font-size: 26px; color: #e6433d; font-weight: 700; }
 .pay-tip { margin-top: 10px; font-size: 13px; color: var(--text-2); }
 .pay-ok {

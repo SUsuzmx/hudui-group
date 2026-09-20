@@ -11,9 +11,42 @@ function normConv(id) {
 }
 
 function getPrefs(userId, conv) {
-  return stmts.getChatPref.get(userId, conv) || {
-    muted: 0, pinned: 0, folded: 0, draft: '', bg_key: null,
-  };
+  const row = stmts.getChatPref.get(userId, conv);
+  if (!row) {
+    return { muted: 0, pinned: 0, folded: 0, draft: '', bg_key: null, extra: {} };
+  }
+  let extra = {};
+  try { extra = row.extra ? JSON.parse(row.extra) : {}; } catch { extra = {}; }
+  return { ...row, extra };
+}
+
+function parseExtra(val) {
+  if (val == null) return null;
+  if (typeof val === 'string') return val.slice(0, 800);
+  try { return JSON.stringify(val).slice(0, 800); } catch { return null; }
+}
+
+export function getUserSettings(userId) {
+  try {
+    const r = stmts.getUserSettingsRaw.get(userId);
+    return r?.settings ? JSON.parse(r.settings) : {};
+  } catch { return {}; }
+}
+
+export function setUserSettings(userId, patch) {
+  const cur = getUserSettings(userId);
+  const next = { ...cur, ...patch };
+  // 只保留可识别键
+  const ALLOW = new Set([
+    'allowFriendReq', 'searchMobile', 'searchWxid', 'addByGroup', 'addByQr', 'addByCard',
+    'strangerSee10', 'momentsPublic', 'multiLogin', 'autoDownload', 'voiceInput', 'haptic',
+  ]);
+  const clean = {};
+  for (const [k, v] of Object.entries(next)) {
+    if (ALLOW.has(k)) clean[k] = Boolean(v);
+  }
+  stmts.setUserSettings.run(JSON.stringify(clean), userId);
+  return clean;
 }
 
 function getUnread(userId, conv) {
@@ -178,8 +211,9 @@ export function createMetaRouter({ verifyToken, notify } = {}) {
     /** 更新会话偏好 */
     upsertPref(req, res) {
       const conv = normConv(req.body?.conversationId);
-      const { muted, pinned, folded, draft, bgKey } = req.body || {};
+      const { muted, pinned, folded, draft, bgKey, extra } = req.body || {};
       const now = Date.now();
+      const extraJson = parseExtra(extra);
       stmts.upsertChatPref.run(
         req.user.id, conv,
         muted ? 1 : 0,
@@ -187,12 +221,14 @@ export function createMetaRouter({ verifyToken, notify } = {}) {
         folded ? 1 : 0,
         draft != null ? String(draft).slice(0, 500) : '',
         bgKey != null ? String(bgKey).slice(0, 40) : null,
+        extraJson,
         now,
         muted != null ? (muted ? 1 : 0) : null,
         pinned != null ? (pinned ? 1 : 0) : null,
         folded != null ? (folded ? 1 : 0) : null,
         draft != null ? String(draft).slice(0, 500) : null,
         bgKey != null ? String(bgKey).slice(0, 40) : null,
+        extraJson,
       );
       const pref = getPrefs(req.user.id, conv);
       if (draft != null && typeof notify === 'function') {
@@ -283,6 +319,10 @@ export function createMetaRouter({ verifyToken, notify } = {}) {
       if (!target) return res.status(404).json({ error: '用户不存在' });
       if (stmts.getFriend.get(req.user.id, toId)) {
         return res.json({ ok: true, already: true });
+      }
+      // 对方关闭「允许添加我为朋友」
+      if (getUserSettings(toId).allowFriendReq === false) {
+        return res.status(403).json({ error: '对方设置了权限，无法添加' });
       }
       // 对方拉黑我时禁止发申请
       const peerFr = stmts.getFriend.get(toId, req.user.id);

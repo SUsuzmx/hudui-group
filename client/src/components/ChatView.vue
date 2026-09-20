@@ -1,7 +1,8 @@
 <script setup>
 import { ref, nextTick, onMounted, onBeforeUnmount, computed } from 'vue';
 import { api, compressImage } from '../api.js';
-import { EMOJI_LIST, renderContent } from '../chat-shared.js';
+import { EMOJI_LIST, EMOJI_PACKS, loadRecentEmojis, pushRecentEmoji, renderContent } from '../chat-shared.js';
+import FilePreview from './FilePreview.vue';
 import { useVoicePlayer } from '../voice-player.js';
 import { ensureNotifyPermission, notifyMessage, playMsgSound, playSendSound } from '../notify.js';
 import { makeLocalMsg, patchLocalMsg, dropLocalEcho } from '../chat-send-status.js';
@@ -56,6 +57,7 @@ const dockMode = ref(0);
 const showChatMore = ref(false);
 const previewSrc = ref(null);
 const actionMsg = ref(null);
+const actionPressed = ref(false);
 const actionMenuEl = ref(null);
 const quoteMsg = ref(null);
 const typingNames = ref([]);
@@ -68,10 +70,33 @@ let typingTimer = null;
 let avatarTap = { id: null, ts: 0 };
 
 const emojiList = EMOJI_LIST;
+const emojiPackKey = ref('face');
+const recentEmojis = ref(loadRecentEmojis());
 const favEmojis = (() => {
   try { return JSON.parse(localStorage.getItem('hudui_stickers') || '[]'); }
   catch { return []; }
 })();
+const filePreview = ref(null); // { name, url, sender }
+
+const emojiTabs = computed(() => [
+  { key: 'recent', label: '最近', icons: recentEmojis.value },
+  ...EMOJI_PACKS.map((p) => ({ key: p.key, label: p.name, icons: p.icons })),
+  { key: 'fav', label: '收藏', icons: favEmojis.value },
+]);
+
+const displayEmojis = computed(() => {
+  const hit = emojiTabs.value.find((t) => t.key === emojiPackKey.value);
+  return hit?.icons || emojiList;
+});
+
+function pickEmojiTab(key) {
+  emojiPackKey.value = key;
+}
+
+function insertEmojiTracked(e) {
+  recentEmojis.value = pushRecentEmoji(e);
+  insertEmoji(e);
+}
 const mergeExpand = ref(null);
 const showJieleng = ref(false);
 const jielengTitle = ref('');
@@ -610,10 +635,19 @@ const searching = ref(false);
 const photoInput = ref(null);
 const recorder = ref(null);
 const recording = ref(false);
+const recCancel = ref(false);
 const recSeconds = ref(0);
+let recTimer = null;
+
+function recBarHeight(n) {
+  if (recCancel.value) return 4;
+  const t = Date.now() / 120 + n;
+  const base = 6 + Math.abs(Math.sin(t + n * 0.7)) * (recSeconds.value ? 18 : 10);
+  return Math.round(base);
+}
 const showForward = ref(false);
 const forwardIds = ref([]);
-let recTimer = null;
+const recStartY = ref(0);
 
 async function doSearchHistory() {
   const q = searchQuery.value.trim();
@@ -652,9 +686,6 @@ async function onChatPhoto(e) {
     showToast(err.message || '发送图片失败');
   }
 }
-
-const recStartY = ref(0);
-const recCancel = ref(false);
 
 async function startRecord(e) {
   if (recording.value) return;
@@ -757,9 +788,13 @@ function onPreviewForward(url) {
 
 function startLongPress(m, e) {
   if (m.senderType === 'system') return;
+  if (multiMode.value) return;
   clearTimeout(longPressTimer);
   longPressTimer = setTimeout(() => {
     actionMsg.value = m;
+    actionPressed.value = true;
+    // 轻触震动（支持时）
+    try { navigator.vibrate?.(12); } catch { /* ignore */ }
   }, 480);
 }
 
@@ -794,9 +829,12 @@ function onForwardDone(payload) {
 function doAction(kind) {
   const m = actionMsg.value;
   actionMsg.value = null;
+  actionPressed.value = false;
   if (!m) return;
   if (kind === 'copy' && m.content) {
     if (navigator.clipboard?.writeText) navigator.clipboard.writeText(m.content).catch(() => {});
+    showToast('已复制');
+    return;
   }
   if (kind === 'quote') {
     setQuote(m);
@@ -878,12 +916,13 @@ function openMergeExpand(m) {
 }
 
 function openFileMsg(m) {
-  const url = m?.mediaUrl;
-  if (url) {
-    window.open(url, '_blank');
-  } else {
-    showToast('演示文件消息（无附件）');
-  }
+  const url = m?.mediaUrl || '';
+  const raw = String(m?.ext?.name || m.content || '文件').replace(/^\[文件\]/, '').trim();
+  filePreview.value = {
+    name: raw || '文件',
+    url,
+    sender: m?.senderName || '',
+  };
 }
 
 function jielengLines(m) {
@@ -1416,6 +1455,12 @@ function sendLocation() {
   dockMode.value = 0;
 }
 
+const locDetail = ref(null);
+const showNicknames = ref(true);
+function openLocDetail(m) {
+  locDetail.value = { name: m.ext?.name || m.content || '位置' };
+}
+
 function onAvatarDbl(m) {
   if (!m || m.senderType === 'system') return;
   if (isMine(m)) return;
@@ -1794,7 +1839,12 @@ onBeforeUnmount(() => {
         <div
           v-else
           class="msg-row"
-          :class="{ mine: isMine(m), cont: sameSenderAsPrev(i), selected: multiMode && selectedIds.includes(m.id) }"
+          :class="{
+            mine: isMine(m),
+            cont: sameSenderAsPrev(i),
+            selected: multiMode && selectedIds.includes(m.id),
+            'press-flash': actionMsg && actionMsg.id === m.id,
+          }"
           @click="multiMode ? toggleSelect(m.id) : null"
           @pointerdown="!multiMode && startLongPress(m, $event)"
           @pointerup="clearLongPress"
@@ -1807,7 +1857,7 @@ onBeforeUnmount(() => {
           </div>
           <div v-else class="avatar-spacer"></div>
           <div class="msg-col">
-          <div v-if="!isMine(m) && !sameSenderAsPrev(i)" class="sender-name">{{ m.senderName }}</div>
+          <div v-if="showNicknames && !isMine(m) && !sameSenderAsPrev(i)" class="sender-name">{{ m.senderName }}</div>
             <div v-if="m.quote" class="quote-box">
               <div class="quote-name">{{ m.quote.name }}</div>
               <div class="quote-text">{{ m.quote.content }}</div>
@@ -1864,7 +1914,7 @@ onBeforeUnmount(() => {
               :expired="parseExt(m).status === 'expired'"
               @open="openPayOverlayFromMsg(m)"
             />
-            <div v-else-if="m.mediaType === 'location'" class="bubble loc-bubble" @click="showToast('位置：' + (m.ext?.name || m.content))">
+            <div v-else-if="m.mediaType === 'location'" class="bubble loc-bubble" @click="openLocDetail(m)">
               <div class="loc-map">
                 <div class="loc-grid"></div>
                 <div class="loc-pin">📍</div>
@@ -2002,11 +2052,27 @@ onBeforeUnmount(() => {
 
       <div v-if="dockMode === 1" class="dock-panel emoji-panel">
         <div class="emoji-grid">
-          <button v-for="(e, i) in emojiList" :key="i" class="emoji-item" @click="insertEmoji(e)">{{ e }}</button>
-          <button v-for="e in favEmojis" :key="'fav-'+e" class="emoji-item fav" @click="insertEmoji(e)">{{ e }}</button>
+          <button
+            v-for="(e, i) in displayEmojis"
+            :key="emojiPackKey + '-' + i + '-' + e"
+            class="emoji-item"
+            :class="{ fav: emojiPackKey === 'fav' }"
+            @click="insertEmojiTracked(e)"
+          >{{ e }}</button>
+          <div v-if="!displayEmojis.length" class="emoji-empty">
+            {{ emojiPackKey === 'recent' ? '暂无最近表情，点几个试试' : emojiPackKey === 'fav' ? '暂无收藏表情' : '暂无表情' }}
+          </div>
         </div>
-        <div class="emoji-footer">
-          <button class="emoji-del" @click="deleteEmoji">删除</button>
+        <div class="emoji-tabs">
+          <button
+            v-for="t in emojiTabs"
+            :key="t.key"
+            type="button"
+            class="emoji-tab"
+            :class="{ on: emojiPackKey === t.key }"
+            @click="pickEmojiTab(t.key)"
+          >{{ t.label }}</button>
+          <button class="emoji-del" type="button" @click="deleteEmoji">⌫</button>
         </div>
       </div>
 
@@ -2054,6 +2120,13 @@ onBeforeUnmount(() => {
         <button class="pay-btn" @click="sendLocation">发送位置</button>
       </div>
     </div>
+    <div v-if="locDetail" class="mask" @click.self="locDetail = null">
+      <div class="pay-panel">
+        <div class="pay-title">位置</div>
+        <div class="pay-row"><span>{{ locDetail.name }}</span></div>
+        <button class="pay-btn" @click="navigator.clipboard?.writeText(locDetail.name); locDetail = null; showToast('已复制位置')">复制位置</button>
+      </div>
+    </div>
     <div v-if="showJieleng" class="mask" @click.self="showJieleng = false">
       <div class="pay-panel">
         <div class="pay-title">群接龙</div>
@@ -2091,16 +2164,49 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 长按菜单 -->
-    <div v-if="actionMsg" class="action-sheet" @click.self="actionMsg = null">
-      <div class="action-menu" ref="actionMenuEl">
-        <button v-if="actionMsg.content" class="action-item" @click="doAction('copy')">复制</button>
-        <button class="action-item" @click="doAction('forward')">转发</button>
-        <button class="action-item" @click="doAction('favorite')">收藏</button>
-        <button v-if="actionMsg.content" class="action-item" @click="doAction('quote')">引用</button>
-        <button class="action-item" @click="doAction('multi')">多选</button>
-        <button v-if="isMine(actionMsg) && actionMsg.senderType === 'user'" class="action-item" @click="doAction('recall')">撤回</button>
-        <button class="action-item danger" @click="doAction('delete')">删除</button>
+    <!-- 长按菜单（微信黑色圆角浮层） -->
+    <div v-if="actionMsg" class="action-sheet" @click.self="actionMsg = null; actionPressed = false">
+      <div class="action-menu" ref="actionMenuEl" @click.stop>
+        <div class="action-grid">
+          <button v-if="actionMsg.content && !actionMsg.mediaType" class="action-item" @click="doAction('copy')">
+            <span class="ai-ico">⧉</span><span>复制</span>
+          </button>
+          <button class="action-item" @click="doAction('forward')">
+            <span class="ai-ico">↗</span><span>转发</span>
+          </button>
+          <button class="action-item" @click="doAction('favorite')">
+            <span class="ai-ico">☆</span><span>收藏</span>
+          </button>
+          <button v-if="actionMsg.content && actionMsg.mediaType !== 'image' && actionMsg.mediaType !== 'voice'" class="action-item" @click="doAction('quote')">
+            <span class="ai-ico">❝</span><span>引用</span>
+          </button>
+          <button class="action-item" @click="doAction('multi')">
+            <span class="ai-ico">☑</span><span>多选</span>
+          </button>
+          <button v-if="isMine(actionMsg) && actionMsg.senderType === 'user'" class="action-item" @click="doAction('recall')">
+            <span class="ai-ico">↩</span><span>撤回</span>
+          </button>
+          <button class="action-item danger" @click="doAction('delete')">
+            <span class="ai-ico">🗑</span><span>删除</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 按住说话全屏层（微信录制态） -->
+    <div v-if="recording" class="rec-overlay" :class="{ cancel: recCancel }">
+      <div class="rec-panel">
+        <div class="rec-mic">
+          <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.6">
+            <rect x="9" y="3" width="6" height="11" rx="3"/>
+            <path d="M6 11a6 6 0 0 0 12 0M12 17v3"/>
+          </svg>
+        </div>
+        <div class="rec-bars">
+          <i v-for="n in 12" :key="n" :style="{ height: `${recBarHeight(n)}px` }"></i>
+        </div>
+        <div class="rec-text">{{ recCancel ? '松开手指，取消发送' : `正在说话 ${recSeconds}s` }}</div>
+        <div class="rec-hint">{{ recCancel ? '上滑取消' : '手指上滑，取消发送' }}</div>
       </div>
     </div>
 
@@ -2197,6 +2303,13 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </div>
+    <FilePreview
+      :open="!!filePreview"
+      :name="filePreview?.name"
+      :url="filePreview?.url"
+      :sender="filePreview?.sender"
+      @close="filePreview = null"
+    />
   </div>
 </template>
 
@@ -2460,6 +2573,10 @@ onBeforeUnmount(() => {
   transition: background 120ms linear;
   animation: fade-up 140ms var(--ease);
   color: var(--text);
+}
+.msg-row.press-flash .bubble {
+  filter: brightness(0.92);
+  transform: scale(0.985);
 }
 .bubble:active { background: #ececec; }
 .msg-row.mine .bubble { background: var(--green-bubble); }
@@ -2811,15 +2928,26 @@ onBeforeUnmount(() => {
 .emoji-item {
   height: 40px; font-size: 24px;
   display: flex; align-items: center; justify-content: center; border-radius: 4px;
+  border: 0; background: transparent; cursor: pointer;
 }
 .emoji-item:active { background: #e0e0e0; }
-.emoji-footer {
-  height: 40px; display: flex; justify-content: flex-end; align-items: center;
-  padding: 0 10px; border-top: 0.5px solid var(--divider-soft); background: #f0f0f0;
+.emoji-empty {
+  grid-column: 1 / -1; text-align: center; color: var(--text-3);
+  font-size: 13px; padding: 28px 8px;
 }
+.emoji-tabs {
+  height: 40px; display: flex; align-items: center; gap: 2px;
+  padding: 0 6px; border-top: 0.5px solid var(--divider-soft); background: #f0f0f0;
+  overflow-x: auto;
+}
+.emoji-tab {
+  flex: 0 0 auto; border: 0; background: transparent; color: var(--text-2);
+  font-size: 12px; padding: 6px 10px; border-radius: 4px; min-height: 32px; cursor: pointer;
+}
+.emoji-tab.on { color: #07c160; background: rgba(7,193,96,0.08); font-weight: 600; }
 .emoji-del {
-  min-width: 56px; height: 30px; font-size: 14px; color: var(--text-2);
-  border: 0.5px solid #ccc; border-radius: 4px; background: var(--white);
+  margin-left: auto; min-width: 36px; height: 28px; font-size: 16px; color: var(--text-2);
+  border: 0; background: transparent; cursor: pointer;
 }
 .plus-panel { overflow-y: auto; }
 .plus-grid {
@@ -2857,22 +2985,76 @@ onBeforeUnmount(() => {
 
 .action-sheet {
   position: absolute; inset: 0; z-index: 46;
+  background: rgba(0, 0, 0, 0.35);
+  animation: fadeIn 160ms var(--ease);
 }
 .action-menu {
-  position: absolute; left: 50%; top: 30%; transform: translateX(-50%);
-  width: min(240px, calc(100% - 40px));
-  background: #4c4c4c; border-radius: 6px; overflow: hidden;
-  animation: popIn 160ms var(--ease); max-height: 320px; overflow-y: auto;
+  position: absolute; left: 50%; top: 28%; transform: translateX(-50%);
+  width: min(280px, calc(100% - 36px));
+  background: #4c4c4c; border-radius: 8px; overflow: hidden;
+  animation: popIn 200ms var(--ease);
+  box-shadow: 0 8px 28px rgba(0,0,0,0.28);
+}
+.action-grid {
+  display: flex; flex-wrap: wrap;
+  padding: 4px 0;
 }
 .action-item {
-  width: 100%; height: 44px; padding: 0 14px; color: #fff; font-size: 15px;
-  text-align: left; display: flex; align-items: center; position: relative;
+  flex: 0 0 25%;
+  min-width: 25%;
+  height: 64px;
+  padding: 8px 4px;
+  color: #fff; font-size: 12px;
+  border: 0; background: transparent;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  cursor: pointer;
 }
 .action-item:active { background: rgba(255,255,255,0.12); }
-.action-item + .action-item::before {
-  content: ""; position: absolute; left: 14px; right: 0; top: 0;
-  height: 0.5px; background: rgba(255,255,255,0.12);
+.action-item .ai-ico {
+  font-size: 20px; line-height: 1; opacity: 0.95;
 }
+.action-item.danger { color: #ff6b6b; }
+.action-item.danger .ai-ico { color: #ff6b6b; }
+
+/* 按住说话全屏录制层 */
+.rec-overlay {
+  position: absolute; inset: 0; z-index: 50;
+  background: rgba(0,0,0,0.45);
+  display: grid; place-items: center;
+  pointer-events: none;
+}
+.rec-panel {
+  width: 200px; min-height: 220px;
+  background: rgba(40, 40, 40, 0.92);
+  border-radius: 12px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; padding: 24px 16px;
+  color: #fff;
+}
+.rec-overlay.cancel .rec-panel { background: rgba(180, 40, 40, 0.92); }
+.rec-mic { color: #fff; opacity: 0.95; }
+.rec-bars {
+  display: flex; align-items: flex-end; gap: 3px; height: 24px;
+}
+.rec-bars i {
+  width: 3px; border-radius: 2px; background: #07c160;
+  display: block; min-height: 4px;
+}
+.rec-overlay.cancel .rec-bars i { background: #ffb3b3; }
+.rec-text { font-size: 14px; font-weight: 500; text-align: center; }
+.rec-hint { font-size: 12px; color: rgba(255,255,255,0.65); }
+
+.hold-talk {
+  width: 100%; min-height: 42px;
+  border: 0; border-radius: 6px;
+  background: #f7f7f7; color: #111;
+  font-size: 16px; font-weight: 500;
+  letter-spacing: 2px;
+  user-select: none; -webkit-user-select: none;
+  touch-action: none;
+}
+.hold-talk:active { background: #ddd; }
+.hold-talk.cancel { background: #fde2e2; color: var(--red, #fa5151); }
 .action-item.danger { color: #ff6b6b; }
 
 .img-preview {

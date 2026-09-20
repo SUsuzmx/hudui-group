@@ -1,8 +1,21 @@
 <script setup>
 import { ref, onMounted } from 'vue';
-import { getAppearance, setAppearance } from '../appearance.js';
+import { getAppearance, setAppearance, toggleDark } from '../appearance.js';
 import { api } from '../api.js';
 import { toast } from '../toast.js';
+
+onMounted(async () => {
+  try {
+    const d = await api.settings();
+    const s = d?.settings || {};
+    if (Object.keys(s).length) {
+      privacy.value = { ...privacy.value, ...s };
+      general.value = { ...general.value, ...s };
+      saveJson('wx_privacy', privacy.value);
+      saveJson('wx_general', general.value);
+    }
+  } catch { /* ignore */ }
+});
 
 const props = defineProps({
   me: { type: Object, required: true },
@@ -93,9 +106,16 @@ function togglePreview() {
 function toggleThemeFollow() {
   themeFollow.value = !themeFollow.value;
   localStorage.setItem('wx_theme_follow', themeFollow.value ? '1' : '0');
+  if (themeFollow.value && window.matchMedia) {
+    const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    appearance.value = toggleDark(dark);
+  }
 }
 function applyPatch(patch) {
   appearance.value = setAppearance(patch);
+}
+function toggleDarkMode() {
+  appearance.value = toggleDark();
 }
 function pickBg(p) {
   const dark = appearance.value.dark;
@@ -105,13 +125,16 @@ function currentBg() {
   return appearance.value.chatBg || (appearance.value.dark ? '#111111' : '#ededed');
 }
 function togglePrivacy(key) {
-  privacy.value = { ...privacy.value, [key]: !privacy.value[key] };
+  const next = { ...privacy.value, [key]: !privacy.value[key] };
+  privacy.value = next;
   saveJson('wx_privacy', privacy.value);
-  toast('已保存');
+  api.updateSettings(next).then(() => toast('已保存')).catch(() => toast('已本地保存'));
 }
 function toggleGeneral(key) {
-  general.value = { ...general.value, [key]: !general.value[key] };
+  const next = { ...general.value, [key]: !general.value[key] };
+  general.value = next;
   saveJson('wx_general', general.value);
+  api.updateSettings(next).catch(() => {});
 }
 async function openBlacklist() {
   section.value = 'blacklist';
@@ -335,7 +358,7 @@ onMounted(() => { appearance.value = getAppearance(); });
         <div class="row">
           <span class="label">深色模式</span>
           <button class="switch" :class="{ on: appearance.dark }"
-            @click="applyPatch({ dark: !appearance.dark, chatBg: !appearance.dark ? '#111111' : '#ededed' })"></button>
+            @click="toggleDarkMode"></button>
         </div>
         <div class="row">
           <span class="label">跟随系统外观</span>

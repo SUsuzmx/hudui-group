@@ -2,6 +2,7 @@
 import { computed, ref, onMounted } from 'vue';
 import { api } from '../api.js';
 import UserAvatar from './UserAvatar.vue';
+import OfficialAccountsView from './OfficialAccountsView.vue';
 
 const props = defineProps({
   type: { type: String, required: true },
@@ -26,7 +27,7 @@ const meta = computed(() => {
     blacklist: { title: '通讯录黑名单', icon: '⛔', empty: '黑名单为空', tip: '在好友资料页可将对方加入黑名单' },
     official: { title: '公众号', icon: '📢', empty: '暂无关注的公众号', tip: '' },
     newfriends: { title: '新的朋友', icon: '👤', empty: '暂无新的朋友申请', tip: '可通过用户 ID 添加' },
-    status: { title: '状态', icon: '💬', empty: '未设置状态', tip: '设置此刻的心情或状态' },
+    status: { title: '设个状态', icon: '💬', empty: '未设置状态', tip: '心情/工作/活动状态，朋友24小时内可见' },
     album: { title: '相册', icon: '🖼', empty: '暂无照片', tip: '朋友圈图片会汇总到这里' },
     wallet: { title: '钱包', icon: '💰', empty: '¥ 0.00 · 演示钱包', tip: '演示环境无真实支付' },
   };
@@ -77,6 +78,22 @@ async function refresh() {
           sub: r.message || '请求添加你为朋友',
           action: 'accept',
           reqId: r.id,
+          avatar: r.user?.avatar || null,
+          avatarColor: r.user?.avatarColor || '#4f6ef7',
+          wxid: r.user?.wxid || '',
+          time: r.createdAt,
+        });
+      }
+      for (const r of data.outgoing || []) {
+        if (r.status !== 'pending') continue;
+        list.push({
+          key: 'out-' + r.id,
+          title: r.user?.nickname || '用户',
+          sub: '等待对方验证',
+          action: 'outgoing',
+          status: r.status,
+          avatar: r.user?.avatar || null,
+          avatarColor: r.user?.avatarColor || '#4f6ef7',
         });
       }
       demoList.value = list;
@@ -315,6 +332,7 @@ async function onItem(item) {
       await api.handleFriendRequest(item.reqId, 'accept');
       demoList.value = demoList.value.filter((x) => x.key !== item.key);
       pending.value = Math.max(0, pending.value - 1);
+      alert(`已添加「${item.title}」为朋友`);
     } catch (e) {
       alert(e.message);
     }
@@ -505,9 +523,12 @@ async function addFromScan() {
       scanMsg.value = '你们已经是好友';
       return;
     }
-    await api.addFriend(scanResult.value.id);
-    scanResult.value = { ...scanResult.value, isFriend: true };
-    scanMsg.value = `已添加「${scanResult.value.nickname}」`;
+    if (scanResult.value.isAI) {
+      scanMsg.value = 'AI 群友仅在群聊中互动，无法添加为好友';
+      return;
+    }
+    await api.sendFriendRequest(scanResult.value.id, '我是' + (props.me?.nickname || '') + '（扫一扫）');
+    scanMsg.value = `已向「${scanResult.value.nickname}」发送验证申请`;
   } catch (e) {
     scanMsg.value = e.message;
   }
@@ -639,7 +660,7 @@ async function sendRequest() {
   }
   try {
     await api.sendFriendRequest(id, '我是' + (props.me?.nickname || ''));
-    alert('已发送申请');
+    alert('已发送申请，等待对方验证');
     addUserId.value = '';
     await refresh();
   } catch (e) {
@@ -705,7 +726,7 @@ async function saveTagMembers() {
           </span>
         </div>
         <button class="scan-add" type="button" :disabled="scanResult.isFriend" @click="addFromScan">
-          {{ scanResult.isFriend ? '已是好友' : '添加好友' }}
+          {{ scanResult.isFriend ? '已是好友' : '添加朋友' }}
         </button>
       </div>
     </main>
@@ -767,41 +788,57 @@ async function saveTagMembers() {
         <button @click="createTag">添加</button>
       </div>
 
-      <div v-if="type === 'newfriends'" class="tag-add">
-        <input v-model="addUserId" placeholder="输入用户 ID 申请添加" />
-        <button @click="sendRequest">发送申请</button>
+      <div v-if="type === 'newfriends'" class="nf-search-bar">
+        <div class="nf-search">
+          <span>🔍</span>
+          <input v-model="addUserId" placeholder="微信号 / 用户 ID" />
+          <button type="button" @click="sendRequest">搜索</button>
+        </div>
+        <div class="nf-hint">输入对方微信号或用户 ID 发送验证申请</div>
       </div>
 
-      <div v-if="type === 'newfriends'" class="cell-group">
+      <div v-if="type === 'newfriends'" class="cell-group nf-entries">
         <button class="cell-row" type="button" @click="onItem({ action: 'add' })">
-          <span class="cell-label">添加朋友<span class="cell-sub">搜索微信号 / 昵称添加</span></span>
+          <span class="nf-ico">🔍</span>
+          <span class="cell-label">添加朋友<span class="cell-sub">搜索微信号 / 昵称，发送验证申请</span></span>
           <span class="arrow">›</span>
         </button>
         <button class="cell-row" type="button" @click="onItem({ action: 'group' })">
-          <span class="cell-label">创建新的群聊<span class="cell-sub">选择好友/联系人创建群</span></span>
+          <span class="nf-ico">👥</span>
+          <span class="cell-label">创建新的群聊<span class="cell-sub">选择好友创建群聊</span></span>
           <span class="arrow">›</span>
         </button>
       </div>
 
-      <div v-if="type === 'newfriends' && demoList.length" class="cell-group">
-        <div class="sec-title" style="padding:8px 16px;font-size:12px;color:var(--text-3)">待处理申请 {{ pending || demoList.length }}</div>
-        <div v-for="item in demoList" :key="item.key" class="cell-row-wrap">
-          <button class="cell-row" @click="onItem(item)">
-            <span class="cell-label">
-              {{ item.title }}
-              <span v-if="item.sub" class="cell-sub">{{ item.sub }}</span>
-            </span>
-          </button>
-          <div v-if="item.action === 'accept'" class="req-actions">
-            <button class="req-btn ok" @click="onItem(item)">接受</button>
-            <button class="req-btn" @click="onItem({ ...item, action: 'reject' })">拒绝</button>
+      <div v-if="type === 'newfriends' && demoList.length" class="cell-group nf-list">
+        <div class="sec-title" style="padding:10px 16px;font-size:12px;color:#888;background:#ededed">
+          {{ pending ? `新的朋友 · ${pending}` : '我的申请' }}
+        </div>
+        <div v-for="item in demoList" :key="item.key" class="nf-row">
+          <UserAvatar
+            :name="item.title"
+            :avatar="item.avatar"
+            :color="item.avatarColor"
+            :size="48"
+          />
+          <div class="nf-main">
+            <div class="nf-name">{{ item.title }}</div>
+            <div class="nf-sub">{{ item.sub }}</div>
+          </div>
+          <div v-if="item.action === 'accept'" class="nf-actions">
+            <button type="button" class="nf-btn ok" @click="onItem(item)">接受</button>
+          </div>
+          <div v-else-if="item.action === 'outgoing'" class="nf-status">等待验证</div>
+          <div v-else class="nf-actions">
+            <button type="button" class="nf-btn ok" @click="onItem(item)">接受</button>
+            <button type="button" class="nf-btn" @click="onItem({ ...item, action: 'reject' })">拒绝</button>
           </div>
         </div>
       </div>
       <div v-else-if="type === 'newfriends'" class="empty-wrap">
         <div class="empty-icon">👤</div>
         <div class="empty-text">暂无新的朋友申请</div>
-        <div class="empty-tip">可通过用户 ID 添加，或在上方创建群聊</div>
+        <div class="empty-tip">可通过微信号搜索添加，对方同意后成为好友</div>
       </div>
 
       <div v-if="type === 'cards'" class="claim-row">
@@ -851,7 +888,7 @@ async function saveTagMembers() {
         </div>
       </div>
 
-      <div v-else-if="type !== 'newfriends' && type !== 'services' && demoList.length" class="cell-group">
+      <div v-else-if="type !== 'newfriends' && type !== 'services' && type !== 'official' && demoList.length" class="cell-group">
         <div v-for="item in demoList" :key="item.key" class="cell-row-wrap">
           <button class="cell-row" @click="onItem(item)">
             <span class="cell-label">
@@ -873,6 +910,10 @@ async function saveTagMembers() {
             <button class="req-btn" @click="onItem({ ...item, action: 'del-tag' })">删除标签</button>
           </div>
         </div>
+      </div>
+
+      <div v-else-if="type === 'official'" class="oa-host">
+        <OfficialAccountsView @back="emit('back')" />
       </div>
 
       <div v-else-if="type !== 'newfriends'" class="empty-wrap">
@@ -992,8 +1033,60 @@ async function saveTagMembers() {
   background: var(--divider-soft);
   color: var(--text);
   font-size: 14px;
+  border: 0;
+  cursor: pointer;
 }
 .req-btn.ok { background: #07c160; color: #fff; }
+
+/* 新的朋友 — 微信样式 */
+.oa-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: -0 0;
+}
+
+.nf-search-bar { background: var(--bg, #ededed); padding: 10px 12px 4px; }
+.nf-search {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--white, #fff); border-radius: 6px; padding: 8px 10px;
+}
+.nf-search input {
+  flex: 1; border: 0; outline: none; background: transparent;
+  font-size: 14px; color: var(--text); min-width: 0;
+}
+.nf-search button {
+  border: 0; background: #07c160; color: #fff; border-radius: 4px;
+  padding: 5px 12px; font-size: 13px; min-height: 30px; cursor: pointer;
+}
+.nf-hint { padding: 6px 4px 8px; font-size: 12px; color: var(--text-3, #888); }
+.nf-entries { margin-top: 8px; }
+.nf-ico {
+  width: 28px; height: 28px; border-radius: 6px; background: #07c160; color: #fff;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 14px;
+  flex-shrink: 0; margin-right: 4px;
+}
+.nf-list { margin-top: 8px; }
+.nf-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px; background: var(--white, #fff);
+  border-bottom: 0.5px solid var(--divider-soft, #ececec);
+}
+.nf-main { flex: 1; min-width: 0; }
+.nf-name { font-size: 16px; color: var(--text); font-weight: 500; }
+.nf-sub {
+  margin-top: 3px; font-size: 13px; color: var(--text-2, #888);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nf-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.nf-btn {
+  border: 0; border-radius: 4px; background: var(--divider-soft, #ececec);
+  color: var(--text); font-size: 13px; padding: 6px 12px; min-height: 32px; cursor: pointer;
+}
+.nf-btn.ok { background: #07c160; color: #fff; }
+.nf-status { font-size: 12px; color: var(--text-3, #999); flex-shrink: 0; }
+
 .tag-add { background: var(--white); }
 .tag-add input { background: var(--divider-soft); color: var(--text); }
 .service-icon { background: var(--divider-soft); }
@@ -1099,19 +1192,23 @@ async function saveTagMembers() {
 }
 .scan-page {
   flex: 1;
-  background: #111;
+  background: #000;
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-top: 48px;
+  padding-top: 24px;
+  color: #fff;
 }
+.scan-page :deep(.nav-bar) { background: #000; border-color: #222; color: #fff; }
+.scan-page :deep(.nav-title) { color: #fff; }
 .scan-frame {
-  width: 220px;
-  height: 220px;
+  width: min(240px, 70vw);
+  height: min(240px, 70vw);
   position: relative;
-  border: 1px solid rgba(255,255,255,0.35);
+  border: 1px solid rgba(255,255,255,0.25);
   overflow: hidden;
   background: #000;
+  margin-top: 24px;
 }
 .scan-video {
   position: absolute;

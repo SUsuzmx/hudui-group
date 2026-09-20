@@ -7,6 +7,45 @@ export const EMOJI_LIST = [
   '🎉','💯','😅','🤗','🤔','🤭','👋','✋','🤟','🖐️','💬','💭',
 ];
 
+/** 微信表情面板分组（近似） */
+export const EMOJI_PACKS = [
+  {
+    key: 'face',
+    name: '表情',
+    icons: EMOJI_LIST,
+  },
+  {
+    key: 'gesture',
+    name: '手势',
+    icons: ['👍','👎','👏','🙏','💪','✌️','🤝','👋','✋','🤟','👌','🤙','🖐️','✊','🤛','🤜','🫡','🫶'],
+  },
+  {
+    key: 'mood',
+    name: '心情',
+    icons: ['❤️','💔','🔥','⭐','💯','🎉','😅','🤗','🤔','🤭','😭','😤','😎','🤩','🥳','😴','🤒','🤯'],
+  },
+];
+
+export const EMOJI_RECENT_KEY = 'hudui_emoji_recent';
+
+export function loadRecentEmojis() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(EMOJI_RECENT_KEY) || '[]');
+    return Array.isArray(arr) ? arr.filter((x) => typeof x === 'string').slice(0, 32) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function pushRecentEmoji(e) {
+  if (!e) return loadRecentEmojis();
+  const list = loadRecentEmojis().filter((x) => x !== e);
+  list.unshift(e);
+  const next = list.slice(0, 32);
+  try { localStorage.setItem(EMOJI_RECENT_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+  return next;
+}
+
 export function escapeHtml(text) {
   return String(text ?? '')
     .replace(/&/g, '&amp;')

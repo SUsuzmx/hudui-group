@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, defineAsyncComponent } from 'vue';
+import { ref, onMounted, defineAsyncComponent, computed } from 'vue';
 import { getToken, setToken, api } from './api.js';
 import { createNavStack } from './nav-stack.js';
 import { toast } from './toast.js';
@@ -24,7 +24,14 @@ const ChatInfoView = defineAsyncComponent(() => import('./components/ChatInfoVie
 const FeaturePage = defineAsyncComponent(() => import('./components/FeaturePage.vue'));
 const DeepFeatureView = defineAsyncComponent(() => import('./components/DeepFeatureView.vue'));
 const VideoCallView = defineAsyncComponent(() => import('./components/VideoCallView.vue'));
+const CallFloatBar = defineAsyncComponent(() => import('./components/CallFloatBar.vue'));
+const callSession = ref(null); // { target, callMode, role, callId, incoming, minimized }
+const callViewRef = ref(null);
 const GlobalSearchView = defineAsyncComponent(() => import('./components/GlobalSearchView.vue'));
+const ListenView = defineAsyncComponent(() => import('./components/ListenView.vue'));
+const LookView = defineAsyncComponent(() => import('./components/LookView.vue'));
+const MusicFloatBar = defineAsyncComponent(() => import('./components/MusicFloatBar.vue'));
+import { musicPlayer } from './music-player.js';
 
 const view = ref('loading');
 const me = ref(null);
@@ -35,6 +42,15 @@ const groupMembers = ref({ onlineUsers: [], aiMembers: [], allUsers: [] });
 const transitionName = ref('page-fade');
 const activeChat = ref(null);
 const pendingSearch = ref(false);
+
+const showMusicFloat = computed(() => {
+  const onListen = view.value === 'sub' && subView.value?.type === 'listen';
+  return Boolean(musicPlayer.state.current) && !onListen;
+});
+
+function openListenFromFloat() {
+  openSub({ type: 'listen' });
+}
 
 const nav = createNavStack({
   view,
@@ -129,6 +145,10 @@ function openPrivateChat(contact) {
 }
 
 function openSub(payload) {
+  if (payload?.type === 'video-call') {
+    openVideoCall(payload);
+    return;
+  }
   nav.push();
   subView.value = payload;
   transitionName.value = 'page-push';
@@ -188,24 +208,49 @@ function openMomentsForUser(user) {
 }
 
 function onVideoCallEnd() {
-  // 离开通话页: 优先回到上一层(通常是私聊), 以便查看通话系统消息
-  goBack();
+  callSession.value = null;
 }
 
 function openVideoCall(payload) {
-  const returnChat = view.value === 'private-chat' || view.value === 'chat'
-    ? { view: view.value, target: view.value === 'private-chat' ? privateTarget.value : null, chat: activeChat.value }
-    : null;
-  openSub({
-    type: 'video-call',
-    ...payload,
+  if (!payload) return;
+  callSession.value = {
+    target: payload.target || null,
+    callMode: payload.callMode || payload.mode || 'video',
     role: payload.role || 'caller',
     callId: payload.callId || '',
-    returnChat,
-  });
+    incoming: payload.incoming || null,
+    minimized: false,
+  };
+}
+
+function minimizeCall() {
+  if (callSession.value) {
+    callSession.value = { ...callSession.value, minimized: true };
+  }
+}
+
+function restoreCall() {
+  if (callSession.value) {
+    callSession.value = { ...callSession.value, minimized: false };
+  }
+}
+
+function hangupFromFloat() {
+  const inst = callViewRef.value;
+  if (inst?.hangup) inst.hangup();
+  callSession.value = null;
+}
+
+function callSeconds() {
+  return Number(callViewRef.value?.seconds || 0);
 }
 
 function onFeatureBack(payload) {
+  if (payload?.then === 'status-updated') {
+    if (payload.user) handleProfileUpdated(payload.user);
+    goBack();
+    return;
+  }
   if (!payload?.then) {
     goBack();
     return;
@@ -404,9 +449,11 @@ async function onChatInfoToggle({ key, value }) {
         v-else-if="view === 'main'"
         key="main"
         :me="me"
+        :initial-tab="justRegistered ? 'contacts' : ''"
         @open-chat="openChat"
         @open-private-chat="openPrivateChat"
         @open-view="openSub"
+        @status-updated="handleProfileUpdated"
         @logout="handleLogout"
       />
       <ChatView
@@ -538,6 +585,16 @@ async function onChatInfoToggle({ key, value }) {
         :me="me"
         @back="onFeatureBack"
       />
+      <ListenView
+        v-else-if="view === 'sub' && subView?.type === 'listen'"
+        key="listen"
+        @back="goBack"
+      />
+      <LookView
+        v-else-if="view === 'sub' && subView?.type === 'look'"
+        key="look"
+        @back="goBack"
+      />
       <DeepFeatureView
         v-else-if="view === 'sub' && subView?.type === 'deep-feature'"
         :key="'deep-' + (subView.feature || 'x')"
@@ -547,17 +604,6 @@ async function onChatInfoToggle({ key, value }) {
         @back="onFeatureBack"
         @open-chat="openChatFromSearch"
         @open-private="openPrivateChat"
-      />
-      <VideoCallView
-        v-else-if="view === 'sub' && subView?.type === 'video-call'"
-        key="video-call"
-        :target="subView.target"
-        :me="me"
-        :mode="subView.callMode || 'video'"
-        :role="subView.role || 'caller'"
-        :call-id="subView.callId || ''"
-        :incoming="subView.incoming || null"
-        @end="onVideoCallEnd"
       />
       <CreateGroupView
         v-else-if="view === 'sub' && subView?.type === 'create-group'"
@@ -571,6 +617,35 @@ async function onChatInfoToggle({ key, value }) {
       </div>
       <div v-else key="boot" class="boot-loading">加载中…</div>
     </Transition>
+
+    <!-- 通话：挂载后可最小化，不卸载以保持 WebRTC -->
+    <div v-if="callSession" class="call-host" :class="{ hidden: callSession.minimized }">
+      <VideoCallView
+        ref="callViewRef"
+        key="video-call"
+        :target="callSession.target"
+        :me="me"
+        :mode="callSession.callMode"
+        :role="callSession.role"
+        :call-id="callSession.callId"
+        :incoming="callSession.incoming"
+        @end="onVideoCallEnd"
+        @minimize="minimizeCall"
+      />
+    </div>
+    <CallFloatBar
+      v-if="callSession?.minimized"
+      :session="callSession"
+      :seconds="callSeconds()"
+      @restore="restoreCall"
+      @hangup="hangupFromFloat"
+    />
+
+    <!-- 听一听：退出页面后音乐继续，侧边悬浮窗可拖拽/播放/回到列表 -->
+    <MusicFloatBar
+      :visible="showMusicFloat"
+      @open-listen="openListenFromFloat"
+    />
   </div>
 </template>
 

@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue';
 import { api } from '../api.js';
 import { toast } from '../toast.js';
 import UserAvatar from './UserAvatar.vue';
+import StatusView from './StatusView.vue';
 
 const props = defineProps({
   type: { type: String, required: true },
@@ -194,21 +195,21 @@ async function load() {
 onMounted(load);
 
 function onService(s) {
-  if (s.key === 'wallet' || s.key === 'pay') {
+  if (s.key === 'wallet' || s.key === 'pay' || ['mobile', 'bills', 'traffic', 'qcoin', 'travel'].includes(s.key)) {
     emit('back', { then: 'wallet' });
     return;
   }
-  if (['mobile', 'bills', 'traffic', 'qcoin', 'travel'].includes(s.key)) {
-    emit('back', { then: 'wallet' });
-    toast(`${s.label}：可从零钱演示支付`);
-    return;
-  }
-  toast(`${s.label} · 演示入口`);
+  // 其余服务入口统一进钱包页演示支付，避免空按钮
+  emit('back', { then: 'wallet' });
 }
 
 function openMini(m) {
   recentApps.value = [m, ...recentApps.value.filter((x) => x.id !== m.id)].slice(0, 6);
-  toast(`打开小程序：${m.name}`);
+  if (m?.gameUrl || m?.url) {
+    openGame({ id: m.id, name: m.name, url: m.gameUrl || m.url });
+    return;
+  }
+  emit('back', { then: 'miniapp-detail', payload: m });
 }
 
 function openGame(g) {
@@ -280,6 +281,10 @@ function openGroup(g) {
     isDefault: Boolean(g.isDefault),
   });
 }
+
+function openChannel(v) {
+  toast(`播放：${v.title}`);
+}
 </script>
 
 <template>
@@ -308,13 +313,36 @@ function openGroup(g) {
         </div>
       </article>
 
-      <!-- 视频号 -->
-      <div v-else-if="type === 'videoChannels'" class="video-grid">
-        <button v-for="v in videos" :key="v.id" class="video-card" type="button" @click="toast(`播放：${v.title}`)">
-          <div class="video-cover">{{ v.cover }}</div>
-          <div class="video-title">{{ v.title }}</div>
-          <div class="video-meta">{{ v.author }} · ❤️ {{ v.likes }}</div>
-        </button>
+      <!-- 视频号（全屏流） -->
+      <div v-else-if="type === 'videoChannels'" class="channels-page">
+        <div class="ch-tabs">
+          <button class="ch-tab on" type="button">推荐</button>
+          <button class="ch-tab" type="button" @click="toast('关注流演示中')">关注</button>
+          <button class="ch-tab" type="button" @click="toast('同城演示中')">同城</button>
+        </div>
+        <div class="ch-feed scroll-y">
+          <button
+            v-for="(v, i) in videos"
+            :key="v.id"
+            class="ch-card"
+            type="button"
+            @click="openChannel(v)"
+          >
+            <div class="ch-cover">
+              <span class="ch-emoji">{{ v.cover }}</span>
+              <div class="ch-play">▶</div>
+              <div class="ch-bottom">
+                <div class="ch-author">@{{ v.author }}</div>
+                <div class="ch-title">{{ v.title }}</div>
+              </div>
+            </div>
+            <div class="ch-side">
+              <div class="ch-like">❤️<span>{{ v.likes }}</span></div>
+              <div class="ch-cmt">💬<span>{{ 3 + i }}</span></div>
+              <div class="ch-share">↗</div>
+            </div>
+          </button>
+        </div>
       </div>
 
       <!-- 附近的人 -->
@@ -424,25 +452,14 @@ function openGroup(g) {
         </div>
       </div>
 
-      <!-- 状态主页 -->
-      <div v-else-if="type === 'statusHome'">
-        <section class="card">
-          <div class="sec-title">我的状态</div>
-          <div class="status-pick">
-            <button v-for="s in ['😊 心情不错','😷 有点累','🎯 专注中','🍜 干饭中','🎮 开黑中']" :key="s"
-              type="button" class="status-chip" :class="{ on: statusPick === s }" @click="setStatus(s)">{{ s }}</button>
-          </div>
-        </section>
-        <section class="card">
-          <div class="sec-title">好友状态</div>
-          <div v-for="s in statuses" :key="s.id" class="row status-row">
-            <span class="status-emoji">{{ s.emoji }}</span>
-            <div class="person-main">
-              <div class="person-name">{{ s.name }}</div>
-              <div class="person-sign">{{ s.text }} · {{ s.time }}</div>
-            </div>
-          </div>
-        </section>
+      <!-- 状态主页：选状态 → 编辑页 -->
+      <div v-else-if="type === 'statusHome'" class="status-host">
+        <StatusView
+          :me="me"
+          @close="emit('back')"
+          @back="emit('back')"
+          @updated="(u) => { emit('back', { then: 'status-updated', user: u }); }"
+        />
       </div>
 
       <!-- 群聊列表 -->
@@ -505,6 +522,8 @@ function openGroup(g) {
 
 <style scoped>
 .page { flex: 1; display: flex; flex-direction: column; min-height: 0; background: var(--bg); width: 100%; }
+/* 状态页为 fixed 全屏，宿主只需占位 */
+.status-host { min-height: 1px; }
 .nav-bar {
   height: var(--nav-h); flex-shrink: 0; display: flex; align-items: center; justify-content: center;
   position: relative; background: var(--bg); border-bottom: 0.5px solid var(--divider); padding: 0 8px;
@@ -611,6 +630,58 @@ function openGroup(g) {
 .game-layer-loading .hud-btn,
 .game-layer-loading button { pointer-events: auto; }
 .game-layer-frame { flex: 1; width: 100%; border: 0; background: #111; position: relative; z-index: 0; }
+
+/* 视频号 */
+.channels-page {
+  margin: -0 0;
+  min-height: 100%;
+  background: #0d0d0d;
+  display: flex; flex-direction: column;
+}
+.ch-tabs {
+  display: flex; gap: 16px; justify-content: center;
+  padding: 8px 12px; background: #0d0d0d;
+  border-bottom: 0.5px solid rgba(255,255,255,0.08);
+  position: sticky; top: 0; z-index: 2;
+}
+.ch-tab {
+  border: 0; background: transparent; color: rgba(255,255,255,0.55);
+  font-size: 15px; min-height: 36px; padding: 0 8px; cursor: pointer;
+}
+.ch-tab.on { color: #fff; font-weight: 600; }
+.ch-feed {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 8px 10px 24px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.ch-card {
+  position: relative; border: 0; padding: 0; background: transparent;
+  text-align: left; cursor: pointer; border-radius: 12px; overflow: hidden;
+  min-height: 220px;
+}
+.ch-cover {
+  position: relative; width: 100%; min-height: 220px;
+  background: linear-gradient(160deg, #1f2937 0%, #0f172a 55%, #111827 100%);
+  display: flex; align-items: center; justify-content: center;
+}
+.ch-emoji { font-size: 64px; opacity: 0.9; }
+.ch-play {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  color: rgba(255,255,255,0.85); font-size: 28px;
+  text-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+.ch-bottom {
+  position: absolute; left: 12px; right: 56px; bottom: 12px;
+  color: #fff;
+}
+.ch-author { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.ch-title { font-size: 13px; opacity: 0.92; line-height: 1.4; }
+.ch-side {
+  position: absolute; right: 10px; bottom: 16px;
+  display: flex; flex-direction: column; gap: 12px; align-items: center;
+  color: #fff; font-size: 12px;
+}
+.ch-side span { display: block; margin-top: 2px; font-size: 11px; }
+
 
 /* 表情 */
 .sticker-page { background: var(--bg); min-height: 100%; padding-bottom: 24px; }

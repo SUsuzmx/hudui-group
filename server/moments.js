@@ -142,31 +142,44 @@ export function createMomentsRouter({ verifyToken, notify } = {}) {
       const rows = stmts.listUserMoments.all(req.user.id, 50);
       res.json({ moments: rows.map((r) => rowToMoment(r, req.user.id)) });
     },
-    /** 指定用户的朋友圈（按可见权限过滤） */
+    /** 指定用户的朋友圈（按可见权限过滤）— 状态/封面/签名对好友公开 */
     userMoments(req, res) {
       const uid = Number(req.params.userId ?? req.query.userId);
       if (!Number.isInteger(uid) || uid <= 0) {
         return res.status(400).json({ error: '参数不合法' });
       }
+      const profile = stmts.userById.get(uid);
+      const baseUser = profile
+        ? {
+            id: profile.id,
+            nickname: profile.nickname,
+            avatar: profile.avatar,
+            avatarColor: profile.avatar_color,
+            signature: profile.signature || '',
+            momentsCover: profile.moments_cover || null,
+            wxid: profile.wxid || null,
+          }
+        : null;
       if (uid === req.user.id) {
         const rows = stmts.listUserMoments.all(req.user.id, 50);
-        return res.json({ moments: rows.map((r) => rowToMoment(r, req.user.id)) });
+        return res.json({
+          moments: rows.map((r) => rowToMoment(r, req.user.id)),
+          user: baseUser,
+        });
       }
+      // 好友或公开动态均可进入主页；非好友仅能看到公开内容
       const rows = stmts.listUserMoments.all(uid, 50) || [];
       const visible = rows.filter((r) => canView(r, req.user.id));
-      const profile = stmts.userById.get(uid);
+      // 非好友：公开封面/状态仍可见（对齐微信「公开资料」）
+      const cover = profile?.moments_cover || null;
+      const sig = profile?.signature || '';
       res.json({
         moments: visible.map((r) => rowToMoment(r, req.user.id)),
-        user: profile
-          ? {
-              id: profile.id,
-              nickname: profile.nickname,
-              avatar: profile.avatar,
-              avatarColor: profile.avatar_color,
-              signature: profile.signature || '',
-              momentsCover: profile.moments_cover || null,
-            }
-          : null,
+        user: baseUser,
+        publicProfile: {
+          momentsCover: cover,
+          signature: sig,
+        },
       });
     },
     create(req, res) {

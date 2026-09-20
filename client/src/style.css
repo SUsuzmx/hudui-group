@@ -28,6 +28,20 @@
   --ease: cubic-bezier(0.25, 0.1, 0.25, 1);
   --chat-bg: #ededed;
   --font-scale: 1;
+  /* 语义 token（深浅色共用名） */
+  --card: #ffffff;
+  --nav-bg: #ededed;
+  --tab-bg: #f7f7f7;
+  --input-bg: #f7f7f7;
+  --sheet-bg: #ffffff;
+  --pop-bg: #4c4c4c;
+  --bubble-peer: #ffffff;
+  --bubble-mine: #95ec69;
+  --bubble-peer-text: #191919;
+  --bubble-mine-text: #191919;
+  --badge-bg: #fa5151;
+  --shadow-color: rgba(0, 0, 0, 0.08);
+  --icon-muted: #b2b2b2;
   /* 微信间距 token */
   --wx-cell-h: 56px;
   --wx-pad-x: 16px;
@@ -56,7 +70,16 @@
 html.dark {
   --bg: #111111;
   --white: #1c1c1e;
+  --card: #1c1c1e;
+  --nav-bg: #1c1c1e;
+  --tab-bg: #171717;
+  --input-bg: #2c2c2e;
+  --sheet-bg: #1c1c1e;
   --green-bubble: #3d8b40;
+  --bubble-peer: #2c2c2e;
+  --bubble-mine: #3d8b40;
+  --bubble-peer-text: #f2f2f2;
+  --bubble-mine-text: #e8f5e9;
   --text: #f2f2f2;
   --text-2: #a0a0a0;
   --text-3: #6b6b6b;
@@ -65,6 +88,26 @@ html.dark {
   --press: rgba(255, 255, 255, 0.06);
   --mask: rgba(0, 0, 0, 0.6);
   --chat-bg: #111111;
+  --blue: #7aa2d4;
+  --icon-muted: #6b6b6b;
+  --shadow-color: rgba(0, 0, 0, 0.45);
+  --badge-bg: #fa5151;
+  color-scheme: dark;
+}
+
+html.dark .app-shell,
+html.dark body,
+html.dark #app {
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* 深色下常见硬编码浅色底的兜底 */
+html.dark .cell-group,
+html.dark .card,
+html.dark .section-bar + .cell-group {
+  background: var(--white);
+  color: var(--text);
 }
 
 html, body, #app {
@@ -163,3 +206,18 @@ ul { list-style: none; }
   transition: background var(--dur) var(--ease);
 }
 .icon-btn:active { background: var(--press); }
+
+/* 通话页保持挂载但不可见时的隐藏壳 */
+.call-host {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+}
+.call-host.hidden {
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  z-index: -1;
+}
