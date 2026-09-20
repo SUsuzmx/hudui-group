@@ -40,7 +40,10 @@ async function search() {
 }
 
 async function add(u) {
-  if (u.isFriend) return;
+  if (u.isFriend || u.isAI) {
+    if (u.isAI) message.value = 'AI 群友仅在群聊中互动，无法添加为好友';
+    return;
+  }
   try {
     await api.addFriend(u.id);
     u.isFriend = true;

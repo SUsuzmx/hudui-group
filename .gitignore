@@ -5,6 +5,10 @@ node_modules/
 client-dist/
 client/client-dist/
 
+# third-party games (cloned repos) & local toolchain
+games/
+toolchain/
+
 # runtime data & secrets
 data/
 config/ai.json
@@ -27,3 +31,7 @@ Thumbs.db
 .idea/
 .vscode/
 .zcode/
+
+# accidental local artifacts (do not commit)
+/[A-Za-z]
+/rel.json

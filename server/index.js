@@ -18,7 +18,7 @@ import { seedGroups, listGroups, getGroup, groupConvId, DEFAULT_GROUP_KIND, setG
 import { canAccessConversation } from './acl.js';
 import { mediaFromBodyJson, mediaFromMultipart, mediaFromRaw, normalizeKind } from './upload.js';
 import { getBalance, listTx, debit } from './wallet.js';
-import { expirePendingPayments, RP_COVERS } from './rp.js';
+import { expirePendingPayments, RP_COVERS, redPacketPayload } from './rp.js';
 
 const LOG_FILE = path.join(ROOT, 'data', 'app.log');
 let logQueue = [];
@@ -95,7 +95,7 @@ app.post('/api/chat/upload', express.raw({ type: () => true, limit: '9mb' }), (r
 });
 
 // 朋友圈配图上传
-app.post('/api/moments/upload', express.raw({ type: () => true, limit: '3mb' }), (req, res) => {
+app.post('/api/moments/upload', express.raw({ type: () => true, limit: '4mb' }), (req, res) => {
   if (!requireUser(req, res)) return;
   const ct = String(req.get('Content-Type') || '');
   let result;
@@ -108,7 +108,7 @@ app.post('/api/moments/upload', express.raw({ type: () => true, limit: '3mb' }),
     const m = b64.match(/^data:image\/(png|jpe?g|webp|gif);base64,(.+)$/i);
     if (!m) return res.status(400).json({ error: '图片格式不支持' });
     const buf = Buffer.from(m[2], 'base64');
-    if (buf.length < 10 || buf.length > 2 * 1024 * 1024) {
+    if (buf.length < 10 || buf.length > 3 * 1024 * 1024) {
       return res.status(400).json({ error: '图片大小不合适' });
     }
     result = mediaFromRaw(buf, `image/${m[1].toLowerCase().replace('jpeg', 'jpg')}`, 'image', '');
@@ -129,7 +129,7 @@ app.use('/media', express.static(path.join(ROOT, 'data', 'media'), { maxAge: '7d
 
 app.get('/api/avatars', (req, res) => res.json({ avatars: listAvatars() }));
 
-// AI 联系人列表 (通讯录展示用)
+// AI 群友列表仅供群成员/群设置使用, 不作为通讯录联系人
 app.get('/api/ai-contacts', (req, res) => {
   if (!requireUser(req, res)) return;
   const contacts = personas.map((p) => ({
@@ -140,8 +140,9 @@ app.get('/api/ai-contacts', (req, res) => {
     avatar: aiAvatarFile(p.name),
     isAI: true,
     personaId: p.id,
+    groupOnly: true,
   }));
-  res.json({ contacts });
+  res.json({ contacts, note: 'AI 群友仅出现在群聊中，不可添加为好友' });
 });
 
 // 演示钱包
@@ -153,6 +154,24 @@ app.get('/api/wallet', (req, res) => {
 
 app.get('/api/redpacket/covers', (req, res) => {
   res.json({ covers: RP_COVERS });
+});
+
+// 红包领取明细（点开已发出/已领取的红包时刷新）
+app.get('/api/redpacket/:id', (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: '参数无效' });
+  const packet = stmts.getRedPacket.get(id);
+  if (!packet) return res.status(404).json({ error: '红包不存在' });
+  const payload = redPacketPayload(packet);
+  if (!payload) return res.status(404).json({ error: '红包不存在' });
+  payload.claims = (payload.claims || []).map((c) => ({
+    ...c,
+    isMe: Number(c.userId) === Number(user.id),
+  }));
+  payload.isMine = Number(packet.from_id) === Number(user.id);
+  res.json({ packet: payload });
 });
 
 // 卡包（演示券）
@@ -302,9 +321,10 @@ app.post('/api/login', (req, res) => {
 });
 
 app.get('/api/me', (req, res) => {
-  const user = verifyToken(req.get('Authorization')?.replace(/^Bearer /, ''));
-  if (!user) return res.status(401).json({ error: '未登录' });
-  res.json({ user: publicUser({ ...user, avatar_color: user.avatarColor }) });
+  const session = verifyToken(req.get('Authorization')?.replace(/^Bearer /, ''));
+  if (!session) return res.status(401).json({ error: '未登录' });
+  const full = stmts.userById.get(session.id);
+  res.json({ user: publicUser(full || { ...session, avatar_color: session.avatarColor }) });
 });
 
 app.put('/api/me', (req, res) => {
@@ -322,6 +342,26 @@ app.get('/api/users/:id', (req, res) => {
   const target = stmts.userById.get(Number(req.params.id));
   if (!target) return res.status(404).json({ error: '用户不存在' });
   const fr = stmts.getFriend.get(user.id, target.id);
+  const peerFr = stmts.getFriend.get(target.id, user.id);
+  // 该用户在我的标签中的归属
+  let tags = [];
+  try {
+    const myTags = stmts.listTags.all(user.id) || [];
+    tags = myTags
+      .filter((t) => (stmts.listTagMembers.all(t.id) || []).some((m) => m.user_id === target.id))
+      .map((t) => ({ id: t.id, name: t.name }));
+  } catch { tags = []; }
+  // 共同群聊
+  let commonGroupCount = 0;
+  try {
+    const groups = stmts.allGroups.all() || [];
+    for (const g of groups) {
+      const members = stmts.listGroupMembers.all(g.id) || [];
+      const hasMe = members.some((m) => Number(m.user_id) === Number(user.id));
+      const hasPeer = members.some((m) => Number(m.user_id) === Number(target.id));
+      if (hasMe && hasPeer) commonGroupCount += 1;
+    }
+  } catch { commonGroupCount = 0; }
   res.json({
     user: {
       id: target.id,
@@ -331,10 +371,16 @@ app.get('/api/users/:id', (req, res) => {
       wxid: target.wxid,
       region: target.region,
       signature: target.signature,
+      gender: target.gender ?? '',
+      momentsCover: target.moments_cover ?? null,
       isFriend: Boolean(fr),
       remark: fr?.remark || null,
-      blacklisted: Boolean(fr?.blacklisted),
+      blacklisted: Boolean(fr?.blacklisted || peerFr?.blacklisted),
+      blockedByPeer: Boolean(peerFr?.blacklisted),
       permission: fr?.permission || null,
+      friendSince: fr?.created_at || null,
+      tags,
+      commonGroupCount,
     },
   });
 });
@@ -354,6 +400,8 @@ app.delete('/api/friends/:friendId', friendsApi.requireAuth, friendsApi.remove);
 app.get('/api/friends/search', friendsApi.requireAuth, friendsApi.search);
 app.post('/api/friends/remark', friendsApi.requireAuth, friendsApi.setRemark);
 app.post('/api/friends/blacklist', friendsApi.requireAuth, friendsApi.setBlacklist);
+app.get('/api/friends/blacklist', friendsApi.requireAuth, friendsApi.blacklist);
+app.post('/api/friends/tags', friendsApi.requireAuth, friendsApi.setFriendTags);
 app.post('/api/friends/permission', friendsApi.requireAuth, friendsApi.setPermission);
 app.post('/api/chat/private-read', friendsApi.requireAuth, friendsApi.privateRead);
 app.get('/api/chat/private-peer-read', friendsApi.requireAuth, friendsApi.privatePeerRead);
@@ -395,6 +443,7 @@ const momentsApi = createMomentsRouter({
 });
 app.get('/api/moments', momentsApi.requireAuth, momentsApi.list);
 app.get('/api/moments/mine', momentsApi.requireAuth, momentsApi.mine);
+app.get('/api/moments/user/:userId', momentsApi.requireAuth, momentsApi.userMoments);
 app.post('/api/moments', momentsApi.requireAuth, momentsApi.create);
 app.delete('/api/moments/:id', momentsApi.requireAuth, momentsApi.remove);
 app.post('/api/moments/like', momentsApi.requireAuth, momentsApi.like);
@@ -551,18 +600,8 @@ app.post('/api/search/global', (req, res) => {
       isAI: false,
       isFriend: true,
     }));
-  // AI 联系人
-  const aiContacts = personas
-    .filter((p) => String(p.name).includes(q) || String(p.id).includes(q.toLowerCase()))
-    .map((p) => ({
-      id: p.id,
-      nickname: p.name,
-      emoji: p.emoji,
-      avatar: aiAvatarFile(p.name),
-      isAI: true,
-      personaId: p.id,
-      isFriend: false,
-    }));
+  // AI 不再作为全局联系人搜索结果（仅群聊成员可见）；保留群搜索
+  const aiContacts = [];
   // 群
   const groups = listGroups()
     .filter((g) => String(g.name || '').includes(q) || String(g.kind || '').includes(q))
@@ -606,6 +645,57 @@ if (fs.existsSync(path.join(PROTOTYPE, 'index.html'))) {
   app.use('/prototype', express.static(PROTOTYPE, { maxAge: '1h' }));
 }
 
+// 游戏中心: /games/ 托管 games/ 下的第三方游戏静态产物 (发现页 → 游戏入口)
+const GAMES_ROOT = path.join(ROOT, 'games');
+const GAME_APPS = [
+  ['tower_game', path.join(GAMES_ROOT, 'tower_game')],
+];
+for (const [name, dir] of GAME_APPS) {
+  if (fs.existsSync(path.join(dir, 'index.html'))) {
+    app.use(`/games/${name}`, express.static(dir, {
+      index: 'index.html',
+      setHeaders(res, filePath) {
+        // 游戏入口与 HTML 永远不走强缓存, 避免 SW/HTTP 缓存导致白屏
+        if (filePath.endsWith('index.html') || filePath.endsWith('.html')) {
+          res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+        }
+      },
+    }));
+  }
+}
+
+// 运行时列出可用游戏, 前端可据此打开 (调试/动态接入)
+app.get('/api/games', (req, res) => {
+  const list = [];
+  for (const [name, dir] of GAME_APPS) {
+    const index = path.join(dir, 'index.html');
+    if (fs.existsSync(index)) {
+      let meta = { id: name, name, url: `/games/${name}/` };
+      const pj = path.join(dir, 'project.json');
+      if (fs.existsSync(pj)) {
+        try {
+          const raw = JSON.parse(fs.readFileSync(pj, 'utf8'));
+          meta = {
+            id: raw.id || name,
+            name: raw.name || name,
+            nameZh: raw.nameZh || null,
+            desc: raw.description || null,
+            icon: '🎮',
+            url: `/games/${name}/`,
+          };
+        } catch { /* keep default meta */ }
+      } else if (name === 'tower_game') {
+        meta = { id: 'tower_game', name: '叠塔挑战', desc: '比手速 · 层层叠高楼', icon: '🏗️', url: '/games/tower_game/' };
+      }
+      list.push(meta);
+    }
+  }
+  res.json({ games: list });
+});
+
+// AI 群友可在群聊中使用 Agent 能力(提醒/生成文件); 不可加为好友
+// (好友添加接口本身只会写 users 表, 人设 id 非用户 id 会自然失败)
+
 const DIST = path.join(ROOT, 'client-dist');
 if (fs.existsSync(DIST)) {
   app.use(express.static(DIST, {
@@ -615,7 +705,7 @@ if (fs.existsSync(DIST)) {
       }
     },
   }));
-  app.get(/^\/(?!api\/|avatars|media|prototype).*/, (req, res) => {
+  app.get(/^\/(?!api\/|avatars|media|prototype|games\/).*/, (req, res) => {
     res.setHeader('Cache-Control', 'no-cache, must-revalidate');
     res.sendFile(path.join(DIST, 'index.html'));
   });

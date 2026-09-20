@@ -38,6 +38,19 @@
   --wx-sub: 12px;
   --wx-avatar: 48px;
   --wx-gap: 12px;
+  /* 聊天气泡（对齐微信经典样式） */
+  --wx-bubble-r: 6px;
+  --wx-bubble-r-media: 4px;
+  --wx-bubble-px: 12px;
+  --wx-bubble-py: 9px;
+  --wx-bubble-fs: 17px;
+  --wx-bubble-lh: 1.45;
+  --wx-msg-gap: 12px;
+  --wx-msg-gap-cont: 3px;
+  --wx-avatar-chat: 40px;
+  --wx-msg-pad-x: 12px;
+  --wx-name-fs: 12px;
+  --wx-time-fs: 12px;
 }
 
 html.dark {

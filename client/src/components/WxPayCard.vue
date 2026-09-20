@@ -80,7 +80,7 @@ function typeLabel() {
   border: 0;
   margin: 0;
   padding: 12px 14px;
-  border-radius: 6px;
+  border-radius: var(--wx-bubble-r, 6px);
   text-align: left;
   cursor: pointer;
   pointer-events: auto !important;

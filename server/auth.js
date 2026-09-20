@@ -4,6 +4,7 @@ import path from 'node:path';
 import { stmts, ROOT, db } from './db.js';
 
 const SESSION_DAYS = 30;
+export const DEFAULT_AVATAR = 'amdin.png';
 const AVATAR_COLORS = [
   '#4f6ef7', '#e6433d', '#e6a23c', '#67c23a', '#9a5fe6',
   '#e67e9c', '#17b3a3', '#5a8dee', '#c06a3a', '#7f8fa6',
@@ -107,7 +108,10 @@ export function register(nickname, password, avatar) {
   if (stmts.userByName.get(nickname)) return { error: '这个昵称已经被占用了' };
   let avatarFile = 'amdin.png';
   if (avatar && typeof avatar === 'string') {
+    // 仅接受 img/ 下的默认预设，或用户上传的 /media/ 路径
     if (listAvatars().some((a) => a.file === avatar)) avatarFile = avatar;
+    else if (String(avatar).startsWith('/media/')) avatarFile = String(avatar).slice(0, 200);
+    else if (String(avatar).startsWith('http')) avatarFile = null; // 不写入远程 URL 到本地预设槽
   }
   const color = AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)];
   const wxid = defaultWxid(nickname);
@@ -149,6 +153,8 @@ export function verifyToken(token) {
     wxid: row.wxid,
     region: row.region,
     signature: row.signature,
+    gender: row.gender ?? '',
+    momentsCover: row.moments_cover ?? null,
   };
 }
 
@@ -173,6 +179,8 @@ export function updateProfile(userId, { nickname, avatar, wxid, region, signatur
       nextAvatar = avatar;
     } else if (String(avatar).startsWith('/media/')) {
       nextAvatar = String(avatar).slice(0, 200);
+    } else if (String(avatar).startsWith('http://') || String(avatar).startsWith('https://')) {
+      nextAvatar = String(avatar).slice(0, 300);
     } else {
       return { error: '头像不存在' };
     }

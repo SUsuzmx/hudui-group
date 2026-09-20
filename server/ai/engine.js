@@ -10,6 +10,14 @@ import {
 } from './provider.js';
 import { genImage, genVideo, isMediaEnabled } from './media.js';
 import { getGroup } from '../groups.js';
+import {
+  parseAgentCommand,
+  createReminder,
+  dueReminders,
+  generateAgentFile,
+  formatRemindConfirm,
+  formatFileMessage,
+} from './agent.js';
 
 function resolveGroupKind(convId) {
   if (!convId || typeof convId !== 'string' || !convId.startsWith('grp_')) return 'main';
@@ -357,6 +365,59 @@ export function createEngine({ config, deps }) {
     return `${base}\n提示: ${pick(extra)}`;
   }
 
+  async function runAgentTask(persona, agent, msg, convId = null, isPrivate = false) {
+    if (busy.has(persona.id) && !isPrivate) return;
+    const busyKey = isPrivate ? `pv:${persona.id}` : persona.id;
+    if (busy.has(busyKey)) return;
+    busy.add(busyKey);
+    ensurePersonaTs(persona.id);
+    try {
+      const send = (content, mediaType = null, mediaUrl = null) => {
+        if (isPrivate && convId) sendPrivateAI(convId, persona, content, mediaType, mediaUrl);
+        else sendAI(persona, content, mediaType, mediaUrl, convId);
+        sentTimestamps.push(Date.now());
+        lastAIReply.set(persona.id, Date.now());
+        lastGlobalAI = Date.now();
+      };
+
+      await sleep(rand(400, 900));
+
+      if (agent.type === 'remind_need_time') {
+        send(agent.hint);
+        return;
+      }
+      if (agent.type === 'remind') {
+        const item = createReminder({
+          convId: convId || null,
+          personaId: persona.id,
+          personaName: persona.name,
+          text: agent.text,
+          timeLabel: agent.timeLabel,
+          dueAt: agent.dueAt,
+          from: msg.senderName,
+          isPrivate: Boolean(isPrivate),
+        });
+        send(formatRemindConfirm(item));
+        return;
+      }
+      if (agent.type === 'file') {
+        send(`收到，正在为你生成${{ excel: ' Excel 表格', word: ' Word 文档', ppt: ' PPT', pdf: ' PDF' }[agent.kind] || '文件'}「${agent.title}」…`);
+        try {
+          const file = await generateAgentFile(agent);
+          await sleep(300);
+          send(`文件已生成：${file.filename}`, 'file', file.url);
+          send(`可直接点击文件查看/下载。需要改内容再跟我说，例如「再生成一份关于XX的 word」。`);
+        } catch (e) {
+          console.error('[agent] file gen failed', e);
+          send(`抱歉，生成文件失败了（${e.message}）。可以换一种描述再试一次。`);
+        }
+        return;
+      }
+    } finally {
+      busy.delete(busyKey);
+    }
+  }
+
   return {
     onUserJoin(user) {
       if (aiCfg.welcomeEnabled === false) return;
@@ -383,6 +444,11 @@ export function createEngine({ config, deps }) {
       if (atMentions.length) {
         for (const mentioned of atMentions) {
           if (!busy.has(mentioned.id) && now - lastAIReply.get(mentioned.id) > 15_000) {
+            const agent = parseAgentCommand(msg.content);
+            if (agent) {
+              runAgentTask(mentioned, agent, msg, convId);
+              continue;
+            }
             const instruction = buildReplyInstruction(msg.senderName, msg.content, 'mention');
             personaSpeak(mentioned, 'interject', instruction, msg.senderName, convId, msg.content);
           }
@@ -395,6 +461,11 @@ export function createEngine({ config, deps }) {
         msg.content.includes(p.name) && !msg.content.includes(`@${p.name}`)
       );
       if (nameMention && !busy.has(nameMention.id) && now - lastAIReply.get(nameMention.id) > 20_000) {
+        const agent = parseAgentCommand(msg.content);
+        if (agent) {
+          runAgentTask(nameMention, agent, msg, convId);
+          return;
+        }
         if (Math.random() < mentionRate) {
           const instruction = buildReplyInstruction(msg.senderName, msg.content, 'mention');
           personaSpeak(nameMention, 'interject', instruction, msg.senderName, convId, msg.content);
@@ -417,6 +488,14 @@ export function createEngine({ config, deps }) {
       // 非默认群几乎必回, 避免"发了没人理"
       const rate = isDefault ? interjectRate : 0.95;
       if (Math.random() > rate) return;
+      const agentAny = parseAgentCommand(msg.content || '');
+      if (agentAny) {
+        const agentPersona = pick(candidates);
+        lastInterjector = agentPersona.id;
+        lastConvAI.set(convKey, now);
+        runAgentTask(agentPersona, agentAny, msg, convId);
+        return;
+      }
       const filtered = candidates.length > 1 ? candidates.filter((p) => p.id !== lastInterjector) : candidates;
       const persona = pick(filtered.length ? filtered : candidates);
       lastInterjector = persona.id;
@@ -426,6 +505,19 @@ export function createEngine({ config, deps }) {
     },
 
     tick() {
+      // 到期提醒
+      try {
+        const hits = dueReminders();
+        for (const r of hits) {
+          const persona = personas.find((p) => p.id === r.personaId) || personas[0];
+          const line = `⏰ 提醒时间到啦\n事项：${r.text}\n（${r.timeLabel || ''} 你让我提醒你的）`;
+          if (r.isPrivate && r.convId) sendPrivateAI(r.convId, persona, line, null, null);
+          else sendAI(persona, line, null, null, r.convId || null);
+        }
+      } catch (e) {
+        console.error('[engine] reminder tick', e);
+      }
+
       const idleMs = Date.now() - lastActivity;
       if (idleMs < silenceMinutes * 60_000) return;
       if (tooFast()) return;
@@ -454,6 +546,13 @@ export function createEngine({ config, deps }) {
     },
 
     onPrivateMessage(user, persona, convId, msg) {
+      // AI 不作为好友私聊对象时仍兼容历史会话; Agent 指令优先
+      ensurePersonaTs(persona.id);
+      const agent = parseAgentCommand(msg.content || '');
+      if (agent) {
+        runAgentTask(persona, agent, msg, convId, true);
+        return;
+      }
       let instruction = `"${user.nickname}"在私聊里跟你说: "${msg.content}"。像朋友之间私聊一样回复TA, 针对TA说的内容回应, 语气自然随意。`;
       if (isAskingDoing(msg.content)) {
         instruction += `\n对方在问你"在干嘛"。用第一人称具体回答此刻在做什么(结合人设), 禁止回答"对的/有一说一/确实"这类无关内容。`;

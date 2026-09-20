@@ -256,7 +256,8 @@ export const stmts = {
   ),
   insertSession: db.prepare('INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)'),
   sessionByToken: db.prepare(
-    `SELECT s.token, s.expires_at, u.id, u.nickname, u.avatar_color, u.avatar, u.wxid, u.region, u.signature
+    `SELECT s.token, s.expires_at, u.id, u.nickname, u.avatar_color, u.avatar, u.wxid, u.region, u.signature,
+            u.gender, u.moments_cover
      FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?`
   ),
   deleteSession: db.prepare('DELETE FROM sessions WHERE token = ?'),

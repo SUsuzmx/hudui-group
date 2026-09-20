@@ -14,8 +14,15 @@
   <script type="module" src="/src/main.js"></script>
   <script>
     if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js').catch(() => {});
+      window.addEventListener('load', async () => {
+        try {
+          const reg = await navigator.serviceWorker.register('/sw.js');
+          // 强制检查更新, 避免旧 SW 缓存导致游戏/页面打不开
+          if (reg && reg.update) reg.update();
+          if (navigator.serviceWorker.controller) {
+            navigator.serviceWorker.ready.then((r) => r && r.update && r.update()).catch(() => {});
+          }
+        } catch (e) { /* ignore */ }
       });
     }
   </script>

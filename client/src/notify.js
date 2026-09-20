@@ -35,18 +35,47 @@ export function notifyMessage({ title, body, tag } = {}) {
   } catch { /* ignore */ }
 }
 
-export function playMsgSound() {
+export function playMsgSound({ force = false } = {}) {
   try {
-    if (typeof document === 'undefined' || !document.hidden) return;
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('hudui_msg_sound') === '0') return;
+    // 前台也提示（对齐微信）；force 可用于强制
+    if (!force && typeof document !== 'undefined' && document.hidden) {
+      // 后台由系统通知发声，这里仍轻提示
+    }
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     const o = ctx.createOscillator();
     const g = ctx.createGain();
     o.connect(g);
     g.connect(ctx.destination);
-    o.frequency.value = 880;
-    g.gain.value = 0.04;
+    o.type = 'sine';
+    o.frequency.setValueAtTime(880, ctx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(660, ctx.currentTime + 0.07);
+    g.gain.setValueAtTime(0.0001, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.05, ctx.currentTime + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.12);
     o.start();
-    o.stop(ctx.currentTime + 0.08);
+    o.stop(ctx.currentTime + 0.14);
+    setTimeout(() => ctx.close?.().catch(() => {}), 200);
+  } catch { /* ignore */ }
+}
+
+/** 发送成功时的轻提示（比接收更短） */
+export function playSendSound() {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('hudui_msg_sound') === '0') return;
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.connect(g);
+    g.connect(ctx.destination);
+    o.type = 'triangle';
+    o.frequency.value = 520;
+    g.gain.setValueAtTime(0.0001, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.03, ctx.currentTime + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.08);
+    o.start();
+    o.stop(ctx.currentTime + 0.09);
+    setTimeout(() => ctx.close?.().catch(() => {}), 150);
   } catch { /* ignore */ }
 }
 

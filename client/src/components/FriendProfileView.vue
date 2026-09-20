@@ -7,7 +7,7 @@ const props = defineProps({
   user: { type: Object, required: true },
   me: { type: Object, required: true },
 });
-const emit = defineEmits(['back', 'open-chat', 'deleted', 'open-video-call']);
+const emit = defineEmits(['back', 'open-chat', 'deleted', 'open-video-call', 'open-moments', 'open-detail']);
 
 const profile = ref(null);
 const loading = ref(true);
@@ -17,7 +17,12 @@ const isAI = computed(() => Boolean(profile.value?.isAI || props.user?.isAI));
 const remark = ref('');
 const blacklisted = ref(false);
 const permission = ref('all');
+const tags = ref([]);
 const showRemark = ref(false);
+const showTags = ref(false);
+const tagsAll = ref([]);
+const pickedTagIds = ref(new Set());
+const blockedByPeer = ref(false);
 
 async function load() {
   loading.value = true;
@@ -46,7 +51,9 @@ async function load() {
     profile.value = data.user;
     remark.value = profile.value.remark || '';
     blacklisted.value = Boolean(profile.value.blacklisted);
+    blockedByPeer.value = Boolean(profile.value.blockedByPeer);
     permission.value = profile.value.permission || 'all';
+    tags.value = profile.value.tags || [];
   } catch (e) {
     error.value = e.message;
   } finally {
@@ -66,11 +73,71 @@ async function saveRemark() {
 async function toggleBlacklist() {
   if (!profile.value || isAI.value) return;
   const next = !blacklisted.value;
-  if (!confirm(next ? `将「${profile.value.nickname}」加入黑名单？` : '移出黑名单？')) return;
+  const tip = next
+    ? `将「${profile.value.nickname}」加入黑名单？\n对方将无法给你发消息，也看不到你的朋友圈更新。`
+    : `将「${profile.value.nickname}」移出黑名单？`;
+  if (!confirm(tip)) return;
   try {
-    await api.setFriendBlacklist(profile.value.id, next);
-    blacklisted.value = next;
+    const d = await api.setFriendBlacklist(profile.value.id, next);
+    blacklisted.value = Boolean(d?.blacklisted ?? next);
+    permission.value = blacklisted.value ? 'block' : 'all';
+    profile.value = {
+      ...profile.value,
+      blacklisted: blacklisted.value,
+      permission: permission.value,
+    };
   } catch (e) { alert(e.message); }
+}
+
+async function openFriendDetail() {
+  if (!profile.value || isAI.value || isSelf.value) {
+    if (!isAI.value && !isSelf.value) showRemark.value = true;
+    return;
+  }
+  emit('open-detail', {
+    id: profile.value.userId ?? profile.value.id,
+    userId: profile.value.userId ?? profile.value.id,
+    nickname: profile.value.remark || profile.value.nickname,
+    remark: profile.value.remark || null,
+    avatar: profile.value.avatar,
+    avatarColor: profile.value.avatarColor,
+    signature: profile.value.signature,
+    wxid: profile.value.wxid,
+    isAI: false,
+  });
+}
+
+async function openTagPicker() {
+  if (!profile.value || isAI.value) return;
+  showTags.value = true;
+  try {
+    const data = await api.tags();
+    tagsAll.value = data.tags || [];
+    const current = new Set((tags.value || []).map((t) => t.id));
+    pickedTagIds.value = current;
+  } catch {
+    tagsAll.value = [];
+  }
+}
+
+function toggleTag(id) {
+  const set = new Set(pickedTagIds.value);
+  if (set.has(id)) set.delete(id);
+  else set.add(id);
+  pickedTagIds.value = set;
+}
+
+async function saveTags() {
+  showTags.value = false;
+  if (!profile.value) return;
+  const ids = [...pickedTagIds.value];
+  try {
+    const d = await api.setFriendTags(profile.value.id, ids);
+    tags.value = d.tags || tagsAll.value.filter((t) => ids.includes(t.id));
+    profile.value = { ...profile.value, tags: tags.value };
+  } catch (e) {
+    alert(e.message || '保存失败');
+  }
 }
 
 async function removeFriend() {
@@ -85,18 +152,9 @@ async function removeFriend() {
 
 function startChat() {
   if (!profile.value) return;
+  // AI 仅在群聊中互动, 不打开私聊
   if (isAI.value) {
-    emit('open-chat', {
-      key: 'ai-' + (profile.value.personaId || profile.value.id),
-      nickname: profile.value.nickname,
-      avatar: profile.value.avatar,
-      avatarUrl: profile.value.avatar,
-      emoji: profile.value.emoji,
-      avatarEmoji: profile.value.emoji,
-      color: '#07c160',
-      isAI: true,
-      personaId: profile.value.personaId ?? profile.value.id,
-    });
+    alert('AI 群友仅在群聊中互动，请在群聊里 @TA（可创建提醒、生成文件）');
     return;
   }
   emit('open-chat', {
@@ -120,13 +178,30 @@ function startCall() {
       avatar: profile.value.avatar,
       emoji: profile.value.emoji,
       color: profile.value.avatarColor,
-      userId: profile.value.userId || profile.value.id,
+      userId: Number(profile.value.userId ?? profile.value.id) || null,
     },
+  });
+}
+
+function openMoments() {
+  if (!profile.value) return;
+  emit('open-moments', {
+    id: profile.value.userId ?? profile.value.id,
+    userId: profile.value.userId ?? profile.value.id,
+    nickname: profile.value.remark || profile.value.nickname,
+    avatar: profile.value.avatar,
+    avatarColor: profile.value.avatarColor,
+    isAI: Boolean(profile.value.isAI),
+    isSelf: isSelf.value,
   });
 }
 
 async function addFriend() {
   if (!profile.value || isAI.value) return;
+  if (isAI.value) {
+    alert('AI 群友仅在群聊中互动，无法添加为好友');
+    return;
+  }
   try {
     await api.addFriend(profile.value.id);
     profile.value = { ...profile.value, isFriend: true };
@@ -171,15 +246,22 @@ onMounted(load);
       </section>
 
       <section class="card block">
-        <button class="row-link" type="button" @click="!isAI && !isSelf && (showRemark = true)">
+        <button class="row-link" type="button" @click="openFriendDetail">
           <div class="row-title">朋友资料</div>
-          <div class="row-desc">添加朋友的备注名、电话、标签、备忘、照片等，并设置朋友权限。</div>
+          <div class="row-desc">
+            备注名、标签{{ tags?.length ? '（' + tags.map((t) => t.name).join('、') + '）' : '' }}、备忘、照片与朋友权限
+          </div>
+          <span class="arrow">›</span>
+        </button>
+        <button v-if="!isAI && !isSelf" class="row-link" type="button" @click="openTagPicker">
+          <div class="row-title">设置标签</div>
+          <div class="row-desc">{{ tags?.length ? tags.map((t) => t.name).join('、') : '未设置' }}</div>
           <span class="arrow">›</span>
         </button>
       </section>
 
       <section class="card block">
-        <button class="row-link" type="button" @click="startChat">
+        <button class="row-link" type="button" @click="openMoments">
           <div class="row-title">朋友圈</div>
           <span class="arrow">›</span>
         </button>
@@ -192,7 +274,7 @@ onMounted(load);
           </span>
           <span>发消息</span>
         </button>
-        <button class="action-btn" type="button" @click="startCall">
+        <button v-if="!isAI" class="action-btn" type="button" @click="startCall">
           <span class="action-ico">
             <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6.2 4.5h3l1.4 3.6-2 1.4c.8 2.2 2.6 4 4.8 4.8l1.4-2 3.6 1.4v3c0 1-.8 1.8-1.8 1.8C10.2 18.5 5.5 13.8 5.5 6.3c0-1 .7-1.8 1.7-1.8z"/><rect x="14.5" y="13.5" width="5.5" height="4" rx="1"/><path d="M16 13.5v-1.2c0-.6.5-1.1 1.1-1.1h2.8c.6 0 1.1.5 1.1 1.1v1.2"/></svg>
           </span>
@@ -200,9 +282,20 @@ onMounted(load);
         </button>
       </section>
 
+      <p v-if="blacklisted && !blockedByPeer" class="black-tip">已在黑名单 · 对方无法给你发消息</p>
+      <p v-else-if="blockedByPeer" class="black-tip">对方设置了权限，你可能无法发送消息</p>
+
+      <section v-if="isAI" class="card block">
+        <div class="row-link" style="cursor:default">
+          <div class="row-title">AI 群友</div>
+          <div class="row-desc">仅在群聊中互动，可 @TA 创建提醒、生成 Word/Excel/PPT/PDF 等文件；无法添加为好友</div>
+        </div>
+      </section>
+
       <section v-if="!isSelf && !isAI && profile.isFriend" class="card block">
-        <button class="row-link" type="button" @click="toggleBlacklist">
+        <button class="row-link" :class="{ danger: blacklisted }" type="button" @click="toggleBlacklist">
           <div class="row-title">{{ blacklisted ? '移出黑名单' : '加入黑名单' }}</div>
+          <div v-if="!blacklisted" class="row-desc">对方将无法发送消息给你，也看不到你的朋友圈</div>
           <span class="arrow">›</span>
         </button>
         <button class="row-link danger" type="button" @click="removeFriend">
@@ -227,6 +320,30 @@ onMounted(load);
         </div>
       </div>
     </div>
+
+    <div v-if="showTags" class="mask" @click.self="showTags = false">
+      <div class="dialog tag-dialog">
+        <div class="dialog-title">设置标签</div>
+        <div v-if="!tagsAll.length" class="tag-empty">暂无标签，请先在通讯录「标签」中创建</div>
+        <div v-else class="tag-list">
+          <button
+            v-for="t in tagsAll"
+            :key="t.id"
+            type="button"
+            class="tag-item"
+            :class="{ on: pickedTagIds.has(t.id) }"
+            @click="toggleTag(t.id)"
+          >
+            <span class="tag-check">{{ pickedTagIds.has(t.id) ? '✓' : '' }}</span>
+            {{ t.name }}
+          </button>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" @click="showTags = false">取消</button>
+          <button type="button" class="ok" @click="saveTags">保存</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -240,6 +357,32 @@ onMounted(load);
 .nav-title { position: absolute; left: 50%; transform: translateX(-50%); }
 .icon-btn { width: 44px; height: 44px; border: 0; background: transparent; color: var(--text); display: flex; align-items: center; justify-content: center; }
 .loading { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--text-2); }
+.black-tip {
+  margin: 8px 16px 0;
+  font-size: 12px;
+  color: var(--text-3);
+  text-align: center;
+}
+.tag-dialog { max-height: 60vh; overflow: auto; }
+.tag-empty { padding: 16px; text-align: center; color: var(--text-3); font-size: 13px; }
+.tag-list { max-height: 40vh; overflow-y: auto; margin: 8px 0; }
+.tag-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  border: 0;
+  border-bottom: 0.5px solid var(--divider-soft);
+  background: transparent;
+  color: var(--text);
+  font-size: 15px;
+  text-align: left;
+  padding: 0 4px;
+}
+.tag-item.on { color: #07c160; }
+.tag-check { width: 18px; color: #07c160; font-weight: 700; }
+.row-link.danger .row-title { color: var(--red); }
 .content { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 24px; background: var(--bg); }
 
 .hero {

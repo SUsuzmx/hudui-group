@@ -2,6 +2,7 @@
 import { stmts } from './db.js';
 import { scheduleAiMomentReact, personaByDbId, personaByKey } from './moments-ai.js';
 import { aiAvatarFile } from './ai/avatars.js';
+import { isBlockedEither } from './friends.js';
 
 function parseImages(raw) {
   try {
@@ -96,6 +97,7 @@ function rowToMoment(r, viewerId = null) {
 function canView(moment, userId) {
   const vis = moment.visibility || 'public';
   if (moment.user_id === userId) return true;
+  if (isBlockedEither(moment.user_id, userId)) return false;
   if (vis === 'public') return true;
   if (vis === 'private') return false;
   // friends / partial
@@ -139,6 +141,33 @@ export function createMomentsRouter({ verifyToken, notify } = {}) {
     mine(req, res) {
       const rows = stmts.listUserMoments.all(req.user.id, 50);
       res.json({ moments: rows.map((r) => rowToMoment(r, req.user.id)) });
+    },
+    /** 指定用户的朋友圈（按可见权限过滤） */
+    userMoments(req, res) {
+      const uid = Number(req.params.userId ?? req.query.userId);
+      if (!Number.isInteger(uid) || uid <= 0) {
+        return res.status(400).json({ error: '参数不合法' });
+      }
+      if (uid === req.user.id) {
+        const rows = stmts.listUserMoments.all(req.user.id, 50);
+        return res.json({ moments: rows.map((r) => rowToMoment(r, req.user.id)) });
+      }
+      const rows = stmts.listUserMoments.all(uid, 50) || [];
+      const visible = rows.filter((r) => canView(r, req.user.id));
+      const profile = stmts.userById.get(uid);
+      res.json({
+        moments: visible.map((r) => rowToMoment(r, req.user.id)),
+        user: profile
+          ? {
+              id: profile.id,
+              nickname: profile.nickname,
+              avatar: profile.avatar,
+              avatarColor: profile.avatar_color,
+              signature: profile.signature || '',
+              momentsCover: profile.moments_cover || null,
+            }
+          : null,
+      });
     },
     create(req, res) {
       const content = String(req.body?.content ?? '').trim();

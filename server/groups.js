@@ -1,8 +1,7 @@
 // 群聊种子数据: 默认主群 + 多个业务群。非默认群 AI 不主动插话。
-import { stmts } from './db.js';
+import { stmts, db } from './db.js';
 import { personas, personasForGroup } from './ai/personas.js';
 import { aiAvatarFile } from './ai/avatars.js';
-import { stmts as allStmts } from './db.js';
 
 export const DEFAULT_GROUP_KIND = 'main';
 
@@ -24,24 +23,6 @@ export const SEED_GROUPS = [
     ],
   },
   {
-    kind: 'family',
-    name: '家庭群',
-    avatars: ['👨', '👩', '👧', '👦', '🐶'],
-    seed: [
-      { from: 'ai', name: '妈妈', emoji: '👩', content: '记得吃早饭', ago: 25 * 60000 },
-      { from: 'ai', name: '爸爸', emoji: '👨', content: '周末回来吃饭吗', ago: 20 * 60000 },
-    ],
-  },
-  {
-    kind: 'climb',
-    name: '周末爬山群',
-    avatars: ['⛰️', '🎒', '🧗', '🌤️', '🥾', '🗺️'],
-    seed: [
-      { from: 'ai', name: '王也', emoji: '🍃', content: '这周六天气不错, 八点集合?', ago: 3 * 3600000 },
-      { from: 'ai', name: '叶修', emoji: '🎮', content: '我可以, 老地方?', ago: 2.8 * 3600000 },
-    ],
-  },
-  {
     kind: 'work',
     name: '工作对接群',
     avatars: ['💼', '📊', '📎', '🗓️', '✅', '🖥️', '📞', '📝', '📈'],
@@ -49,15 +30,33 @@ export const SEED_GROUPS = [
       { from: 'ai', name: '方圆', emoji: '📐', content: '@所有人 明天上午十点例会', ago: 5 * 3600000 },
     ],
   },
-  {
-    kind: 'game',
-    name: '开黑不解释',
-    avatars: ['🎮', '🕹️', '👾', '🎧', '🏆'],
-    seed: [
-      { from: 'ai', name: '阿强', emoji: '💪', content: '晚上开黑, 缺一个', ago: 4 * 86400000 },
-    ],
-  },
 ];
+
+// 启动时清理的无关/测试群（按名称或 kind）
+const UNWANTED_GROUP_KINDS = new Set(['family', 'climb', 'game']);
+const UNWANTED_GROUP_NAME_RE = /(验收改名|爬山|开黑|家庭群)/;
+
+function deleteGroupDeep(groupId, convId) {
+  try { db.prepare('DELETE FROM group_members WHERE group_id = ?').run(groupId); } catch { /* ignore */ }
+  try { db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(convId); } catch { /* ignore */ }
+  try { db.prepare('DELETE FROM chat_prefs WHERE conversation_id = ?').run(convId); } catch { /* ignore */ }
+  try { db.prepare('DELETE FROM chat_reads WHERE conversation_id = ?').run(convId); } catch { /* ignore */ }
+  try { db.prepare('DELETE FROM groups WHERE id = ?').run(groupId); } catch { /* ignore */ }
+}
+
+function cleanupUnwantedGroups() {
+  const removed = [];
+  const rows = db.prepare('SELECT id, name, kind FROM groups').all();
+  for (const row of rows) {
+    const name = String(row.name || '');
+    const kind = String(row.kind || '');
+    if (UNWANTED_GROUP_KINDS.has(kind) || UNWANTED_GROUP_NAME_RE.test(name)) {
+      deleteGroupDeep(row.id, groupConvId(row.id));
+      removed.push(name);
+    }
+  }
+  return removed;
+}
 
 export function groupConvId(groupId) {
   return `grp_${groupId}`;
@@ -114,6 +113,15 @@ function enrichMember(m) {
 export function seedGroups() {
   const now = Date.now();
   const created = [];
+  try {
+    const removed = cleanupUnwantedGroups();
+    if (removed.length) {
+      // 同步打日志, 便于运维确认清理结果
+      console.log(`[groups] 已移除无关群: ${removed.join(', ')}`);
+    }
+  } catch (e) {
+    console.log(`[groups] 清理无关群失败: ${e.message}`);
+  }
   for (const g of SEED_GROUPS) {
     let row = stmts.groupByKind.get(g.kind);
     if (!row) {

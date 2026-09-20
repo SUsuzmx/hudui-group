@@ -3,7 +3,8 @@ import { ref, nextTick, onMounted, onBeforeUnmount, computed } from 'vue';
 import { api, compressImage } from '../api.js';
 import { EMOJI_LIST, renderContent } from '../chat-shared.js';
 import { useVoicePlayer } from '../voice-player.js';
-import { ensureNotifyPermission, notifyMessage, playMsgSound } from '../notify.js';
+import { ensureNotifyPermission, notifyMessage, playMsgSound, playSendSound } from '../notify.js';
+import { makeLocalMsg, patchLocalMsg, dropLocalEcho } from '../chat-send-status.js';
 import { toast } from '../toast.js';
 import { getSocket, bindSocket } from '../socket-store.js';
 import { saveMsgCache, loadMsgCache } from '../chat-cache.js';
@@ -59,7 +60,7 @@ const favEmojis = (() => {
   try { return JSON.parse(localStorage.getItem('hudui_stickers') || '[]'); }
   catch { return []; }
 })();
-const { playingKey, playVoice, disposeVoice, parseVoiceSeconds } = useVoicePlayer();
+const { playingKey, voiceProgress, playVoice, disposeVoice, parseVoiceSeconds } = useVoicePlayer();
 const previewImages = ref([]);
 const previewIndex = ref(0);
 const showImagePreview = ref(false);
@@ -146,6 +147,7 @@ function myAvatarProps() {
 }
 
 function isMine(m) {
+  if (m?.localPending) return true;
   return m.senderType === 'user' && m.senderName === props.me.nickname;
 }
 
@@ -304,16 +306,28 @@ function send() {
         }
       : null,
   };
+  const local = makeLocalMsg({
+    me: props.me,
+    conversationId,
+    content,
+    quote: payload.quote,
+  });
+  messages.value.push(local);
   sendState.value = 'sending';
   socket.emit('private:send', payload, (res) => {
     if (res?.error) {
       sendState.value = 'failed';
       lastFailed.value = payload;
-      alert(res.error);
+      patchLocalMsg(messages.value, local.id, { sendStatus: 'failed' });
+      messages.value = [...messages.value];
       return;
     }
     sendState.value = 'idle';
     lastFailed.value = null;
+    playSendSound();
+    const still = messages.value.find((m) => m.id === local.id);
+    if (still) patchLocalMsg(messages.value, local.id, { sendStatus: 'sent', localPending: false });
+    messages.value = [...messages.value];
   });
   draft.value = '';
   quoteMsg.value = null;
@@ -334,14 +348,109 @@ function retrySend() {
   const payload = lastFailed.value;
   lastFailed.value = null;
   sendState.value = 'sending';
+  const failedLocal = [...messages.value].reverse().find((m) => m.localPending && m.sendStatus === 'failed');
+  if (failedLocal) {
+    patchLocalMsg(messages.value, failedLocal.id, { sendStatus: 'sending' });
+    messages.value = [...messages.value];
+  }
   socket.emit('private:send', payload, (res) => {
     if (res?.error) {
       sendState.value = 'failed';
       lastFailed.value = payload;
+      if (failedLocal) {
+        patchLocalMsg(messages.value, failedLocal.id, { sendStatus: 'failed' });
+        messages.value = [...messages.value];
+      }
     } else {
       sendState.value = 'idle';
+      playSendSound();
+      if (failedLocal) {
+        messages.value = messages.value.filter((m) => m.id !== failedLocal.id);
+      }
     }
   });
+}
+
+function onBubbleRetry(m) {
+  if (!m?.localPending || m.sendStatus !== 'failed') return;
+  lastFailed.value = {
+    conversationId,
+    content: m.content,
+    quote: m.quote || null,
+    mediaType: m.mediaType || null,
+    mediaUrl: m.mediaUrl || null,
+  };
+  retrySend();
+}
+
+function onPasteChat(e) {
+  const items = e.clipboardData?.items || [];
+  for (const item of items) {
+    if (item.type?.startsWith('image/')) {
+      const file = item.getAsFile();
+      if (file) {
+        e.preventDefault();
+        sendImageFile(file);
+        return;
+      }
+    }
+  }
+}
+
+async function sendImageFile(file) {
+  try {
+    const data = await compressImage(file);
+    const { url, mediaType } = await api.uploadChatMedia(data, 'image');
+    if (!url) throw new Error('上传失败');
+    const local = makeLocalMsg({
+      me: props.me,
+      conversationId,
+      content: '[图片]',
+      mediaType: mediaType || 'image',
+      mediaUrl: url,
+    });
+    messages.value.push(local);
+    scrollToBottom();
+    socket.emit('private:send', { conversationId, content: '[图片]', mediaType: mediaType || 'image', mediaUrl: url }, (res) => {
+      if (res?.error) {
+        patchLocalMsg(messages.value, local.id, { sendStatus: 'failed' });
+        messages.value = [...messages.value];
+        showToast(res.error);
+      } else {
+        playSendSound();
+      }
+    });
+  } catch (err) {
+    showToast(err.message || '发送图片失败');
+  }
+}
+
+function openFileMsg(m) {
+  const url = m?.mediaUrl;
+  if (url) window.open(url, '_blank');
+  else showToast('演示文件消息（无附件）');
+}
+
+function onPreviewForward(url) {
+  const m = messages.value.find((x) => x.mediaUrl === url);
+  if (m?.id) {
+    forwardIds.value = [m.id];
+    showForward.value = true;
+  } else {
+    showToast('无法转发该图片');
+  }
+}
+
+function showSendTip(m) {
+  if (!isMine(m) || props.target?.isAI) return null;
+  if (m.sendStatus === 'sending') return '发送中';
+  if (m.sendStatus === 'failed') return '发送失败';
+  const lid = lastMineId();
+  if (lid && m.id === lid) {
+    if (peerReadId.value && m.id <= peerReadId.value) return '已读';
+    return '送达';
+  }
+  return null;
 }
 
 function setQuote(m) {
@@ -464,34 +573,76 @@ function clearLongPress() {
 function openMore() {
   emit('open-chat-info', {
     conversationId,
-    groupName: props.target.nickname,
+    groupName: props.target.remark || props.target.nickname,
     isGroup: false,
     muted: chatPrefs.value.muted,
     pinned: chatPrefs.value.pinned,
     folded: chatPrefs.value.folded,
+    remind: Boolean(chatPrefs.value.remind),
+    peerUserId: peerUid > 0 ? peerUid : (props.target.userId ?? null),
+    target: {
+      nickname: props.target.nickname,
+      avatar: props.target.avatar ?? props.target.avatarUrl ?? null,
+      avatarUrl: props.target.avatar ?? props.target.avatarUrl ?? null,
+      emoji: props.target.emoji ?? props.target.avatarEmoji ?? null,
+      avatarEmoji: props.target.emoji ?? props.target.avatarEmoji ?? null,
+      color: props.target.color ?? '#4f6ef7',
+      avatarColor: props.target.color ?? '#4f6ef7',
+      userId: peerUid > 0 ? peerUid : (props.target.userId ?? null),
+      isAI: Boolean(props.target.isAI),
+      personaId: props.target.personaId ?? null,
+      remark: props.target.remark || null,
+    },
   });
 }
 
 function openCall(mode = 'video') {
+  const uid = peerUid > 0 ? peerUid : Number(props.target.userId ?? 0);
+  if (props.target.isAI) {
+    showToast('暂不支持与 AI 语音/视频通话');
+    return;
+  }
+  if (!uid) {
+    showToast('无法确定对方账号，暂不能拨打');
+    return;
+  }
   emit('open-video-call', {
     callMode: mode,
     role: 'caller',
     target: {
-      nickname: props.target.nickname,
+      nickname: props.target.remark || props.target.nickname,
       avatar: props.target.avatar ?? props.target.avatarUrl ?? null,
       emoji: props.target.emoji ?? props.target.avatarEmoji ?? null,
-      color: props.target.color ?? '#07c160',
-      userId: props.target.userId,
-      isAI: props.target.isAI,
+      color: props.target.color ?? props.target.avatarColor ?? '#4f6ef7',
+      userId: uid,
+      isAI: false,
     },
   });
 }
 
 function openTargetProfile() {
   showMore.value = false;
+  if (props.target?.isAI) {
+    emit('open-profile', {
+      id: props.target.personaId ?? props.target.userId,
+      userId: null,
+      nickname: props.target.nickname,
+      avatar: props.target.avatar ?? props.target.avatarUrl ?? null,
+      avatarUrl: props.target.avatar ?? props.target.avatarUrl ?? null,
+      emoji: props.target.emoji ?? props.target.avatarEmoji ?? null,
+      avatarEmoji: props.target.emoji ?? props.target.avatarEmoji ?? null,
+      color: props.target.color ?? '#07c160',
+      avatarColor: props.target.color ?? '#07c160',
+      isAI: true,
+      personaId: props.target.personaId ?? null,
+      isFriend: false,
+      local: true,
+    });
+    return;
+  }
   emit('open-profile', {
-    id: props.target.userId ?? props.target.personaId,
-    userId: props.target.userId,
+    id: peerUid > 0 ? peerUid : (props.target.userId ?? props.target.personaId),
+    userId: peerUid > 0 ? peerUid : (props.target.userId ?? null),
     nickname: props.target.nickname,
     avatar: props.target.avatar ?? props.target.avatarUrl ?? null,
     avatarUrl: props.target.avatar ?? props.target.avatarUrl ?? null,
@@ -503,6 +654,19 @@ function openTargetProfile() {
     personaId: props.target.personaId ?? null,
     isFriend: !props.target.isAI,
     local: Boolean(props.target.isAI),
+  });
+}
+
+function openMyProfile() {
+  emit('open-profile', {
+    id: props.me?.id,
+    userId: props.me?.id,
+    nickname: props.me?.nickname,
+    avatar: props.me?.avatar,
+    color: props.me?.avatarColor,
+    avatarColor: props.me?.avatarColor,
+    isAI: false,
+    isSelf: true,
   });
 }
 
@@ -631,6 +795,31 @@ function openPayOverlay(m) {
     messageId: m.id,
     tip: '',
   };
+  if (kind === 'redpacket' && ext.packetId) refreshRedpacketDetail(ext.packetId, m.id);
+}
+
+async function refreshRedpacketDetail(packetId, messageId) {
+  try {
+    const d = await api.redpacketDetail(packetId);
+    const p = d?.packet;
+    if (!p) return;
+    payOverlay.value = {
+      ...payOverlay.value,
+      status: p.status || payOverlay.value.status,
+      amount: p.totalAmount ?? p.amount ?? payOverlay.value.amount,
+      totalAmount: p.totalAmount ?? payOverlay.value.totalAmount,
+      remaining: p.remaining,
+      claimedCount: p.claimedCount,
+      totalCount: p.totalCount,
+      leftCount: p.leftCount,
+      claims: p.claims || payOverlay.value.claims,
+      rpType: p.rpType || payOverlay.value.rpType,
+      note: p.note || payOverlay.value.note,
+      expired: p.status === 'expired',
+    };
+    const row = messages.value.find((x) => x.id === messageId);
+    if (row) row.ext = { ...parseExt(row), ...p };
+  } catch { /* ignore */ }
 }
 
 function onPayConfirm() {
@@ -766,10 +955,8 @@ function lastMineId() {
 }
 
 function showReadTip(m) {
-  if (!isMine(m)) return false;
-  if (props.target?.isAI) return false;
-  const lid = lastMineId();
-  return Boolean(lid && m.id === lid && peerReadId.value && m.id <= peerReadId.value);
+  const tip = showSendTip(m);
+  return tip === '已读';
 }
 
 async function onChatPhoto(e) {
@@ -789,8 +976,13 @@ async function onChatPhoto(e) {
   }
 }
 
-async function startRecord() {
+const recStartY = ref(0);
+const recCancel = ref(false);
+
+async function startRecord(e) {
   if (recording.value) return;
+  recStartY.value = e?.clientY ?? 0;
+  recCancel.value = false;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const mr = new MediaRecorder(stream);
@@ -802,7 +994,14 @@ async function startRecord() {
       stream.getTracks().forEach((t) => t.stop());
       clearInterval(recTimer);
       recording.value = false;
+      const cancelled = recCancel.value;
+      recCancel.value = false;
       const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
+      if (cancelled) {
+        recSeconds.value = 0;
+        showToast('已取消');
+        return;
+      }
       if (recSeconds.value < 1 || blob.size < 200) {
         alert('说话时间太短');
         recSeconds.value = 0;
@@ -821,6 +1020,7 @@ async function startRecord() {
           { conversationId, content: `[语音] ${recSeconds.value}"`, mediaType: mediaType || 'voice', mediaUrl: url },
           (res) => {
             if (res?.error) showToast(res.error);
+            else playSendSound();
           }
         );
       } catch (err) {
@@ -839,6 +1039,12 @@ async function startRecord() {
   } catch {
     alert('无法访问麦克风');
   }
+}
+
+function onRecordMove(e) {
+  if (!recording.value) return;
+  const y = e?.clientY ?? e?.touches?.[0]?.clientY ?? recStartY.value;
+  recCancel.value = (recStartY.value - y) > 72;
 }
 
 function stopRecord() {
@@ -872,6 +1078,14 @@ onMounted(() => {
     const s = d?.pref?.draft || '';
     if (s && !draft.value) draft.value = s;
     applyConvBgFromPref(d);
+    let remind = false;
+    try { remind = localStorage.getItem(`wx_remind_${conversationId}`) === '1'; } catch { /* ignore */ }
+    chatPrefs.value = {
+      muted: Boolean(d?.pref?.muted),
+      pinned: Boolean(d?.pref?.pinned),
+      folded: Boolean(d?.pref?.folded),
+      remind,
+    };
   }).catch(() => {});
 
   // 3) 共享 socket, 连接态后台同步
@@ -903,6 +1117,9 @@ onMounted(() => {
       messages.value[idx] = m;
       persistMessages();
       return;
+    }
+    if (m.senderName === props.me?.nickname) {
+      messages.value = dropLocalEcho(messages.value, m, props.me.nickname);
     }
     messages.value.push(m);
     persistMessages();
@@ -1017,7 +1234,12 @@ onBeforeUnmount(() => {
           @pointerleave="clearLongPress"
           @pointercancel="clearLongPress"
         >
-          <UserAvatar v-if="!sameSenderAsPrev(i)" v-bind="isMine(m) ? myAvatarProps() : avatarProps()" />
+          <UserAvatar
+            v-if="!sameSenderAsPrev(i)"
+            v-bind="isMine(m) ? myAvatarProps() : avatarProps()"
+            style="cursor:pointer"
+            @click.stop="isMine(m) ? openMyProfile() : openTargetProfile()"
+          />
           <div v-else class="avatar-spacer"></div>
           <div class="msg-col" @click="onMsgBubbleClick(m, $event)">
             <div v-if="m.quote" class="quote-box">
@@ -1049,6 +1271,22 @@ onBeforeUnmount(() => {
               <span v-if="!isMine(m)" class="voice-wave"><i></i><i></i><i></i></span>
               <span class="voice-dur">{{ parseVoiceSeconds(m.content) }}″</span>
               <span v-if="isMine(m)" class="voice-wave"><i></i><i></i><i></i></span>
+              <span
+                v-if="isVoicePlaying(m)"
+                class="voice-progress"
+                :style="{ width: `${Math.round((voiceProgress || 0) * 100)}%` }"
+              ></span>
+            </div>
+            <div
+              v-else-if="m.mediaType === 'file'"
+              class="bubble file-bubble"
+              @click="openFileMsg(m)"
+            >
+              <div class="file-icon">📄</div>
+              <div class="file-main">
+                <div class="file-name">{{ String(m.ext?.name || m.content || '文件').replace(/^\[文件\]/, '') }}</div>
+                <div class="file-sub">点击预览 / 下载</div>
+              </div>
             </div>
             <WxPayCard
               v-else-if="payKindOf(m)"
@@ -1080,7 +1318,16 @@ onBeforeUnmount(() => {
               <div class="merge-foot">{{ parseMergeItems(m).length }} 条聊天记录 ›</div>
             </div>
             <div v-else class="bubble">{{ m.content }}</div>
-            <div v-if="showReadTip(m)" class="read-tip">已读</div>
+            <div
+              v-if="isMine(m) && (m.sendStatus === 'sending' || m.sendStatus === 'failed')"
+              class="msg-status"
+              :class="m.sendStatus === 'failed' ? 'st-failed' : 'st-sending'"
+              @click="m.sendStatus === 'failed' && onBubbleRetry(m)"
+            >
+              <span v-if="m.sendStatus === 'sending'" class="st-clock"></span>
+              <span v-else class="st-bang">!</span>
+            </div>
+            <div v-else-if="showSendTip(m)" class="read-tip">{{ showSendTip(m) }}</div>
           </div>
         </div>
       </template>
@@ -1116,16 +1363,19 @@ onBeforeUnmount(() => {
             @compositionend="onCompositionEnd"
             @input="autoSizeInput(); onInputTyping(); api.chatPref({ conversationId, draft: draft.slice(0, 500) })"
             @focus="onInputFocus"
+            @paste="onPasteChat"
           ></textarea>
           <button
             v-show="dockMode === 3"
             class="hold-talk"
+            :class="{ cancel: recording && recCancel }"
             type="button"
             @pointerdown.prevent="startRecord"
+            @pointermove="onRecordMove"
             @pointerup.prevent="stopRecord"
             @pointerleave="stopRecord"
           >
-            {{ recording ? `松开结束 ${recSeconds}s` : '按住 说话' }}
+            {{ recording ? (recCancel ? '松开取消' : `松开结束 ${recSeconds}s`) : '按住 说话' }}
           </button>
         </div>
         <button class="icon-btn" aria-label="表情" @click="setDock(1)">
@@ -1152,8 +1402,8 @@ onBeforeUnmount(() => {
           <button class="plus-item" type="button" @click="pickChatPhoto"><span class="plus-icon">🖼</span><span>相册</span></button>
           <input ref="photoInput" type="file" accept="image/*" hidden @change="onChatPhoto" />
           <button class="plus-item" type="button" @click="pickChatPhoto"><span class="plus-icon">📷</span><span>拍摄</span></button>
-          <button v-if="!target.isAI && peerUid" class="plus-item" type="button" @click="emit('open-video-call', { callMode: 'video', role: 'caller', target: { nickname: target.nickname, avatar: target.avatarUrl || target.avatar, color: target.color, userId: peerUid } })"><span class="plus-icon">📹</span><span>视频通话</span></button>
-          <button v-if="!target.isAI && peerUid" class="plus-item" type="button" @click="emit('open-video-call', { callMode: 'voice', role: 'caller', target: { nickname: target.nickname, avatar: target.avatarUrl || target.avatar, color: target.color, userId: peerUid } })"><span class="plus-icon">📞</span><span>语音通话</span></button>
+          <button v-if="!target.isAI && peerUid" class="plus-item" type="button" @click="openCall('video')"><span class="plus-icon">📹</span><span>视频通话</span></button>
+          <button v-if="!target.isAI && peerUid" class="plus-item" type="button" @click="openCall('voice')"><span class="plus-icon">📞</span><span>语音通话</span></button>
           <button class="plus-item" type="button" @click="openCreatePay('redpacket')"><span class="plus-icon">🧧</span><span>红包</span></button>
           <button class="plus-item" type="button" @click="openCreatePay('transfer')"><span class="plus-icon">💰</span><span>转账</span></button>
           <button class="plus-item" type="button" @click="showToast('位置消息演示中')"><span class="plus-icon">📍</span><span>位置</span></button>
@@ -1182,6 +1432,7 @@ onBeforeUnmount(() => {
       :index="previewIndex"
       @close="showImagePreview = false"
       @change="(i) => (previewIndex = i)"
+      @forward="onPreviewForward"
     />
 
     <ForwardSheet
@@ -1318,43 +1569,67 @@ onBeforeUnmount(() => {
   background: #d9d9d9; color: #666; font-size: 12px; text-align: center;
 }
 
-.msg-row { display: flex; gap: 10px; margin-bottom: 4px; align-items: flex-start; }
-.msg-row.cont { margin-top: -2px; }
+.msg-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: var(--wx-msg-gap, 12px);
+  align-items: flex-start;
+}
+.msg-row.cont {
+  margin-top: calc(var(--wx-msg-gap, 12px) * -1 + var(--wx-msg-gap-cont, 3px));
+  margin-bottom: var(--wx-msg-gap-cont, 3px);
+}
 .msg-row.mine { flex-direction: row-reverse; }
-.avatar-spacer { width: 40px; flex-shrink: 0; }
-.msg-col { max-width: 70%; min-width: 0; display: flex; flex-direction: column; }
+.avatar-spacer { width: var(--wx-avatar-chat, 40px); flex-shrink: 0; }
+.msg-col { max-width: 68%; min-width: 0; display: flex; flex-direction: column; }
 .msg-row.mine .msg-col { align-items: flex-end; }
 
 .bubble {
   position: relative;
-  padding: 9px 12px; border-radius: 4px; background: var(--white);
-  font-size: 16px; line-height: 1.45; word-break: break-word; white-space: pre-wrap;
+  padding: var(--wx-bubble-py, 9px) var(--wx-bubble-px, 12px);
+  border-radius: var(--wx-bubble-r, 6px);
+  background: var(--white);
+  font-size: var(--wx-bubble-fs, 17px);
+  line-height: var(--wx-bubble-lh, 1.45);
+  word-break: break-word; white-space: pre-wrap;
   animation: fade-up 140ms var(--ease);
+  color: var(--text);
 }
 .bubble:active { background: #ececec; }
 .msg-row.mine .bubble { background: var(--green-bubble); }
 .msg-row.mine .bubble:active { background: #86d95c; }
-.msg-row:not(.cont) .bubble:not(.img-bubble):not(.media-video)::before {
+.msg-row:not(.cont) .bubble:not(.img-bubble):not(.media-video):not(.wx-rp-card):not(.wx-tf-card)::before {
   content: '';
   position: absolute;
   top: 12px;
   width: 0;
   height: 0;
   border: 5px solid transparent;
+  border-top-width: 0;
+  border-bottom-width: 6px;
+  border-bottom-style: solid;
 }
-.msg-row:not(.mine):not(.cont) .bubble:not(.img-bubble):not(.media-video)::before {
-  left: -8px;
+.msg-row:not(.mine):not(.cont) .bubble:not(.img-bubble):not(.media-video):not(.wx-rp-card):not(.wx-tf-card)::before {
+  left: -6px;
   border-right-color: var(--white);
+  border-bottom-color: var(--white);
+  border-left-color: transparent;
 }
-.msg-row.mine:not(.cont) .bubble:not(.img-bubble):not(.media-video)::before {
-  right: -8px;
+.msg-row.mine:not(.cont) .bubble:not(.img-bubble):not(.media-video):not(.wx-rp-card):not(.wx-tf-card)::before {
+  right: -6px;
   border-left-color: var(--green-bubble);
+  border-bottom-color: var(--green-bubble);
+  border-right-color: transparent;
 }
 .img-bubble {
   padding: 0; background: transparent; width: 140px; height: 140px;
-  object-fit: cover; border-radius: 4px; cursor: pointer;
+  object-fit: cover; border-radius: var(--wx-bubble-r-media, 4px); cursor: pointer;
 }
-.media-video { width: 220px; max-height: 280px; border-radius: 4px; background: #000; }
+.media-video {
+  width: 220px; max-height: 280px;
+  border-radius: var(--wx-bubble-r-media, 4px);
+  background: #000;
+}
 
 .chat-dock {
   flex-shrink: 0; background: var(--bg);
@@ -1377,6 +1652,7 @@ onBeforeUnmount(() => {
   width: 100%; height: 28px; border-radius: 4px; background: var(--white);
   border: 0.5px solid #d0d0d0; font-size: 15px; font-weight: 500;
 }
+.hold-talk.cancel { background: #fde2e2; color: var(--red); border-color: #f5c2c2; }
 .send-btn {
   min-width: 52px; height: 36px; margin: 0 4px 0 2px; border-radius: 4px;
   background: var(--green); color: #fff; font-size: 15px;
@@ -1512,6 +1788,43 @@ onBeforeUnmount(() => {
   font-size: 11px;
   color: var(--text-3);
   text-align: right;
+}
+.msg-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-3);
+  justify-content: flex-end;
+}
+.msg-status.st-failed { color: var(--red); cursor: pointer; }
+.st-clock {
+  width: 12px; height: 12px; border-radius: 50%;
+  border: 1.5px solid var(--text-3);
+  border-top-color: transparent;
+  animation: st-spin 0.8s linear infinite;
+  display: inline-block;
+}
+.st-bang {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--red); color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700;
+}
+@keyframes st-spin { to { transform: rotate(360deg); } }
+.file-bubble {
+  display: flex; gap: 10px; align-items: center;
+  min-width: 200px; max-width: 260px; background: var(--white) !important;
+  padding: 12px 14px; border-radius: 8px; cursor: pointer;
+}
+.file-icon { font-size: 28px; }
+.file-name { font-size: 14px; color: var(--text); word-break: break-all; }
+.file-sub { font-size: 11px; color: var(--text-3); margin-top: 4px; }
+.voice-bubble { position: relative; overflow: hidden; }
+.voice-progress {
+  position: absolute; left: 0; bottom: 0; height: 2px;
+  background: rgba(7, 193, 96, 0.75);
 }
 
 .img-preview {

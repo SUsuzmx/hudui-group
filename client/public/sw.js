@@ -1,5 +1,5 @@
-// PWA: 壳与 hashed 静态资源可缓存; HTML/SW/API 永远走网络, 避免发版白屏。
-const CACHE = 'wx-shell-v3';
+// PWA: 壳与 hashed 静态资源可缓存; HTML/SW/API/游戏中心 永远走网络, 避免发版白屏与游戏 0% 卡死。
+const CACHE = 'wx-shell-v4';
 const SHELL = ['/manifest.json', '/icon-192.png', '/icon-512.png', '/icon.svg'];
 
 function isApi(pathname) {
@@ -10,7 +10,12 @@ function isNoCacheDoc(pathname) {
   return pathname === '/' || pathname === '/index.html' || pathname === '/sw.js' || pathname === '/prototype' || pathname.startsWith('/prototype/');
 }
 
+function isGamesPath(pathname) {
+  return pathname === '/games' || pathname.startsWith('/games/');
+}
+
 function isHashedAsset(pathname) {
+  if (isGamesPath(pathname)) return false;
   return pathname.startsWith('/assets/') || /\.(?:js|css|woff2?|png|jpg|jpeg|webp|gif|svg)$/i.test(pathname);
 }
 
@@ -34,8 +39,8 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
   if (isApi(url.pathname)) return;
-  // HTML / SW / prototype: network-only, 保证发版立即生效
-  if (isNoCacheDoc(url.pathname)) return;
+  // HTML / SW / prototype / games: network-only
+  if (isNoCacheDoc(url.pathname) || isGamesPath(url.pathname)) return;
 
   // 媒体与头像: cache-first
   if (url.pathname.startsWith('/media') || url.pathname.startsWith('/avatars')) {

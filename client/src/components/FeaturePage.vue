@@ -23,6 +23,7 @@ const meta = computed(() => {
     look: { title: '看一看', icon: '👀', empty: '暂无推荐内容', tip: '演示资讯流' },
     search: { title: '搜一搜', icon: '🔍', empty: '请从微信首页搜索框使用全局搜索', tip: '联系人、群聊、聊天记录一处搜' },
     tags: { title: '标签', icon: '🏷', empty: '暂无标签', tip: '给联系人分组管理' },
+    blacklist: { title: '通讯录黑名单', icon: '⛔', empty: '黑名单为空', tip: '在好友资料页可将对方加入黑名单' },
     official: { title: '公众号', icon: '📢', empty: '暂无关注的公众号', tip: '' },
     newfriends: { title: '新的朋友', icon: '👤', empty: '暂无新的朋友申请', tip: '可通过用户 ID 添加' },
     status: { title: '状态', icon: '💬', empty: '未设置状态', tip: '设置此刻的心情或状态' },
@@ -48,6 +49,8 @@ const scanCode = ref('');
 const scanResult = ref(null);
 const scanMsg = ref('');
 const scanning = ref(false);
+const scanVideo = ref(null);
+const scanLive = ref(false);
 const albumImages = ref([]);
 const albumPreview = ref(null);
 const paySheet = ref(null); // { note, amount }
@@ -90,10 +93,22 @@ async function refresh() {
       demoList.value = (data.tags || []).map((t) => ({
         key: 'tag-' + t.id,
         title: t.name,
-        sub: `${(t.members || []).length} 位联系人`,
+        sub: `${(t.memberProfiles || t.members || []).length} 位联系人`
+          + ((t.memberProfiles || []).length
+            ? ` · ${(t.memberProfiles || []).slice(0, 3).map((m) => m.nickname).join('、')}${(t.memberProfiles || []).length > 3 ? '…' : ''}`
+            : ''),
         action: 'open-tag',
         tagId: t.id,
         members: t.members || [],
+      }));
+    } else if (props.type === 'blacklist') {
+      const data = await api.friendBlacklist().catch(() => ({ friends: [] }));
+      demoList.value = (data.friends || []).map((f) => ({
+        key: 'bl-' + f.id,
+        title: f.displayName || f.nickname,
+        sub: `微信号 ${f.wxid || '未设置'} · 已拉黑`,
+        action: 'unblack',
+        friendId: f.id,
       }));
     } else if (props.type === 'favorites') {
       const data = await api.favorites();
@@ -192,8 +207,8 @@ async function refresh() {
       ];
     } else if (props.type === 'games') {
       demoList.value = [
-        { key: 'open', title: '游戏 / 小程序中心', sub: '进入小程序页', action: 'open-deep', feature: 'miniappHome' },
-        { key: 'g1', title: '欢乐斗地主', sub: '好友约局', action: 'open-deep', feature: 'miniappHome' },
+        { key: 'open', title: '游戏中心', sub: '叠塔挑战', action: 'open-deep', feature: 'gameHome' },
+        { key: 'g1', title: '叠塔挑战', sub: '发现页 → 游戏 → 开始', action: 'open-deep', feature: 'gameHome' },
       ];
     } else if (props.type === 'miniapp') {
       demoList.value = [
@@ -201,14 +216,67 @@ async function refresh() {
       ];
     } else if (props.type === 'look') {
       demoList.value = [
-        { key: 'l1', title: 'AI 群友如何改变社交产品', sub: '科技早报 · 1.2万阅读', action: 'open-deep', feature: 'lookDetail', payload: { item: { title: 'AI 群友如何改变社交产品', sub: '科技早报 · 1.2万阅读' } } },
-        { key: 'l2', title: '周末城市徒步路线推荐', sub: '生活 · 8602阅读', action: 'open-deep', feature: 'lookDetail', payload: { item: { title: '周末城市徒步路线推荐', sub: '生活 · 8602阅读', body: '整理了五条适合周末的城市徒步路线，含补给点与拍照机位。' } } },
-        { key: 'l3', title: 'WebRTC 实战：从信令到通话', sub: '前端 · 5.4万阅读', action: 'open-deep', feature: 'lookDetail', payload: { item: { title: 'WebRTC 实战：从信令到通话', sub: '前端 · 5.4万阅读', body: '从 offer/answer/ICE 信令讲起，结合本项目的 Socket 中继实现音视频通话。' } } },
-        { key: 'l4', title: '今日热榜：朋友圈都在发什么', sub: '热点 · 实时', action: 'open-deep', feature: 'lookDetail', payload: { item: { title: '今日热榜：朋友圈都在发什么', sub: '热点 · 实时', body: '综合站内朋友圈关键词，生成今日热榜摘要（演示）。' } } },
+        {
+          key: 'l1',
+          title: 'AI 群友如何改变社交产品',
+          sub: '科技早报 · 1.2万阅读',
+          action: 'open-deep',
+          feature: 'lookDetail',
+          payload: {
+            item: {
+              title: 'AI 群友如何改变社交产品',
+              sub: '科技早报 · 1.2万阅读',
+              body: '当群聊里出现足够像真人的 AI 成员，社交产品的「在线感」会被重新定义。本文讨论人设一致性、消息节奏与媒体生成在即时通讯中的落地方式。',
+            },
+          },
+        },
+        {
+          key: 'l2',
+          title: '周末城市徒步路线推荐',
+          sub: '生活 · 8602阅读',
+          action: 'open-deep',
+          feature: 'lookDetail',
+          payload: {
+            item: {
+              title: '周末城市徒步路线推荐',
+              sub: '生活 · 8602阅读',
+              body: '整理了五条适合周末的城市徒步路线，含补给点与拍照机位。',
+            },
+          },
+        },
+        {
+          key: 'l3',
+          title: 'WebRTC 实战：从信令到通话',
+          sub: '前端 · 5.4万阅读',
+          action: 'open-deep',
+          feature: 'lookDetail',
+          payload: {
+            item: {
+              title: 'WebRTC 实战：从信令到通话',
+              sub: '前端 · 5.4万阅读',
+              body: '从 offer/answer/ICE 信令讲起，结合本项目的 Socket 中继实现音视频通话。',
+            },
+          },
+        },
+        {
+          key: 'l4',
+          title: '今日热榜：朋友圈都在发什么',
+          sub: '热点 · 实时',
+          action: 'open-deep',
+          feature: 'lookDetail',
+          payload: {
+            item: {
+              title: '今日热榜：朋友圈都在发什么',
+              sub: '热点 · 实时',
+              body: '综合站内朋友圈关键词，生成今日热榜摘要（演示）。',
+            },
+          },
+        },
       ];
     } else if (props.type === 'nearby') {
       demoList.value = [
         { key: 'n1', title: '附近的人 · 打招呼', sub: '0.3–2.1km 模拟用户', action: 'open-deep', feature: 'nearbyHello' },
+        { key: 'n2', title: '只看女生 / 筛选', sub: '筛选演示', action: 'open-deep', feature: 'nearbyHello' },
       ];
     } else if (props.type === 'album') {
       try {
@@ -259,6 +327,25 @@ async function onItem(item) {
       pending.value = Math.max(0, pending.value - 1);
     } catch (e) {
       alert(e.message);
+    }
+    return;
+  }
+  if (item.action === 'unblack') {
+    try {
+      await api.setFriendBlacklist(item.friendId, false);
+      demoList.value = demoList.value.filter((x) => x.key !== item.key);
+      status.value = demoList.value.length ? '' : '黑名单为空';
+    } catch (e) {
+      alert(e.message || '移出失败');
+    }
+    return;
+  }
+  if (item.action === 'del-tag') {
+    try {
+      await api.deleteTag(item.tagId);
+      demoList.value = demoList.value.filter((x) => x.key !== item.key);
+    } catch (e) {
+      alert(e.message || '删除失败');
     }
     return;
   }
@@ -451,6 +538,67 @@ function onScanFile(e) {
     });
 }
 
+async function startCameraScan() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    scanMsg.value = '当前环境不支持摄像头，请粘贴名片码或上传二维码图片';
+    return;
+  }
+  if (!('BarcodeDetector' in window)) {
+    scanMsg.value = '当前浏览器不支持实时扫码，请粘贴名片码或上传图片';
+    return;
+  }
+  try {
+    stopCameraScan();
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment' },
+      audio: false,
+    });
+    scanStream = stream;
+    scanLive.value = true;
+    await new Promise((r) => setTimeout(r, 50));
+    const video = scanVideo.value;
+    if (!video) throw new Error('video missing');
+    video.srcObject = stream;
+    await video.play();
+    const detector = new BarcodeDetector({ formats: ['qr_code'] });
+    scanning.value = true;
+    scanMsg.value = '请将二维码对准取景框';
+    scanTimer = setInterval(async () => {
+      try {
+        const codes = await detector.detect(video);
+        const raw = codes?.[0]?.rawValue;
+        if (raw) {
+          scanCode.value = raw;
+          stopCameraScan();
+          await runScan();
+        }
+      } catch { /* ignore frame errors */ }
+    }, 400);
+  } catch (e) {
+    scanning.value = false;
+    scanLive.value = false;
+    scanMsg.value = e?.name === 'NotAllowedError'
+      ? '摄像头权限被拒绝，可改用粘贴/上传二维码'
+      : '无法打开摄像头，请改用粘贴名片码';
+  }
+}
+
+function stopCameraScan() {
+  if (scanTimer) {
+    clearInterval(scanTimer);
+    scanTimer = null;
+  }
+  if (scanStream) {
+    scanStream.getTracks().forEach((t) => t.stop());
+    scanStream = null;
+  }
+  if (scanVideo.value) {
+    try { scanVideo.value.srcObject = null; } catch { /* ignore */ }
+  }
+  scanLive.value = false;
+  scanning.value = false;
+}
+
 function fmtTxType(t) {
   return {
     redpacket_send: '发出红包',
@@ -530,10 +678,17 @@ async function saveTagMembers() {
 
     <main v-if="type === 'scan'" class="content scroll-y scan-page">
       <div class="scan-frame">
+        <video v-show="scanLive" ref="scanVideo" class="scan-video" playsinline muted></video>
         <div class="scan-corners"></div>
         <div class="scan-line"></div>
       </div>
       <p class="scan-tip">对准好友的二维码名片，或粘贴名片码</p>
+      <div class="scan-ops">
+        <button type="button" class="scan-op" :disabled="scanning" @click="startCameraScan">
+          {{ scanLive ? '识别中…' : '打开摄像头扫码' }}
+        </button>
+        <button v-if="scanLive" type="button" class="scan-op" @click="stopCameraScan">关闭摄像头</button>
+      </div>
       <div class="tag-add">
         <input v-model="scanCode" placeholder="hudui:U:id:wxid / 微信号 / 昵称" />
         <button :disabled="scanning || !scanCode.trim()" @click="runScan">解析</button>
@@ -709,6 +864,13 @@ async function saveTagMembers() {
           <div v-if="item.action === 'accept'" class="req-actions">
             <button class="req-btn ok" @click="onItem(item)">接受</button>
             <button class="req-btn" @click="onItem({ ...item, action: 'reject' })">拒绝</button>
+          </div>
+          <div v-if="item.action === 'unblack'" class="req-actions">
+            <button class="req-btn ok" @click="onItem(item)">移出黑名单</button>
+          </div>
+          <div v-if="type === 'tags'" class="req-actions">
+            <button class="req-btn ok" @click="onItem(item)">编辑成员</button>
+            <button class="req-btn" @click="onItem({ ...item, action: 'del-tag' })">删除标签</button>
           </div>
         </div>
       </div>
@@ -948,7 +1110,31 @@ async function saveTagMembers() {
   height: 220px;
   position: relative;
   border: 1px solid rgba(255,255,255,0.35);
+  overflow: hidden;
+  background: #000;
 }
+.scan-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.scan-ops {
+  display: flex;
+  gap: 10px;
+  margin: 10px 0 4px;
+}
+.scan-op {
+  border: 0;
+  background: #07c160;
+  color: #fff;
+  font-size: 13px;
+  border-radius: 16px;
+  min-height: 32px;
+  padding: 0 14px;
+}
+.scan-op:disabled { opacity: 0.6; }
 .scan-corners::before,
 .scan-corners::after {
   content: '';

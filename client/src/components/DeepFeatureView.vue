@@ -16,6 +16,7 @@ const titleMap = {
   videoChannels: '视频号',
   nearbyHello: '附近的人',
   miniappHome: '小程序',
+  gameHome: '游戏',
   servicesHome: '服务',
   statusHome: '状态',
   groupList: '群聊',
@@ -29,6 +30,18 @@ const lookItem = ref(props.payload.item || {
   sub: '科技早报 · 1.2万阅读',
   body: '当群聊里出现足够像真人的 AI 成员，社交产品的「在线感」会被重新定义。本文讨论人设一致性、消息节奏与媒体生成在即时通讯中的落地方式。',
 });
+if (!lookItem.value.body) {
+  lookItem.value = {
+    ...lookItem.value,
+    body: '这里是「看一看」演示正文。可在发现页浏览列表，点进查看详情，并使用在看 / 收藏 / 分享。',
+  };
+}
+if (!lookItem.value.body) {
+  lookItem.value = {
+    ...lookItem.value,
+    body: '这里是「看一看」演示正文。可在发现页浏览列表，点进来看详情，并使用在看 / 收藏 / 分享等操作。',
+  };
+}
 const videos = ref([
   { id: 1, title: '城市夜跑第一视角', author: '@运动小张', likes: '2.1万', cover: '🌃' },
   { id: 2, title: '三分钟番茄炒蛋', author: '@厨房日记', likes: '8642', cover: '🍳' },
@@ -77,6 +90,21 @@ const helloText = ref('你好，可以交个朋友吗？');
 const helloSent = ref({});
 const balance = ref(0);
 const recentApps = ref([]);
+function absGameUrl(urlOrId) {
+  const path = String(urlOrId || '').startsWith('/') ? String(urlOrId) : `/games/${urlOrId}/`;
+  const normalized = path.endsWith('/') ? path : `${path}/`;
+  try {
+    return new URL(normalized, window.location.origin).href;
+  } catch {
+    return normalized;
+  }
+}
+
+const games = ref([
+  { id: 'tower_game', name: '叠塔挑战', desc: '比手速 · 层层叠高楼', icon: '🏗️', url: '/games/tower_game/' },
+]);
+const gameFrame = ref(null); // { url, name, status }
+const gameFrameBusy = ref(false);
 const stickerDetail = ref(props.payload.sticker || null);
 const favStickers = ref([]);
 const STICKER_KEY = 'hudui_stickers';
@@ -138,6 +166,24 @@ async function load() {
       groups.value = (d.chats || []).filter((c) => c.type === 'group');
     } catch { groups.value = []; }
   }
+  if (props.type === 'gameHome') {
+    try {
+      const res = await fetch('/api/games', { headers: { Accept: 'application/json' } });
+      if (res.ok) {
+        const d = await res.json();
+        const list = Array.isArray(d?.games) ? d.games : [];
+        if (list.length) {
+          games.value = list.map((g) => ({
+            id: g.id,
+            name: g.nameZh || g.name || g.id,
+            desc: g.desc || g.description || '点击开始试玩',
+            icon: g.icon || '🎮',
+            url: g.url || `/games/${g.id}/`,
+          }));
+        }
+      }
+    } catch { /* keep local fallback list */ }
+  }
   if (props.type === 'cardDetail' && !card.value) {
     try {
       const d = await api.userCards();
@@ -163,6 +209,36 @@ function onService(s) {
 function openMini(m) {
   recentApps.value = [m, ...recentApps.value.filter((x) => x.id !== m.id)].slice(0, 6);
   toast(`打开小程序：${m.name}`);
+}
+
+function openGame(g) {
+  if (!g) return;
+  const url = absGameUrl(g.url || g.id);
+  gameFrameBusy.value = true;
+  gameFrame.value = { url, name: g.name || g.id, status: 'loading' };
+  // 兜底: 部分环境 iframe load 事件不可靠, 3s 后允许交互
+  setTimeout(() => {
+    if (gameFrame.value?.url === url && gameFrame.value.status === 'loading') {
+      gameFrameBusy.value = false;
+      gameFrame.value = { ...gameFrame.value, status: 'ready' };
+    }
+  }, 3000);
+}
+function onGameFrameLoad() {
+  gameFrameBusy.value = false;
+  if (gameFrame.value) gameFrame.value = { ...gameFrame.value, status: 'ready' };
+}
+function onGameFrameError() {
+  gameFrameBusy.value = false;
+  if (gameFrame.value) gameFrame.value = { ...gameFrame.value, status: 'error' };
+}
+function openGameInNewTab() {
+  const url = gameFrame.value?.url;
+  if (url) window.open(url, '_blank', 'noopener');
+}
+function closeGame() {
+  gameFrameBusy.value = false;
+  gameFrame.value = null;
 }
 
 function toggleFavSticker(e) {
@@ -193,12 +269,15 @@ async function setStatus(val) {
 }
 
 function openGroup(g) {
+  const gid = g.groupId ?? g.id ?? null;
+  const conv = g.conversationId
+    || (gid ? `grp_${gid}` : null);
   emit('open-chat', {
-    conversationId: g.conversationId || g.id,
-    groupId: g.groupId ?? null,
+    conversationId: conv,
+    groupId: gid,
     kind: g.kind || null,
     name: g.name,
-    isDefault: g.isDefault !== false,
+    isDefault: Boolean(g.isDefault),
   });
 }
 </script>
@@ -273,6 +352,21 @@ function openGroup(g) {
             <span class="mini-icon">{{ m.icon }}</span>
             <span class="mini-name">{{ m.name }}</span>
             <span class="mini-desc">{{ m.desc }}</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 游戏中心 -->
+      <div v-else-if="type === 'gameHome'" class="game-page">
+        <div class="game-section-title">小游戏</div>
+        <div class="game-list">
+          <button v-for="g in games" :key="g.id" class="game-row" type="button" @click="openGame(g)">
+            <span class="game-icon">{{ g.icon }}</span>
+            <span class="game-main">
+              <span class="game-name">{{ g.name }}</span>
+              <span class="game-desc">{{ g.desc }}</span>
+            </span>
+            <span class="game-play">开始</span>
           </button>
         </div>
       </div>
@@ -383,6 +477,29 @@ function openGroup(g) {
 
       <div v-else class="empty-tip" style="padding:40px">页面建设中</div>
     </main>
+
+    <!-- 全屏游戏层 -->
+    <div v-if="gameFrame" class="game-layer">
+      <div class="game-layer-bar">
+        <button class="game-layer-back" type="button" @click="closeGame">‹ 返回</button>
+        <span class="game-layer-title">{{ gameFrame.name }}</span>
+        <button class="game-layer-side game-layer-ext" type="button" @click="openGameInNewTab">新窗口</button>
+      </div>
+      <div v-if="gameFrameBusy || gameFrame.status === 'loading'" class="game-layer-loading">游戏加载中…</div>
+      <div v-else-if="gameFrame.status === 'error'" class="game-layer-loading">
+        <p>游戏页面加载失败</p>
+        <button class="hud-btn" type="button" @click="openGameInNewTab">在新窗口打开</button>
+      </div>
+      <iframe
+        :key="gameFrame.url"
+        :src="gameFrame.url"
+        class="game-layer-frame"
+        allow="autoplay; fullscreen; gamepad; clipboard-write"
+        referrerpolicy="same-origin"
+        @load="onGameFrameLoad"
+        @error="onGameFrameError"
+      />
+    </div>
   </div>
 </template>
 
@@ -448,6 +565,52 @@ function openGroup(g) {
 }
 .mini-name { font-size: 13px; color: var(--text); }
 .mini-desc { font-size: 11px; color: var(--text-3); }
+
+/* 游戏中心 */
+.game-page { background: var(--bg); min-height: 100%; padding-bottom: 24px; }
+.game-section-title { padding: 14px 16px 6px; font-size: 13px; color: var(--text-3); }
+.game-list { margin: 0 12px; background: var(--white); border-radius: 12px; overflow: hidden; }
+.game-row {
+  width: 100%; display: flex; align-items: center; gap: 12px;
+  padding: 14px; border-bottom: 0.5px solid var(--divider-soft); text-align: left;
+}
+.game-row:last-child { border-bottom: 0; }
+.game-row:active { background: var(--press); }
+.game-icon {
+  width: 52px; height: 52px; border-radius: 12px; background: var(--divider-soft);
+  display: flex; align-items: center; justify-content: center; font-size: 26px; flex-shrink: 0;
+}
+.game-main { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.game-name { font-size: 16px; color: var(--text); font-weight: 500; }
+.game-desc { font-size: 12px; color: var(--text-3); }
+.game-play {
+  font-size: 13px; color: #07c160; border: 1px solid rgba(7,193,96,0.6);
+  border-radius: 14px; padding: 4px 14px; flex-shrink: 0;
+}
+.game-layer {
+  position: fixed; inset: 0; z-index: 4000; background: #111;
+  display: flex; flex-direction: column;
+}
+.game-layer-bar {
+  height: 44px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
+  background: #1c1c1c; color: #fff; padding: 0 10px;
+}
+.game-layer-back { color: #fff; font-size: 15px; min-height: 36px; padding: 0 6px; }
+.game-layer-title { font-size: 15px; }
+.game-layer-side { width: 56px; }
+.game-layer-ext {
+  width: auto; min-width: 56px; color: #9ecbff; font-size: 13px;
+  border: 0; background: transparent; cursor: pointer; padding: 6px 4px;
+}
+.game-layer-loading {
+  position: absolute; inset: 44px 0 0; z-index: 1;
+  display: grid; place-items: center; gap: 10px;
+  color: #c9d1d9; font-size: 14px; background: #111;
+  pointer-events: none;
+}
+.game-layer-loading .hud-btn,
+.game-layer-loading button { pointer-events: auto; }
+.game-layer-frame { flex: 1; width: 100%; border: 0; background: #111; position: relative; z-index: 0; }
 
 /* 表情 */
 .sticker-page { background: var(--bg); min-height: 100%; padding-bottom: 24px; }

@@ -3,7 +3,8 @@ import { ref, nextTick, onMounted, onBeforeUnmount, computed } from 'vue';
 import { api, compressImage } from '../api.js';
 import { EMOJI_LIST, renderContent } from '../chat-shared.js';
 import { useVoicePlayer } from '../voice-player.js';
-import { ensureNotifyPermission, notifyMessage, playMsgSound } from '../notify.js';
+import { ensureNotifyPermission, notifyMessage, playMsgSound, playSendSound } from '../notify.js';
+import { makeLocalMsg, patchLocalMsg, dropLocalEcho } from '../chat-send-status.js';
 import { toast } from '../toast.js';
 import { getSocket, bindSocket } from '../socket-store.js';
 import { saveMsgCache, loadMsgCache } from '../chat-cache.js';
@@ -19,7 +20,7 @@ const props = defineProps({
   chat: { type: Object, default: null },
   pendingSearch: { type: Boolean, default: false },
 });
-const emit = defineEmits(['back', 'open-chat-info', 'members', 'search-used', 'open-video-call']);
+const emit = defineEmits(['back', 'open-chat-info', 'members', 'search-used', 'open-video-call', 'open-profile']);
 
 const conversationId = computed(() => props.chat?.conversationId || null);
 const chatTitle = computed(() => props.chat?.name || members.value.groupName || 'WeChat');
@@ -217,6 +218,7 @@ function sameSenderAsPrev(i) {
 }
 
 function isMine(m) {
+  if (m?.localPending) return true;
   return m.senderType === 'user' && m.senderName === props.me.nickname;
 }
 
@@ -369,16 +371,29 @@ function send() {
         }
       : null,
   };
+  const local = makeLocalMsg({
+    me: props.me,
+    conversationId: conversationId.value,
+    content,
+    quote: payload.quote,
+  });
+  messages.value.push(local);
   sendState.value = 'sending';
   socket.emit('message:send', payload, (res) => {
     if (res?.error) {
       sendState.value = 'failed';
       lastFailed.value = payload;
-      alert(res.error);
+      patchLocalMsg(messages.value, local.id, { sendStatus: 'failed' });
+      messages.value = [...messages.value];
       return;
     }
     sendState.value = 'idle';
     lastFailed.value = null;
+    playSendSound();
+    // 服务端回声通常很快；若尚未到达则先标已发送
+    const still = messages.value.find((m) => m.id === local.id);
+    if (still) patchLocalMsg(messages.value, local.id, { sendStatus: 'sent', localPending: false });
+    messages.value = [...messages.value];
   });
   draft.value = '';
   quoteMsg.value = null;
@@ -398,14 +413,86 @@ function retrySend() {
   const payload = lastFailed.value;
   lastFailed.value = null;
   sendState.value = 'sending';
+  const failedLocal = [...messages.value].reverse().find((m) => m.localPending && m.sendStatus === 'failed');
+  if (failedLocal) {
+    patchLocalMsg(messages.value, failedLocal.id, { sendStatus: 'sending' });
+    messages.value = [...messages.value];
+  }
   socket.emit('message:send', payload, (res) => {
     if (res?.error) {
       sendState.value = 'failed';
       lastFailed.value = payload;
+      if (failedLocal) {
+        patchLocalMsg(messages.value, failedLocal.id, { sendStatus: 'failed' });
+        messages.value = [...messages.value];
+      }
     } else {
       sendState.value = 'idle';
+      playSendSound();
+      if (failedLocal) {
+        messages.value = messages.value.filter((m) => m.id !== failedLocal.id);
+      }
     }
   });
+}
+
+function onBubbleRetry(m) {
+  if (!m?.localPending || m.sendStatus !== 'failed') return;
+  lastFailed.value = {
+    content: m.content,
+    conversationId: conversationId.value,
+    quote: m.quote || null,
+    mediaType: m.mediaType || null,
+    mediaUrl: m.mediaUrl || null,
+  };
+  retrySend();
+}
+
+function onPasteChat(e) {
+  const items = e.clipboardData?.items || [];
+  for (const item of items) {
+    if (item.type?.startsWith('image/')) {
+      const file = item.getAsFile();
+      if (file) {
+        e.preventDefault();
+        sendImageFile(file);
+        return;
+      }
+    }
+  }
+}
+
+async function sendImageFile(file) {
+  try {
+    const data = await compressImage(file);
+    const { url, mediaType } = await api.uploadChatMedia(data, 'image');
+    if (!url) throw new Error('上传失败');
+    const local = makeLocalMsg({
+      me: props.me,
+      conversationId: conversationId.value,
+      content: '[图片]',
+      mediaType: mediaType || 'image',
+      mediaUrl: url,
+    });
+    messages.value.push(local);
+    scrollToBottom();
+    socket.emit('message:send', {
+      conversationId: conversationId.value,
+      content: '[图片]',
+      mediaType: mediaType || 'image',
+      mediaUrl: url,
+    }, (res) => {
+      if (res?.error) {
+        patchLocalMsg(messages.value, local.id, { sendStatus: 'failed' });
+        messages.value = [...messages.value];
+        showToast(res.error);
+      } else {
+        playSendSound();
+      }
+    });
+  } catch (err) {
+    showToast(err.message || '发送图片失败');
+  }
 }
 
 function setQuote(m) {
@@ -504,6 +591,9 @@ function onChatMoreAction(label) {
     searchResults.value = [];
     return;
   }
+  const gid = conversationId.value?.startsWith('grp_')
+    ? Number(conversationId.value.replace(/^grp_/, ''))
+    : (props.chat?.groupId || null);
   emit('open-chat-info', {
     conversationId: conversationId.value,
     groupId: gid,
@@ -563,8 +653,13 @@ async function onChatPhoto(e) {
   }
 }
 
-async function startRecord() {
+const recStartY = ref(0);
+const recCancel = ref(false);
+
+async function startRecord(e) {
   if (recording.value) return;
+  recStartY.value = e?.clientY ?? 0;
+  recCancel.value = false;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const mr = new MediaRecorder(stream);
@@ -576,7 +671,14 @@ async function startRecord() {
       stream.getTracks().forEach((t) => t.stop());
       clearInterval(recTimer);
       recording.value = false;
+      const cancelled = recCancel.value;
+      recCancel.value = false;
       const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
+      if (cancelled) {
+        recSeconds.value = 0;
+        showToast('已取消');
+        return;
+      }
       if (recSeconds.value < 1 || blob.size < 200) {
         showToast('说话时间太短');
         recSeconds.value = 0;
@@ -589,6 +691,15 @@ async function startRecord() {
       });
       try {
         const { url, mediaType } = await api.uploadChatMedia(data, 'voice');
+        const local = makeLocalMsg({
+          me: props.me,
+          conversationId: conversationId.value,
+          content: `[语音] ${recSeconds.value}"`,
+          mediaType: mediaType || 'voice',
+          mediaUrl: url,
+        });
+        messages.value.push(local);
+        scrollToBottom();
         socket.emit(
           'message:send',
           {
@@ -598,7 +709,13 @@ async function startRecord() {
             mediaUrl: url,
           },
           (res) => {
-            if (res?.error) showToast(res.error);
+            if (res?.error) {
+              patchLocalMsg(messages.value, local.id, { sendStatus: 'failed' });
+              messages.value = [...messages.value];
+              showToast(res.error);
+            } else {
+              playSendSound();
+            }
           }
         );
       } catch (err) {
@@ -619,11 +736,23 @@ async function startRecord() {
   }
 }
 
+function onRecordMove(e) {
+  if (!recording.value) return;
+  const y = e?.clientY ?? e?.touches?.[0]?.clientY ?? recStartY.value;
+  recCancel.value = (recStartY.value - y) > 72;
+}
+
 function stopRecord() {
   if (!recording.value) return;
   try {
     recorder.value?.stop();
   } catch { /* ignore */ }
+}
+
+function onPreviewForward(url) {
+  const m = messages.value.find((x) => x.mediaUrl === url);
+  if (m?.id) openForward([m.id]);
+  else showToast('无法转发该图片');
 }
 
 function startLongPress(m, e) {
@@ -1027,6 +1156,33 @@ function openPayOverlayFromMsg(m) {
     messageId: m.id,
     tip: '',
   };
+  if (kind === 'redpacket' && ext.packetId) refreshRedpacketDetail(ext.packetId, m.id);
+}
+
+async function refreshRedpacketDetail(packetId, messageId) {
+  try {
+    const d = await api.redpacketDetail(packetId);
+    const p = d?.packet;
+    if (!p) return;
+    payOverlay.value = {
+      ...payOverlay.value,
+      status: p.status || payOverlay.value.status,
+      amount: p.totalAmount ?? p.amount ?? payOverlay.value.amount,
+      totalAmount: p.totalAmount ?? payOverlay.value.totalAmount,
+      remaining: p.remaining,
+      claimedCount: p.claimedCount,
+      totalCount: p.totalCount,
+      leftCount: p.leftCount,
+      claims: p.claims || payOverlay.value.claims,
+      rpType: p.rpType || payOverlay.value.rpType,
+      note: p.note || payOverlay.value.note,
+      expired: p.status === 'expired',
+    };
+    const row = messages.value.find((x) => x.id === messageId);
+    if (row) {
+      row.ext = { ...parseExt(row), ...p };
+    }
+  } catch { /* 明细刷新失败不阻断打开 */ }
 }
 
 function onPayConfirmGroup() {
@@ -1272,14 +1428,78 @@ function onAvatarDbl(m) {
   );
 }
 
-function onAvatarTap(m) {
-  const now = Date.now();
-  if (avatarTap.id === m.id && now - avatarTap.ts < 320) {
-    avatarTap = { id: null, ts: 0 };
-    onAvatarDbl(m);
+function findMemberByName(name) {
+  const ai = (members.value.aiMembers || []).find((a) => a.nickname === name || a.name === name);
+  if (ai) {
+    return {
+      id: ai.personaId || ai.id,
+      userId: null,
+      nickname: ai.nickname || name,
+      avatar: ai.avatarUrl || ai.avatar || null,
+      emoji: ai.emoji || null,
+      color: ai.color || '#07c160',
+      avatarColor: ai.color || '#07c160',
+      isAI: true,
+      personaId: ai.personaId || ai.id,
+      isFriend: false,
+      local: true,
+      wxid: null,
+    };
+  }
+  const human = (members.value.allUsers || members.value.onlineUsers || []).find(
+    (u) => u.nickname === name || u.name === name
+  );
+  if (human) {
+    return {
+      id: human.id ?? human.userId,
+      userId: human.id ?? human.userId,
+      nickname: human.nickname || name,
+      avatar: human.avatar || null,
+      emoji: human.emoji || null,
+      color: human.color || human.avatarColor,
+      avatarColor: human.avatarColor || human.color,
+      isAI: false,
+      isFriend: Boolean(human.isFriend ?? true),
+      local: false,
+      wxid: human.wxid || null,
+      signature: human.signature || null,
+    };
+  }
+  return {
+    id: null,
+    userId: null,
+    nickname: name,
+    avatar: null,
+    emoji: null,
+    color: '#888',
+    avatarColor: '#888',
+    isAI: false,
+    isFriend: false,
+    local: true,
+  };
+}
+
+function openMemberProfile(m) {
+  if (!m || m.senderType === 'system') return;
+  if (isMine(m)) {
+    emit('open-profile', {
+      id: props.me?.id,
+      userId: props.me?.id,
+      nickname: props.me?.nickname,
+      avatar: props.me?.avatar,
+      color: props.me?.avatarColor,
+      avatarColor: props.me?.avatarColor,
+      isAI: false,
+      isSelf: true,
+      isFriend: false,
+    });
     return;
   }
-  avatarTap = { id: m.id, ts: now };
+  emit('open-profile', findMemberByName(m.senderName));
+}
+
+function onAvatarTap(m) {
+  openMemberProfile(m);
 }
 
 function onBodyTouchStart(e) {
@@ -1309,6 +1529,11 @@ function appendIncoming(m) {
     messages.value[idx] = m;
     persistMessages();
     return;
+  }
+  // 去掉乐观本地气泡
+  const meNick = props.me?.nickname;
+  if (m.senderName === meNick) {
+    messages.value = dropLocalEcho(messages.value, m, meNick);
   }
   seenMsgIds.add(m.id);
   messages.value.push(m);
@@ -1577,7 +1802,7 @@ onBeforeUnmount(() => {
           @pointercancel="clearLongPress"
         >
           <span v-if="multiMode" class="check-box" :class="{ on: selectedIds.includes(m.id) }"></span>
-          <div v-if="!sameSenderAsPrev(i)" class="avatar-wrap" @click.stop="onAvatarTap(m)">
+          <div v-if="!sameSenderAsPrev(i)" class="avatar-wrap" @click.stop="openMemberProfile(m)" style="cursor:pointer">
             <UserAvatar v-bind="avatarProps(m)" />
           </div>
           <div v-else class="avatar-spacer"></div>
@@ -1697,7 +1922,16 @@ onBeforeUnmount(() => {
               <div class="merge-foot">{{ parseMergeItems(m).length }} 条聊天记录 ›</div>
             </div>
             <div v-else class="bubble" v-html="renderContent(m.content)"></div>
-            <div v-if="isMine(m) && sendState === 'failed' && lastFailed?.content === m.content" class="send-fail">
+            <div
+              v-if="isMine(m) && (m.sendStatus === 'sending' || m.sendStatus === 'failed')"
+              class="msg-status"
+              :class="m.sendStatus === 'failed' ? 'st-failed' : 'st-sending'"
+              @click="m.sendStatus === 'failed' && onBubbleRetry(m)"
+            >
+              <span v-if="m.sendStatus === 'sending'" class="st-clock"></span>
+              <span v-else class="st-bang">!</span>
+            </div>
+            <div v-if="isMine(m) && sendState === 'failed' && lastFailed?.content === m.content && !m.localPending" class="send-fail">
               <span>!</span>
               <button @click="retrySend">重发</button>
             </div>
@@ -1750,9 +1984,10 @@ onBeforeUnmount(() => {
             @compositionend="onCompositionEnd"
             @input="onDraftInput"
             @focus="onInputFocus"
+            @paste="onPasteChat"
           ></textarea>
-          <button v-show="dockMode === 3" class="hold-talk" type="button" @pointerdown.prevent="startRecord" @pointerup.prevent="stopRecord" @pointerleave="stopRecord">
-            {{ recording ? `松开结束 ${recSeconds}s` : '按住 说话' }}
+          <button v-show="dockMode === 3" class="hold-talk" :class="{ cancel: recording && recCancel }" type="button" @pointerdown.prevent="startRecord" @pointermove="onRecordMove" @pointerup.prevent="stopRecord" @pointerleave="stopRecord">
+            {{ recording ? (recCancel ? '松开取消' : `松开结束 ${recSeconds}s`) : '按住 说话' }}
           </button>
         </div>
         <button class="icon-btn" aria-label="表情" @click="setDock(1)">
@@ -1876,6 +2111,7 @@ onBeforeUnmount(() => {
       :index="previewIndex"
       @close="closePreview"
       @change="(i) => (previewIndex = i)"
+      @forward="onPreviewForward"
     />
 
     <WxPayOverlay
@@ -2019,6 +2255,8 @@ onBeforeUnmount(() => {
   background: rgba(0,0,0,0.04);
   border-left: 2px solid #c7c7cc;
   border-radius: 2px;
+  font-size: 13px;
+  line-height: 1.4;
 }
 .msg-row.mine .quote-box {
   background: rgba(0,0,0,0.05);
@@ -2081,6 +2319,30 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: var(--red);
 }
+.msg-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.msg-row.mine .msg-status { justify-content: flex-end; }
+.msg-status.st-failed { color: var(--red); cursor: pointer; }
+.st-clock {
+  width: 12px; height: 12px; border-radius: 50%;
+  border: 1.5px solid var(--text-3);
+  border-top-color: transparent;
+  animation: st-spin 0.8s linear infinite;
+  display: inline-block;
+}
+.st-bang {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--red); color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700;
+}
+@keyframes st-spin { to { transform: rotate(360deg); } }
 .msg-row.mine .send-fail {
   justify-content: flex-end;
 }
@@ -2092,25 +2354,40 @@ onBeforeUnmount(() => {
 .chat-body {
   flex: 1;
   min-height: 0;
-  padding: 10px 12px 8px;
+  padding: 12px var(--wx-msg-pad-x, 12px) 8px;
   background: var(--chat-bg, var(--bg));
 }
 .history-tip {
   text-align: center; color: var(--text-3); font-size: 12px; padding: 8px 0 12px;
 }
 .time-divider {
-  text-align: center; color: var(--text-3); font-size: 12px; margin: 12px 0 10px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: var(--wx-time-fs, 12px);
+  margin: 16px 0 12px;
 }
-.sys-msg { display: flex; justify-content: center; margin: 8px 0; }
+.sys-msg { display: flex; justify-content: center; margin: 10px 0; }
 .sys-msg span {
-  max-width: 80%; padding: 4px 10px; border-radius: 3px;
-  background: #d9d9d9; color: #666; font-size: 12px; line-height: 1.4; text-align: center;
+  max-width: 80%;
+  padding: 4px 10px;
+  border-radius: 3px;
+  background: #d9d9d9;
+  color: #666;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
 }
 
 .msg-row {
-  display: flex; gap: 10px; margin-bottom: 4px; align-items: flex-start;
+  display: flex;
+  gap: 10px;
+  margin-bottom: var(--wx-msg-gap, 12px);
+  align-items: flex-start;
 }
-.msg-row.cont { margin-top: -2px; }
+.msg-row.cont {
+  margin-top: calc(var(--wx-msg-gap, 12px) * -1 + var(--wx-msg-gap-cont, 3px));
+  margin-bottom: var(--wx-msg-gap-cont, 3px);
+}
 .msg-row.mine { flex-direction: row-reverse; }
 .msg-row.selected { background: rgba(7, 193, 96, 0.08); }
 .check-box {
@@ -2146,47 +2423,72 @@ onBeforeUnmount(() => {
 }
 .multi-bar button.danger { color: var(--red); }
 .multi-bar button:disabled { color: var(--text-3); }
-.avatar-spacer { width: 40px; flex-shrink: 0; }
+.avatar-spacer { width: var(--wx-avatar-chat, 40px); flex-shrink: 0; }
 .avatar-wrap { flex-shrink: 0; cursor: pointer; }
 
 .msg-col {
-  max-width: 70%; min-width: 0;
-  display: flex; flex-direction: column; align-items: flex-start;
+  max-width: 68%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
 }
 .msg-row.mine .msg-col { align-items: flex-end; }
 
 .sender-name {
-  font-size: 12px; color: var(--text-2); margin-bottom: 3px;
-  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--wx-name-fs, 12px);
+  color: var(--text-3);
+  margin-bottom: 4px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.3;
 }
 
+/* 微信经典文本气泡 */
 .bubble {
-  position: relative; padding: 9px 12px; border-radius: 4px;
-  background: var(--white); font-size: 16px; line-height: 1.45;
-  word-break: break-word; white-space: pre-wrap; user-select: text;
+  position: relative;
+  padding: var(--wx-bubble-py, 9px) var(--wx-bubble-px, 12px);
+  border-radius: var(--wx-bubble-r, 6px);
+  background: var(--white);
+  font-size: var(--wx-bubble-fs, 17px);
+  line-height: var(--wx-bubble-lh, 1.45);
+  word-break: break-word;
+  white-space: pre-wrap;
+  user-select: text;
   transition: background 120ms linear;
   animation: fade-up 140ms var(--ease);
+  color: var(--text);
 }
 .bubble:active { background: #ececec; }
 .msg-row.mine .bubble { background: var(--green-bubble); }
 .msg-row.mine .bubble:active { background: #86d95c; }
 
 /* 气泡小尾巴（仅非连续消息） */
-.msg-row:not(.cont) .bubble:not(.img-bubble):not(.media-video)::before {
+.msg-row:not(.cont) .bubble:not(.img-bubble):not(.media-video):not(.wx-rp-card):not(.wx-tf-card)::before {
   content: '';
   position: absolute;
   top: 12px;
   width: 0;
   height: 0;
   border: 5px solid transparent;
+  border-top-width: 0;
+  border-bottom-width: 6px;
+  border-bottom-style: solid;
+  margin-top: 1px;
 }
-.msg-row:not(.mine):not(.cont) .bubble:not(.img-bubble):not(.media-video)::before {
-  left: -8px;
+.msg-row:not(.mine):not(.cont) .bubble:not(.img-bubble):not(.media-video):not(.wx-rp-card):not(.wx-tf-card)::before {
+  left: -6px;
   border-right-color: var(--white);
+  border-bottom-color: var(--white);
+  border-left-color: transparent;
 }
-.msg-row.mine:not(.cont) .bubble:not(.img-bubble):not(.media-video)::before {
-  right: -8px;
+.msg-row.mine:not(.cont) .bubble:not(.img-bubble):not(.media-video):not(.wx-rp-card):not(.wx-tf-card)::before {
+  right: -6px;
   border-left-color: var(--green-bubble);
+  border-bottom-color: var(--green-bubble);
+  border-right-color: transparent;
 }
 
 .bubble :deep(.at-mention) { color: var(--blue); }
@@ -2194,7 +2496,7 @@ onBeforeUnmount(() => {
 
 .img-bubble {
   padding: 0; background: transparent; overflow: hidden;
-  border-radius: 4px; max-width: 160px; cursor: pointer;
+  border-radius: var(--wx-bubble-r-media, 4px); max-width: 160px; cursor: pointer;
 }
 .img-bubble:active { opacity: 0.85; background: transparent; }
 .img-bubble {
@@ -2202,7 +2504,9 @@ onBeforeUnmount(() => {
 }
 
 .media-video {
-  width: 220px; max-height: 280px; border-radius: 4px; background: #000;
+  width: 220px; max-height: 280px;
+  border-radius: var(--wx-bubble-r-media, 4px);
+  background: #000;
 }
 .card-bubble, .file-bubble, .rp-bubble, .tf-bubble, .loc-bubble {
   width: 230px;
@@ -2486,6 +2790,7 @@ onBeforeUnmount(() => {
   border: 0.5px solid #d0d0d0; font-size: 15px; font-weight: 500;
 }
 .hold-talk:active { background: #ddd; }
+.hold-talk.cancel { background: #fde2e2; color: var(--red); }
 .send-btn {
   min-width: 52px; height: 36px; margin: 0 4px 0 2px; border-radius: 4px;
   background: var(--green); color: #fff; font-size: 15px; flex-shrink: 0;

@@ -57,14 +57,17 @@ watch(q, () => {
 
 function pickContact(c) {
   if (c.isAI) {
-    emit('open-private', {
-      isAI: true,
+    // AI 不进私聊/通讯录，打开资料页说明群聊用法
+    emit('open-contact', {
+      id: c.personaId || c.id,
+      userId: null,
       nickname: c.nickname,
       avatar: c.avatar,
-      avatarUrl: c.avatar,
       emoji: c.emoji,
-      avatarEmoji: c.emoji,
+      isAI: true,
       personaId: c.personaId || c.id,
+      isFriend: false,
+      local: true,
     });
     return;
   }
@@ -86,14 +89,31 @@ function pickChat(c) {
     emit('open-chat', c);
     return;
   }
+  const raw = c.avatars?.[0];
+  const rawStr = typeof raw === 'string' ? raw : '';
+  const isColor = Boolean(rawStr) && (rawStr.startsWith('#') || rawStr.startsWith('rgb'));
+  const isPath = Boolean(rawStr) && (
+    rawStr.startsWith('/')
+    || rawStr.startsWith('data:')
+    || rawStr.startsWith('http')
+    || /\.(png|jpe?g|webp|gif)$/i.test(rawStr)
+  );
+  const avatar = isPath ? rawStr : (c.personaAvatar || c.avatar || null);
+  const emoji = !isPath && !isColor && rawStr && !rawStr.includes('.') && [...rawStr].length <= 4
+    ? rawStr
+    : (c.isAI ? (c.personaEmoji || null) : null);
+  const uid = Number(c.peerId ?? c.userId ?? 0);
   emit('open-private', {
     isAI: Boolean(c.isAI),
-    nickname: c.name,
-    avatar: c.avatars?.[0],
-    avatarUrl: typeof c.avatars?.[0] === 'string' && String(c.avatars[0]).startsWith('/') ? c.avatars[0] : null,
-    emoji: typeof c.avatars?.[0] === 'string' && !String(c.avatars[0]).startsWith('/') ? c.avatars[0] : null,
+    nickname: c.remark || c.name,
+    avatar,
+    avatarUrl: avatar,
+    emoji,
+    avatarEmoji: emoji,
+    color: c.avatarColor || (isColor ? rawStr : '#4f6ef7'),
     personaId: c.personaId,
-    userId: c.peerId,
+    userId: Number.isInteger(uid) && uid > 0 ? uid : null,
+    remark: c.remark || null,
   });
 }
 
@@ -110,8 +130,32 @@ function pickMessage(m) {
   }
   // 私聊: 尽量从会话列表匹配
   const c = localChats.value.find((x) => x.conversationId === conv) || localChats.value.find((x) => x.id === conv);
-  if (c) pickChat(c);
-  else emit('open-chat', { conversationId: conv, name: m.senderName || '聊天', isDefault: false });
+  if (c) {
+    pickChat(c);
+    return;
+  }
+  // 回退: 从会话 ID 解析 peerId
+  const parts = String(conv).split('_');
+  let userId = null;
+  let isAI = false;
+  let personaId = null;
+  if (parts[1] === 'u') {
+    const meId = Number(props.me?.id || 0);
+    const a = Number(parts[2]);
+    const b = Number(parts[3]);
+    userId = meId && a === meId ? b : a;
+  } else {
+    isAI = true;
+    personaId = parts[3] || null;
+  }
+  emit('open-private', {
+    isAI,
+    nickname: m.senderName || '聊天',
+    userId,
+    personaId,
+    avatar: m.avatar || null,
+    color: m.avatarColor || '#4f6ef7',
+  });
 }
 
 const hasAny = () => contacts.value.length || groups.value.length || messages.value.length || localChats.value.length;
@@ -137,7 +181,7 @@ const hasAny = () => contacts.value.length || groups.value.length || messages.va
           <UserAvatar :name="c.nickname" :avatar="c.avatar" :emoji="c.emoji" :color="c.avatarColor || '#07c160'" :size="40" />
           <div class="main">
             <div class="name">{{ c.nickname }}<span v-if="c.isAI" class="tag">AI</span></div>
-            <div class="sub">{{ c.remark || c.wxid || (c.isAI ? 'AI 联系人' : '联系人') }}</div>
+            <div class="sub">{{ c.remark || c.wxid || (c.isAI ? 'AI 群友 · 仅群聊' : '联系人') }}</div>
           </div>
         </button>
       </section>

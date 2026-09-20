@@ -105,16 +105,10 @@ export function createMetaRouter({ verifyToken, notify } = {}) {
           if (!peer) continue;
           name = peer.nickname;
           avatars = [peer.avatar || peer.avatar_color];
-          personaAvatar = peer.avatar;
+          personaAvatar = peer.avatar || null;
         } else {
-          personaId = parts[3];
-          const persona = personas.find((p) => p.id === personaId);
-          if (!persona) continue;
-          name = persona.name;
-          avatars = [aiAvatarFile(persona.name) ?? persona.emoji];
-          personaEmoji = persona.emoji;
-          personaAvatar = aiAvatarFile(persona.name);
-          isAI = true;
+          // AI 私聊会话: 不再作为独立会话进入消息列表（AI 仅保留在群聊）
+          continue;
         }
 
         const prefs = getPrefs(userId, conv);
@@ -130,6 +124,10 @@ export function createMetaRouter({ verifyToken, notify } = {}) {
                 : row.last_content.slice(0, 40))
             : '暂无消息';
 
+        const peerColor = parts[1] === 'u'
+          ? (stmts.userById.get(peerId)?.avatar_color || '#4f6ef7')
+          : '#07c160';
+        const firstAvatar = avatars?.[0];
         chats.push({
           id: conv,
           type: 'private',
@@ -138,6 +136,11 @@ export function createMetaRouter({ verifyToken, notify } = {}) {
             ? (stmts.getFriend.get(userId, peerId)?.remark || null)
             : null,
           avatars,
+          avatar: personaAvatar
+            || (typeof firstAvatar === 'string' && !firstAvatar.startsWith('#') && !firstAvatar.startsWith('rgb')
+              ? firstAvatar
+              : null),
+          avatarColor: peerColor,
           lastMessage: prefs.draft || content,
           lastTime: row.last_time,
           personaId,
@@ -281,6 +284,11 @@ export function createMetaRouter({ verifyToken, notify } = {}) {
       if (stmts.getFriend.get(req.user.id, toId)) {
         return res.json({ ok: true, already: true });
       }
+      // 对方拉黑我时禁止发申请
+      const peerFr = stmts.getFriend.get(toId, req.user.id);
+      if (peerFr?.blacklisted) {
+        return res.status(403).json({ error: '对方设置了权限，无法添加' });
+      }
       stmts.insertFriendRequest.run(req.user.id, toId, message, 'pending', Date.now());
       res.json({ ok: true });
     },
@@ -302,11 +310,24 @@ export function createMetaRouter({ verifyToken, notify } = {}) {
 
     /** 标签 */
     tags(req, res) {
-      const list = stmts.listTags.all(req.user.id).map((t) => ({
-        id: t.id,
-        name: t.name,
-        members: stmts.listTagMembers.all(t.id).map((m) => m.user_id),
-      }));
+      const list = stmts.listTags.all(req.user.id).map((t) => {
+        const memberIds = stmts.listTagMembers.all(t.id).map((m) => m.user_id);
+        const members = memberIds.map((uid) => {
+          const u = stmts.userById.get(uid);
+          return {
+            id: uid,
+            nickname: u?.nickname || '用户',
+            avatar: u?.avatar || null,
+            avatarColor: u?.avatar_color || null,
+          };
+        });
+        return {
+          id: t.id,
+          name: t.name,
+          members: memberIds,
+          memberProfiles: members,
+        };
+      });
       res.json({ tags: list });
     },
 

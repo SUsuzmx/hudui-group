@@ -5,6 +5,7 @@ import { personas, personasForGroup } from './ai/personas.js';
 import { aiAvatarFile } from './ai/avatars.js';
 import { groupConvId, DEFAULT_GROUP_KIND, getGroup } from './groups.js';
 import { canAccessPrivate as aclCanAccessPrivate, canAccessGroup as aclCanAccessGroup } from './acl.js';
+import { isBlockedEither } from './friends.js';
 import { getBalance, credit, debit } from './wallet.js';
 import {
   normalizeRedPacketInput,
@@ -734,6 +735,22 @@ export function initChat(io, { config, engine }) {
         if (typeof ack === 'function') ack({ error: '无权发送' });
         return;
       }
+      // 黑名单：任一方拉黑后私聊拒收
+      try {
+        const parts = String(conversationId).split('_');
+        // pv_{a}_{b} 或 pv_u_{uid}_{peer}
+        let peerId = null;
+        if (parts[1] === 'u') peerId = Number(parts[3]);
+        else {
+          const a = Number(parts[1]);
+          const b = Number(parts[2]);
+          peerId = a === user.id ? b : a;
+        }
+        if (peerId && isBlockedEither(user.id, peerId)) {
+          if (typeof ack === 'function') ack({ error: '消息已发出，但被对方拒收了', blocked: true });
+          return;
+        }
+      } catch { /* ignore */ }
       const nowTs = Date.now();
       const rateTs = (sendTimestamps.get(user.id) ?? []).filter((t) => nowTs - t < MSG_RATE.windowMs);
       rateTs.push(nowTs);

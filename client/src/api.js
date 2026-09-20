@@ -119,6 +119,8 @@ export const api = {
   searchFriends: (q) => request('/api/friends/search', { method: 'GET', query: { q } }),
   setFriendRemark: (friendId, remark) => request('/api/friends/remark', { body: { friendId, remark } }),
   setFriendBlacklist: (friendId, blacklisted) => request('/api/friends/blacklist', { body: { friendId, blacklisted } }),
+  friendBlacklist: () => request('/api/friends/blacklist', { method: 'GET' }),
+  setFriendTags: (friendId, tagIds) => request('/api/friends/tags', { body: { friendId, tagIds } }),
   setFriendPermission: (friendId, permission) => request('/api/friends/permission', { body: { friendId, permission } }),
   privateRead: (conversationId) => request('/api/chat/private-read', { body: { conversationId } }),
   privatePeerRead: (conversationId) => request('/api/chat/private-peer-read', { method: 'GET', query: { conversationId } }),
@@ -147,6 +149,7 @@ export const api = {
   unfollowOfficial: (id) => request('/api/official/unfollow', { body: { id } }),
   moments: (beforeId) => request('/api/moments', { method: 'GET', query: { beforeId } }),
   myMoments: () => request('/api/moments/mine', { method: 'GET' }),
+  userMoments: (userId) => request(`/api/moments/user/${Number(userId)}`, { method: 'GET' }),
   createMoment: (content, images, visibility, visibleTo) =>
     request('/api/moments', { body: { content, images, visibility, visibleTo: visibleTo || [] } }),
   deleteMoment: (id) => request(`/api/moments/${id}`, { method: 'DELETE' }),
@@ -180,4 +183,6 @@ export const api = {
   walletPay: (amount, note) => request('/api/wallet/pay', { body: { amount, note } }),
   resolveUser: (code) => request('/api/users/resolve', { method: 'GET', query: { code } }),
   aiContacts: () => request('/api/ai-contacts', { method: 'GET' }),
+  redpacketCovers: () => request('/api/redpacket/covers', { method: 'GET' }),
+  redpacketDetail: (id) => request(`/api/redpacket/${Number(id)}`, { method: 'GET' }),
 };

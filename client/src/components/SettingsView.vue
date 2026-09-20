@@ -38,6 +38,7 @@ const sectionTitle = {
 
 const notifyOn = ref(localStorage.getItem('wx_notify') !== '0');
 const notifyPerm = ref(typeof Notification !== 'undefined' ? Notification.permission : 'default');
+const msgSound = ref(localStorage.getItem('hudui_msg_sound') !== '0');
 const enterSend = ref(localStorage.getItem('wx_enter_send') !== '0');
 const showPreview = ref(localStorage.getItem('wx_show_preview') !== '0');
 const themeFollow = ref(localStorage.getItem('wx_theme_follow') !== '0');
@@ -73,6 +74,10 @@ function saveJson(key, val) {
 function toggleEnterSend() {
   enterSend.value = !enterSend.value;
   localStorage.setItem('wx_enter_send', enterSend.value ? '1' : '0');
+}
+function toggleMsgSound() {
+  msgSound.value = !msgSound.value;
+  localStorage.setItem('hudui_msg_sound', msgSound.value ? '1' : '0');
 }
 async function toggleNotify() {
   notifyOn.value = !notifyOn.value;
@@ -278,10 +283,16 @@ onMounted(() => { appearance.value = getAppearance(); });
           <span class="label">系统权限</span>
           <span class="value">{{ notifyPerm === 'granted' ? '已允许' : notifyPerm === 'denied' ? '已拒绝' : '未请求' }}</span>
         </div>
-        <div class="row"><span class="label">通知显示消息详情</span>
-          <button class="switch" :class="{ on: showPreview }" @click="togglePreview"></button></div>
+        <div class="row">
+          <span class="label">通知显示消息详情</span>
+          <button class="switch" :class="{ on: showPreview }" @click="togglePreview"></button>
+        </div>
+        <div class="row">
+          <span class="label">消息提示音</span>
+          <button class="switch" :class="{ on: msgSound }" @click="toggleMsgSound"></button>
+        </div>
       </section>
-      <p class="hint">开启后，后台收到消息可尝试系统通知（需浏览器权限）。</p>
+      <p class="hint">开启后，收到消息可提示音；后台时尝试系统通知（需浏览器权限）。</p>
     </main>
 
     <main v-else-if="section === 'chat'" class="content scroll-y">

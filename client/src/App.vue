@@ -16,6 +16,7 @@ const MomentsView = defineAsyncComponent(() => import('./components/MomentsView.
 const EditProfileView = defineAsyncComponent(() => import('./components/EditProfileView.vue'));
 const AddFriendView = defineAsyncComponent(() => import('./components/AddFriendView.vue'));
 const FriendProfileView = defineAsyncComponent(() => import('./components/FriendProfileView.vue'));
+const FriendDetailView = defineAsyncComponent(() => import('./components/FriendDetailView.vue'));
 const CreateGroupView = defineAsyncComponent(() => import('./components/CreateGroupView.vue'));
 const SettingsView = defineAsyncComponent(() => import('./components/SettingsView.vue'));
 const QrCodeView = defineAsyncComponent(() => import('./components/QrCodeView.vue'));
@@ -105,18 +106,19 @@ function openPrivateChat(contact) {
   if (contact.isAI) {
     privateTarget.value = {
       nickname: contact.nickname,
-      avatar: contact.avatar,
-      avatarUrl: contact.avatar,
-      avatarEmoji: contact.emoji,
-      emoji: contact.emoji,
+      avatar: contact.avatar ?? contact.avatarUrl ?? null,
+      avatarUrl: contact.avatar ?? contact.avatarUrl ?? null,
+      avatarEmoji: contact.emoji ?? contact.avatarEmoji ?? null,
+      emoji: contact.emoji ?? contact.avatarEmoji ?? null,
+      color: contact.color ?? '#07c160',
       isAI: true,
       personaId: contact.personaId ?? contact.key?.replace('ai-', ''),
     };
   } else {
     privateTarget.value = {
       nickname: contact.nickname,
-      avatar: contact.avatar,
-      color: contact.color,
+      avatar: contact.avatar ?? contact.avatarUrl ?? null,
+      color: contact.color ?? contact.avatarColor ?? '#4f6ef7',
       isAI: false,
       userId: Number.isInteger(uid) && uid > 0 ? uid : contact.userId,
       remark: contact.remark || null,
@@ -131,6 +133,10 @@ function openSub(payload) {
   subView.value = payload;
   transitionName.value = 'page-push';
   view.value = 'sub';
+}
+
+function openUserMoments(user) {
+  openMomentsForUser(user);
 }
 
 function handleLogout() {
@@ -159,6 +165,26 @@ function openChatFromSearch(chat) {
 
 function openProfileFromChat(user) {
   openSub({ type: 'friend-profile', user });
+}
+
+function openMomentsForUser(user) {
+  if (!user) return;
+  const uid = Number(user.userId ?? user.id ?? 0);
+  const isSelf = uid && me.value?.id && uid === Number(me.value.id);
+  openSub({
+    type: 'moments',
+    mode: isSelf || !uid ? 'mine' : 'user',
+    user: isSelf || !uid
+      ? null
+      : {
+          id: uid,
+          userId: uid,
+          nickname: user.nickname || user.remark || '',
+          avatar: user.avatar ?? user.avatarUrl ?? null,
+          avatarColor: user.avatarColor ?? user.color ?? null,
+          isAI: Boolean(user.isAI),
+        },
+  });
 }
 
 function onVideoCallEnd() {
@@ -256,8 +282,29 @@ function onLeftGroup() {
   try { localStorage.setItem('hudui_main_tab', 'chats'); } catch { /* ignore */ }
 }
 
+function chatRemindKey(conv) {
+  return `wx_remind_${conv || 'default'}`;
+}
+
 function openChatInfo(payload) {
-  // 群聊信息统一走 GroupSettingsView（成员头像墙 + 设置项）
+  // 私聊详情走 ChatInfoView；群聊信息统一走 GroupSettingsView
+  if (payload?.isGroup === false) {
+    const target = payload.target || privateTarget.value || {};
+    const conv = payload?.conversationId || '';
+    openSub({
+      type: 'chat-info',
+      conversationId: conv,
+      groupName: payload?.groupName || target.nickname || '',
+      isGroup: false,
+      muted: Boolean(payload?.muted),
+      pinned: Boolean(payload?.pinned),
+      folded: Boolean(payload?.folded),
+      remind: Boolean(payload?.remind) || localStorage.getItem(chatRemindKey(conv)) === '1',
+      peerUserId: payload?.peerUserId ?? target.userId ?? null,
+      target,
+    });
+    return;
+  }
   const conv = payload?.conversationId || activeChat.value?.conversationId || '';
   const gid = payload?.groupId
     ?? (conv?.startsWith('grp_') ? Number(String(conv).replace(/^grp_/, '')) : activeChat.value?.groupId)
@@ -289,7 +336,15 @@ async function onChatInfoAction(action) {
     goBack();
     return;
   }
-  if (action === 'remind') {
+  if (action === 'create-group-from-chat') {
+    openSub({ type: 'create-group' });
+    return;
+  }
+  if (action === 'invite-member') {
+    openSub({ type: 'create-group' });
+    return;
+  }
+  if (action === 'remind' || action === 'toggle-remind') {
     notifyMessage({ title: '聊天提醒已开启', body: '该会话来新消息时会系统提醒', tag: 'remind' });
     toast('已开启提醒，来消息将系统通知');
     return;
@@ -326,6 +381,9 @@ async function onChatInfoToggle({ key, value }) {
   if (!subView.value) return;
   subView.value = { ...subView.value, [key]: value };
   const conv = subView.value.conversationId || 'default';
+  if (key === 'remind') {
+    try { localStorage.setItem(chatRemindKey(conv), value ? '1' : '0'); } catch { /* ignore */ }
+  }
   try {
     await api.chatPref({
       conversationId: conv,
@@ -404,7 +462,10 @@ async function onChatInfoToggle({ key, value }) {
         key="moments"
         :me="me"
         :mode="subView.mode || 'feed'"
+        :user="subView.user || null"
         @back="goBack"
+        @updated="handleProfileUpdated"
+        @open-user-moments="openUserMoments"
       />
       <EditProfileView
         v-else-if="view === 'sub' && subView?.type === 'edit-profile'"
@@ -412,6 +473,7 @@ async function onChatInfoToggle({ key, value }) {
         :me="me"
         @back="goBack"
         @updated="handleProfileUpdated"
+        @open-view="openSub"
       />
       <AddFriendView
         v-else-if="view === 'sub' && subView?.type === 'add-friend'"
@@ -426,6 +488,17 @@ async function onChatInfoToggle({ key, value }) {
         @back="goBack"
         @open-chat="openChatFromFriend"
         @open-video-call="openVideoCall"
+        @open-moments="openMomentsForUser"
+        @open-detail="(u) => openSub({ type: 'friend-detail', user: u })"
+      />
+      <FriendDetailView
+        v-else-if="view === 'sub' && subView?.type === 'friend-detail'"
+        key="friend-detail"
+        :user="subView.user"
+        :me="me"
+        @back="goBack"
+        @open-chat="openChatFromFriend"
+        @open-moments="openMomentsForUser"
       />
       <QrCodeView
         v-else-if="view === 'sub' && subView?.type === 'qrcode'"
@@ -442,9 +515,14 @@ async function onChatInfoToggle({ key, value }) {
         :muted="Boolean(subView.muted)"
         :pinned="Boolean(subView.pinned)"
         :folded="Boolean(subView.folded)"
+        :remind="Boolean(subView.remind)"
+        :target="subView.target || null"
         @back="goBack"
         @action="onChatInfoAction"
         @toggle="onChatInfoToggle"
+        @open-profile="openProfileFromChat"
+        @open-video-call="openVideoCall"
+        @open-moments="openMomentsForUser"
       />
       <SettingsView
         v-else-if="view === 'sub' && subView?.type === 'settings'"

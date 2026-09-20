@@ -248,7 +248,7 @@ async function leaveGroup() {
 function openMember(m) {
   emit('open-profile', {
     id: m.userId ?? m.personaId ?? memberKey(m),
-    userId: m.userId,
+    userId: m.userId ?? null,
     nickname: m.nickname,
     avatar: m.avatar,
     avatarUrl: m.avatar,
@@ -259,7 +259,7 @@ function openMember(m) {
     isAI: Boolean(m.isAI),
     personaId: m.personaId ?? (m.personaKey ? m.personaKey.replace(/^ai:/, '') : null),
     isFriend: !m.isAI,
-    local: true,
+    local: Boolean(m.isAI),
   });
 }
 

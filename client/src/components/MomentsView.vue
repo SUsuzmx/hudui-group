@@ -1,15 +1,16 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
+import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue';
 import { io } from 'socket.io-client';
-import { getToken, api } from '../api.js';
+import { getToken, api, compressImage } from '../api.js';
 import UserAvatar from './UserAvatar.vue';
 import { toast } from '../toast.js';
 
 const props = defineProps({
   me: { type: Object, required: true },
   mode: { type: String, default: 'feed' },
+  user: { type: Object, default: null },
 });
-const emit = defineEmits(['back']);
+const emit = defineEmits(['back', 'updated', 'open-user-moments']);
 
 const moments = ref([]);
 const loading = ref(false);
@@ -31,15 +32,32 @@ const visibleTo = ref([]);
 const friendOptions = ref([]);
 const showVisPicker = ref(false);
 const friendList = ref([]);
+const targetUser = ref(props.user || null);
 let liveSocket = null;
 let liveTimer = null;
+
+const isUserMode = computed(() => props.mode === 'user' && Boolean(props.user?.userId ?? props.user?.id));
+const isMineMode = computed(() => props.mode === 'mine' || (!isUserMode.value && props.mode !== 'feed'));
+const isFeedMode = computed(() => !isUserMode.value && props.mode !== 'mine');
 
 async function refreshFeed() {
   loading.value = true;
   try {
-    const data = props.mode === 'mine' ? await api.myMoments() : await api.moments();
+    let data;
+    if (isUserMode.value) {
+      const uid = Number(props.user?.userId ?? props.user?.id);
+      data = await api.userMoments(uid);
+      if (data?.user) {
+        targetUser.value = { ...targetUser.value, ...data.user };
+        if (data.user.momentsCover) coverUrl.value = data.user.momentsCover;
+      }
+    } else if (props.mode === 'mine') {
+      data = await api.myMoments();
+    } else {
+      data = await api.moments();
+    }
     moments.value = data.moments || [];
-    noMore.value = (data.moments || []).length < 10;
+    noMore.value = isUserMode.value || props.mode === 'mine' || (data.moments || []).length < 10;
   } catch (e) {
     console.warn(e);
   } finally {
@@ -54,25 +72,53 @@ function scheduleLiveRefresh() {
   }, 400);
 }
 
-const title = computed(() => (props.mode === 'mine' ? '我的朋友圈' : '朋友圈'));
-const coverUrl = ref(props.me?.momentsCover || '');
+const profileSignature = ref('');
+const title = computed(() => {
+  if (isUserMode.value) {
+    return `${targetUser.value?.nickname || props.user?.nickname || ''}的朋友圈`;
+  }
+  return props.mode === 'mine' ? '我的朋友圈' : '朋友圈';
+});
+const coverUser = computed(() => {
+  if (isUserMode.value) {
+    return {
+      nickname: targetUser.value?.nickname || props.user?.nickname || '',
+      avatar: targetUser.value?.avatar ?? props.user?.avatar ?? null,
+      avatarColor: targetUser.value?.avatarColor ?? props.user?.avatarColor ?? null,
+      signature: targetUser.value?.signature ?? props.user?.signature ?? profileSignature.value ?? '',
+    };
+  }
+  return props.me || {};
+});
+const coverUrl = ref('');
 const coverInput = ref(null);
+
+watch(
+  () => props.me?.momentsCover,
+  (v) => {
+    if (v && !isUserMode.value) coverUrl.value = v;
+  }
+);
 
 async function replaceCover(file) {
   if (!file) return;
+  if (!file.type?.startsWith('image/')) {
+    alert('请选择图片文件');
+    return;
+  }
   try {
-    const { url } = await api.uploadMomentImage(file);
+    // 先压缩再上传, 避免大图触发 3MB 限制
+    const dataUrl = await compressImage(file, 1600, 0.82);
+    const { url } = await api.uploadMomentImage(dataUrl);
+    if (!url) throw new Error('上传失败');
     coverUrl.value = url;
     const { user } = await api.updateMe({ momentsCover: url });
-    toastCoverOk();
-    console.log('cover saved', user?.momentsCover);
+    if (user?.momentsCover) coverUrl.value = user.momentsCover;
+    emit('updated', user);
+    toast('朋友圈封面已更换');
   } catch (e) {
     alert(e.message || '更换封面失败');
   }
-}
-
-function toastCoverOk() {
-  toast('朋友圈封面已更换');
 }
 
 function onCoverPick(e) {
@@ -193,7 +239,23 @@ async function load(reset = false) {
   if (loading.value) return;
   loading.value = true;
   try {
-    if (props.mode === 'mine') {
+    if (isUserMode.value) {
+      const uid = Number(props.user?.userId ?? props.user?.id);
+      const data = await api.userMoments(uid);
+      moments.value = data.moments || [];
+      noMore.value = true;
+      if (data.user) {
+        targetUser.value = { ...targetUser.value, ...data.user };
+        profileSignature.value = data.user.signature || '';
+        if (data.user.momentsCover) coverUrl.value = data.user.momentsCover;
+      } else {
+        try {
+          const up = await api.user(uid);
+          profileSignature.value = up?.user?.signature || '';
+          targetUser.value = { ...targetUser.value, ...(up?.user || {}) };
+        } catch { /* ignore */ }
+      }
+    } else if (props.mode === 'mine') {
       const data = await api.myMoments();
       moments.value = data.moments;
       noMore.value = true;
@@ -289,6 +351,97 @@ function visLabel(m) {
   return '';
 }
 
+function openAuthorMoments(m) {
+  const a = m?.author || {};
+  const uid = Number(a.userId ?? a.id ?? m.userId);
+  if (!uid) return;
+  if (uid === Number(props.me?.id)) {
+    emit('open-user-moments', { id: uid, userId: uid, nickname: props.me?.nickname, avatar: props.me?.avatar, avatarColor: props.me?.avatarColor });
+    return;
+  }
+  emit('open-user-moments', {
+    id: uid,
+    userId: uid,
+    nickname: a.nickname || '',
+    avatar: a.avatar ?? null,
+    avatarColor: a.avatarColor ?? null,
+    isAI: Boolean(a.isAI),
+  });
+}
+
+function dayOf(ts) {
+  return new Date(ts).getDate();
+}
+function monthOf(ts) {
+  return new Date(ts).getMonth() + 1;
+}
+function yearOf(ts) {
+  return new Date(ts).getFullYear();
+}
+
+const albumYears = computed(() => {
+  const map = new Map();
+  for (const m of moments.value) {
+    const y = yearOf(m.createdAt || Date.now());
+    if (!map.has(y)) map.set(y, []);
+    map.get(y).push(m);
+  }
+  return [...map.entries()].map(([year, list]) => ({ year, list }));
+});
+
+const albumDots = computed(() => Math.min(3, Math.max(1, albumYears.value.length || 1)));
+
+function albumCover() {
+  return coverUrl.value
+    || props.user?.avatar
+    || targetUser.value?.avatar
+    || moments.value[0]?.images?.[0]
+    || '';
+}
+
+function albumSignature() {
+  return coverUser.value?.signature
+    || props.user?.signature
+    || targetUser.value?.signature
+    || profileSignature.value
+    || '';
+}
+
+const VIS_OPTIONS = [
+  { value: 'public', label: '公开', sub: '所有朋友可见' },
+  { value: 'private', label: '私密', sub: '仅自己可见' },
+  { value: 'friends', label: '好友可见', sub: '仅好友可见' },
+  { value: 'partial', label: '部分可见', sub: '选中的朋友可见' },
+];
+
+function pickVisibility(v) {
+  visibility.value = v;
+  if (v === 'partial') {
+    loadFriendsForPicker();
+    showVisPicker.value = true;
+  } else {
+    showVisPicker.value = false;
+    if (v !== 'partial') visibleTo.value = [];
+  }
+}
+
+/** 评论里 @ 好友 */
+const showAtPicker = ref(false);
+
+function insertAt(name) {
+  if (!name) return;
+  const at = `@${name} `;
+  if (!commentText.value.includes(at)) {
+    commentText.value = (commentText.value || '') + at;
+  }
+  showAtPicker.value = false;
+}
+
+async function openCommentAt() {
+  if (!friendOptions.value.length) await loadFriendsForPicker();
+  showAtPicker.value = true;
+}
+
 function openMenu(m) {
   menuMoment.value = m;
 }
@@ -317,6 +470,8 @@ function clearLongPress() {
 }
 
 onMounted(() => {
+  if (props.me?.momentsCover && !isUserMode.value) coverUrl.value = props.me.momentsCover;
+  if (props.user) targetUser.value = props.user;
   load(true);
   liveSocket = io('/', { auth: { token: getToken() }, transports: ['polling', 'websocket'] });
   liveSocket.on('moments:update', (p) => {
@@ -334,37 +489,106 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="page">
-    <header class="nav">
-      <button class="nav-back" @click="emit('back')">‹</button>
-      <div class="nav-title">{{ title }}</div>
-      <button v-if="mode === 'feed'" class="nav-cam" type="button" :disabled="loading" @click="refreshFeed">↻</button>
-      <button v-if="mode === 'feed'" class="nav-cam" @click="showComposer = true">📷</button>
-      <div v-else class="nav-right"></div>
-    </header>
-
-    <main class="content" @scroll="onScroll">
-      <div
-        class="moments-cover"
-        :style="coverUrl ? { backgroundImage: `url(${coverUrl})` } : undefined"
-      >
-        <div class="cover-mask"></div>
-        <div class="cover-user">
-          <div class="cover-name">{{ me?.nickname || '我' }}</div>
-          <UserAvatar
-            class="cover-avatar"
-            :name="me?.nickname"
-            :avatar="me?.avatar"
-            :color="me?.avatarColor"
-            :size="64"
-          />
+    <!-- 他人朋友圈：相册时间线 UI -->
+    <template v-if="isUserMode">
+      <div class="album-page">
+        <div
+          class="album-cover"
+          :style="albumCover() ? {
+            backgroundImage: `url(${albumCover()})`,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+          } : undefined"
+        >
+          <button class="album-back" type="button" aria-label="返回" @click="emit('back')">‹</button>
+          <div class="album-cover-user">
+            <div class="album-cover-name">{{ coverUser?.nickname || props.user?.nickname || '' }}</div>
+            <UserAvatar
+              class="album-cover-avatar"
+              :name="coverUser?.nickname || props.user?.nickname"
+              :avatar="coverUser?.avatar ?? props.user?.avatar"
+              :color="coverUser?.avatarColor ?? props.user?.avatarColor"
+              :size="80"
+            />
+          </div>
         </div>
-        <button class="cover-cam" type="button" aria-label="更换封面" @click="coverInput?.click()">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#fff" stroke-width="1.6"><path d="M4 8h3l1.5-2h7L17 8h3v11H4V8z"/><circle cx="12" cy="13" r="3.2"/></svg>
-        </button>
-        <input ref="coverInput" type="file" accept="image/*" hidden @change="onCoverPick" />
-      </div>
 
-      <div v-if="moments.length === 0 && !loading" class="empty">还没有动态, 发一条吧</div>
+        <div v-if="albumSignature()" class="album-signature">{{ albumSignature() }}</div>
+
+        <div v-if="loading && !moments.length" class="album-empty">加载中…</div>
+        <div v-else-if="!moments.length" class="album-empty">对方还没有可见的动态</div>
+
+        <div v-else class="album-body">
+          <section v-for="g in albumYears" :key="g.year" class="album-year-block">
+            <div v-if="albumYears.length > 1 || g.year !== yearOf(Date.now())" class="album-year">{{ g.year }}年</div>
+            <button
+              v-for="m in g.list"
+              :key="m.id"
+              class="album-item"
+              type="button"
+            >
+              <div class="album-date">
+                <span class="album-day">{{ dayOf(m.createdAt) }}</span>
+                <span class="album-month">{{ monthOf(m.createdAt) }}月</span>
+              </div>
+              <div class="album-main">
+                <div v-if="m.images?.length" class="album-images" :class="'n' + Math.min(9, m.images.length)">
+                  <img
+                    v-for="(img, i) in m.images.slice(0, 9)"
+                    :key="i"
+                    :src="img"
+                    alt=""
+                    loading="lazy"
+                    @click.stop="previewImage = img"
+                  />
+                </div>
+                <div v-if="m.content" class="album-text">{{ m.content }}</div>
+              </div>
+            </button>
+          </section>
+          <div class="album-dots">
+            <span v-for="i in albumDots" :key="i" class="dot" :class="{ on: i === 1 }"></span>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <template v-else>
+      <header class="nav">
+        <button class="nav-back" @click="emit('back')">‹</button>
+        <div class="nav-title">{{ title }}</div>
+        <button v-if="isFeedMode" class="nav-cam" type="button" :disabled="loading" @click="refreshFeed">↻</button>
+        <button v-if="isFeedMode" class="nav-cam" @click="showComposer = true">📷</button>
+        <div v-else class="nav-right"></div>
+      </header>
+
+      <main class="content" @scroll="onScroll">
+        <div
+          class="moments-cover"
+          :style="coverUrl ? {
+            backgroundImage: `url(${coverUrl})`,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+          } : undefined"
+        >
+          <div class="cover-mask"></div>
+          <div class="cover-user">
+            <div class="cover-name">{{ coverUser?.nickname || '我' }}</div>
+            <UserAvatar
+              class="cover-avatar"
+              :name="coverUser?.nickname"
+              :avatar="coverUser?.avatar"
+              :color="coverUser?.avatarColor"
+              :size="64"
+            />
+          </div>
+          <button v-if="!isUserMode" class="cover-cam" type="button" aria-label="更换封面" @click="coverInput?.click()">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#fff" stroke-width="1.6"><path d="M4 8h3l1.5-2h7L17 8h3v11H4V8z"/><circle cx="12" cy="13" r="3.2"/></svg>
+          </button>
+          <input ref="coverInput" type="file" accept="image/*" class="cover-file-input" tabindex="-1" @change="onCoverPick" />
+        </div>
+
+        <div v-if="moments.length === 0 && !loading" class="empty">{{ isUserMode ? '对方还没有可见的动态' : '还没有动态, 发一条吧' }}</div>
 
       <article
         v-for="m in moments"
@@ -376,13 +600,15 @@ onBeforeUnmount(() => {
         @contextmenu.prevent="openMenu(m)"
       >
         <UserAvatar
+          class="moment-avatar"
           :name="m.author.nickname"
           :avatar="m.author.avatar"
           :color="m.author.avatarColor"
           :size="42"
+          @click.stop="openAuthorMoments(m)"
         />
         <div class="moment-body">
-          <div class="moment-name">{{ m.author.nickname }}</div>
+          <div class="moment-name" @click.stop="openAuthorMoments(m)">{{ m.author.nickname }}</div>
           <div v-if="visLabel(m)" class="moment-vis">{{ visLabel(m) }}</div>
           <div v-if="m.content" class="moment-text" :class="{ clamp: m.content.length > 60 && !expandedMap[m.id] }">{{ m.content }}</div>
           <button
@@ -444,7 +670,8 @@ onBeforeUnmount(() => {
 
       <div v-if="loading" class="load-tip">加载中…</div>
       <div v-else-if="noMore && moments.length" class="load-tip">没有更多了</div>
-    </main>
+      </main>
+    </template>
 
     <div v-if="showComposer" class="composer-mask" @click.self="showComposer = false">
       <div class="composer">
@@ -455,14 +682,22 @@ onBeforeUnmount(() => {
             {{ publishing ? '…' : '发表' }}
           </button>
         </div>
-        <div class="vis-row">
-          <span class="vis-label">谁可以看</span>
-          <select v-model="visibility" class="vis-select" @change="onVisibilityChange">
-            <option value="public">公开</option>
-            <option value="friends">好友可见</option>
-            <option value="partial">部分可见</option>
-            <option value="private">私密</option>
-          </select>
+        <div class="vis-row wechat-vis">
+          <div class="vis-head">谁可以看</div>
+          <button
+            v-for="opt in VIS_OPTIONS"
+            :key="opt.value"
+            type="button"
+            class="vis-opt"
+            :class="{ on: visibility === opt.value }"
+            @click="pickVisibility(opt.value)"
+          >
+            <span class="vis-check">{{ visibility === opt.value ? '✓' : '' }}</span>
+            <span class="vis-main">
+              <span class="vis-label2">{{ opt.label }}</span>
+              <span class="vis-sub">{{ opt.value === 'partial' && visibleTo.length ? `已选 ${visibleTo.length} 人` : opt.sub }}</span>
+            </span>
+          </button>
         </div>
         <div v-if="visibility === 'partial'" class="vis-friends">
           <div class="vis-friends-head">
@@ -478,6 +713,7 @@ onBeforeUnmount(() => {
               :class="{ on: visibleTo.includes(f.id) }"
               @click="toggleVisFriend(f.id)"
             >
+              <span class="vis-friend-check">{{ visibleTo.includes(f.id) ? '✓' : '' }}</span>
               {{ f.nickname }}
             </button>
             <div v-if="!friendOptions.length" class="vis-empty">暂无好友，可先添加好友</div>
@@ -510,6 +746,19 @@ onBeforeUnmount(() => {
           <button class="cancel" @click="commentTarget = null; replyTo = null">取消</button>
           <span class="composer-title">{{ replyTo ? '回复评论' : '评论' }}</span>
           <button class="ok" :disabled="!commentText.trim()" @click="submitComment">发送</button>
+        </div>
+        <div class="at-bar">
+          <button type="button" class="at-btn" @click="openCommentAt">@ 提醒谁看</button>
+        </div>
+        <div v-if="showAtPicker" class="at-picker">
+          <button
+            v-for="f in friendOptions"
+            :key="'at-'+f.id"
+            type="button"
+            class="at-item"
+            @click="insertAt(f.nickname)"
+          >@{{ f.nickname }}</button>
+          <div v-if="!friendOptions.length" class="vis-empty">暂无可@的好友</div>
         </div>
         <textarea
           v-model="commentText"
@@ -657,6 +906,160 @@ onBeforeUnmount(() => {
   text-align: right;
 }
 
+/* 朋友圈相册（他人） */
+.album-page {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--white);
+  width: 100%;
+  padding-bottom: calc(20px + var(--safe-b));
+}
+.album-cover {
+  position: relative;
+  width: 100%;
+  height: 42vw;
+  min-height: 220px;
+  max-height: 360px;
+  background: linear-gradient(160deg, #d8d2c8, #b9b0a4 45%, #8f877c);
+  background-size: cover;
+  background-position: center;
+}
+.album-back {
+  position: absolute;
+  left: 6px;
+  top: 8px;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  font-size: 36px;
+  line-height: 1;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.35);
+  z-index: 2;
+}
+.album-cover-user {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+.album-cover-name {
+  color: #fff;
+  font-size: 20px;
+  font-weight: 600;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.35);
+  margin-bottom: 10px;
+}
+.album-cover-avatar {
+  border-radius: 4px !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  border: 2px solid rgba(255,255,255,0.85);
+}
+.album-signature {
+  padding: 22px 24px 18px;
+  text-align: center;
+  font-size: 15px;
+  color: var(--text-2);
+  background: var(--white);
+  letter-spacing: 0.5px;
+}
+.album-empty {
+  padding: 48px 16px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 14px;
+  background: var(--white);
+}
+.album-body { background: var(--white); padding-bottom: 8px; }
+.album-year {
+  padding: 18px 20px 10px;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+.album-item {
+  width: 100%;
+  display: flex;
+  gap: 14px;
+  padding: 16px 18px;
+  border: 0;
+  background: var(--white);
+  text-align: left;
+  align-items: flex-start;
+}
+.album-item:active { background: var(--press); }
+.album-date {
+  width: 56px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  padding-top: 2px;
+}
+.album-day {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1;
+}
+.album-month {
+  font-size: 13px;
+  color: var(--text-2);
+}
+.album-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.album-images {
+  display: grid;
+  gap: 3px;
+  width: min(220px, 58vw);
+}
+.album-images.n1 { grid-template-columns: 1fr; width: min(200px, 50vw); }
+.album-images.n2 { grid-template-columns: 1fr 1fr; }
+.album-images.n3,
+.album-images.n4,
+.album-images.n5,
+.album-images.n6,
+.album-images.n7,
+.album-images.n8,
+.album-images.n9 { grid-template-columns: repeat(3, 1fr); width: min(240px, 64vw); }
+.album-images img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  display: block;
+  background: var(--divider-soft);
+  border-radius: 2px;
+}
+.album-images.n1 img { aspect-ratio: 4/3; }
+.album-text {
+  font-size: 15px;
+  color: var(--text);
+  line-height: 1.5;
+  word-break: break-word;
+}
+.album-dots {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 0 8px;
+}
+.album-dots .dot {
+  width: 28px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--divider);
+}
+.album-dots .dot.on { background: var(--text-3); }
+
 .content {
   flex: 1;
   overflow-y: auto;
@@ -700,16 +1103,24 @@ onBeforeUnmount(() => {
 .moments-cover {
   position: relative; height: 220px; background: linear-gradient(160deg, #3d4a5c, #1a222d);
   background-size: cover; background-position: center; margin-bottom: 0;
+  background-color: #1a222d;
 }
-.cover-mask { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,0.05), rgba(0,0,0,0.35)); }
+.moments-cover[style*="background-image"] {
+  background-color: transparent;
+}
+.cover-mask { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,0.05), rgba(0,0,0,0.35)); pointer-events: none; z-index: 1; }
 .cover-user {
-  position: absolute; right: 16px; bottom: 16px; display: flex; align-items: flex-end; gap: 10px;
+  position: absolute; right: 16px; bottom: 16px; display: flex; align-items: flex-end; gap: 10px; z-index: 2;
 }
 .cover-name { color: #fff; font-size: 18px; font-weight: 600; text-shadow: 0 1px 4px rgba(0,0,0,0.35); padding-bottom: 8px; }
 .cover-avatar :deep(.avatar) { box-shadow: 0 4px 12px rgba(0,0,0,0.25); border: 2px solid rgba(255,255,255,0.85); }
 .cover-cam {
   position: absolute; right: 16px; top: 16px; width: 40px; height: 40px; border-radius: 50%;
   border: 0; background: rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center;
+  z-index: 3; cursor: pointer;
+}
+.cover-file-input {
+  position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; overflow: hidden;
 }
 .moment {
   display: flex;
@@ -718,11 +1129,13 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid #f0f0f0;
 }
 .moment-body { flex: 1; min-width: 0; }
+.moment-avatar { cursor: pointer; flex-shrink: 0; }
 .moment-name {
   font-size: 15px;
   font-weight: 500;
   color: #576b95;
   margin-bottom: 4px;
+  cursor: pointer;
 }
 .moment-text {
   font-size: 15px;
@@ -870,6 +1283,74 @@ onBeforeUnmount(() => {
   font-size: 14px;
   color: var(--text);
   padding: 0 8px;
+}
+.wechat-vis {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: 8px 0 0;
+  background: var(--white);
+  margin-top: 8px;
+}
+.vis-head {
+  padding: 10px 16px 6px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.vis-opt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 16px;
+  border: 0;
+  border-bottom: 0.5px solid var(--divider-soft);
+  background: transparent;
+  text-align: left;
+}
+.vis-opt.on .vis-label2 { color: #07c160; }
+.vis-check {
+  width: 18px;
+  color: #07c160;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.vis-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.vis-label2 { font-size: 15px; color: var(--text); }
+.vis-sub { font-size: 12px; color: var(--text-3); }
+.vis-friend-check {
+  display: inline-flex;
+  width: 18px;
+  color: #07c160;
+  margin-right: 4px;
+}
+.at-bar { padding: 8px 16px 0; }
+.at-btn {
+  border: 0;
+  background: var(--divider-soft);
+  color: #576b95;
+  font-size: 13px;
+  border-radius: 14px;
+  min-height: 30px;
+  padding: 0 12px;
+}
+.at-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 16px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+.at-item {
+  border: 0;
+  background: rgba(87, 107, 149, 0.1);
+  color: #576b95;
+  font-size: 13px;
+  border-radius: 14px;
+  min-height: 30px;
+  padding: 0 10px;
 }
 .moment-owner-del {
   margin-top: 6px;

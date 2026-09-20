@@ -2,6 +2,35 @@
 import { stmts } from './db.js';
 import { publicProfile } from './auth.js';
 
+/** 任一方拉黑即视为双向受限（微信黑名单语义） */
+export function isBlockedEither(a, b) {
+  const idA = Number(a);
+  const idB = Number(b);
+  if (!idA || !idB || idA === idB) return false;
+  try {
+    const f1 = stmts.getFriend.get(idA, idB);
+    const f2 = stmts.getFriend.get(idB, idA);
+    return Boolean(f1?.blacklisted || f2?.blacklisted);
+  } catch {
+    return false;
+  }
+}
+
+export function tagsOfUserMap(ownerId) {
+  const map = new Map();
+  try {
+    const tags = stmts.listTags.all(ownerId) || [];
+    for (const t of tags) {
+      const members = stmts.listTagMembers.all(t.id) || [];
+      for (const m of members) {
+        if (!map.has(m.user_id)) map.set(m.user_id, []);
+        map.get(m.user_id).push({ id: t.id, name: t.name });
+      }
+    }
+  } catch { /* ignore */ }
+  return map;
+}
+
 export function createFriendsRouter({ verifyToken }) {
   function requireAuth(req, res, next) {
     const user = verifyToken(req.get('Authorization')?.replace(/^Bearer /, ''));
@@ -18,6 +47,7 @@ export function createFriendsRouter({ verifyToken }) {
     requireAuth,
     list(req, res) {
       const rows = stmts.listFriends.all(req.user.id);
+      const tagMap = tagsOfUserMap(req.user.id);
       res.json({
         friends: rows.map((r) => ({
           ...publicProfile(r),
@@ -26,6 +56,7 @@ export function createFriendsRouter({ verifyToken }) {
           blacklisted: Boolean(r.blacklisted),
           permission: r.permission || null,
           friendSince: r.created_at,
+          tags: tagMap.get(r.id) || [],
         })),
       });
     },
@@ -35,8 +66,17 @@ export function createFriendsRouter({ verifyToken }) {
         return res.status(400).json({ error: '参数不合法' });
       }
       if (friendId === req.user.id) return res.status(400).json({ error: '不能添加自己' });
+      // AI 群友不是用户账号, 禁止加为好友
+      if (friendId < 0 || req.body?.isAI || req.body?.personaId) {
+        return res.status(400).json({ error: 'AI 群友仅在群聊中互动，无法添加为好友' });
+      }
       const target = stmts.userById.get(friendId);
       if (!target) return res.status(404).json({ error: '用户不存在' });
+      // 对方拉黑我时禁止加好友
+      const peerFr = stmts.getFriend.get(friendId, req.user.id);
+      if (peerFr?.blacklisted) {
+        return res.status(403).json({ error: '对方设置了权限，无法添加' });
+      }
       stmts.addFriend.run(req.user.id, friendId, Date.now());
       res.json({ ok: true, friend: publicProfile(target) });
     },
@@ -90,6 +130,15 @@ export function createFriendsRouter({ verifyToken }) {
         return res.status(404).json({ error: '还不是好友' });
       }
       stmts.setFriendBlack.run(blacklisted ? 1 : 0, req.user.id, friendId);
+      // 拉黑时同步收紧朋友权限
+      if (blacklisted) {
+        try { stmts.setFriendPermission.run('block', req.user.id, friendId); } catch { /* ignore */ }
+      } else {
+        try {
+          const fr = friendRow(req.user.id, friendId);
+          if (fr?.permission === 'block') stmts.setFriendPermission.run('all', req.user.id, friendId);
+        } catch { /* ignore */ }
+      }
       res.json({ ok: true, blacklisted });
     },
 
@@ -105,7 +154,56 @@ export function createFriendsRouter({ verifyToken }) {
         return res.status(404).json({ error: '还不是好友' });
       }
       stmts.setFriendPermission.run(permission, req.user.id, friendId);
-      res.json({ ok: true, permission });
+      // block 与黑名单联动
+      if (permission === 'block') stmts.setFriendBlack.run(1, req.user.id, friendId);
+      if (permission !== 'block') {
+        try {
+          const fr = friendRow(req.user.id, friendId);
+          if (fr?.blacklisted) stmts.setFriendBlack.run(0, req.user.id, friendId);
+        } catch { /* ignore */ }
+      }
+      res.json({ ok: true, permission, blacklisted: permission === 'block' });
+    },
+
+    /** 设置好友标签（全量覆盖该好友在我的标签中的归属） */
+    setFriendTags(req, res) {
+      const friendId = Number(req.body?.friendId);
+      const tagIds = Array.isArray(req.body?.tagIds)
+        ? req.body.tagIds.map(Number).filter(Boolean)
+        : [];
+      if (!Number.isInteger(friendId) || friendId <= 0) {
+        return res.status(400).json({ error: '参数不合法' });
+      }
+      if (!friendRow(req.user.id, friendId) && !stmts.userById.get(friendId)) {
+        return res.status(404).json({ error: '用户不存在' });
+      }
+      const myTags = stmts.listTags.all(req.user.id) || [];
+      const myIdSet = new Set(myTags.map((t) => t.id));
+      const next = new Set(tagIds.filter((id) => myIdSet.has(id)));
+      for (const t of myTags) {
+        try {
+          if (!next.has(t.id)) stmts.deleteTagMember.run(t.id, friendId);
+          else stmts.insertTagMember.run(t.id, friendId);
+        } catch { /* ignore */ }
+      }
+      const tags = myTags
+        .filter((t) => next.has(t.id))
+        .map((t) => ({ id: t.id, name: t.name }));
+      res.json({ ok: true, tags });
+    },
+
+    /** 黑名单列表 */
+    blacklist(req, res) {
+      const rows = (stmts.listFriends.all(req.user.id) || []).filter((r) => r.blacklisted);
+      res.json({
+        friends: rows.map((r) => ({
+          ...publicProfile(r),
+          remark: r.remark || null,
+          displayName: r.remark || r.nickname,
+          blacklisted: true,
+          permission: r.permission || null,
+        })),
+      });
     },
 
     /** 私聊已读位置 */

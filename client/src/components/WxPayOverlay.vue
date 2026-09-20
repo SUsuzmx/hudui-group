@@ -117,6 +117,46 @@ function fmtStatus() {
   return '待确认收款';
 }
 
+const claimList = computed(() => {
+  const list = props.claims || [];
+  return list.map((c) => ({
+    nickname: c.nickname || '微信用户',
+    amount: Number(c.amount || 0),
+    isBest: !!c.isBest,
+    isMe: !!c.isMe,
+    createdAt: c.createdAt || null,
+  }));
+});
+
+const summaryLine = computed(() => {
+  if (!isRP.value) return '';
+  if (props.expired || props.status === 'expired') {
+    return `已过期 · 共 ${tc.value} 个红包`;
+  }
+  if (cc.value >= tc.value || props.status === 'claimed') {
+    return isLucky.value
+      ? `已领取 ${cc.value}/${tc.value} 个 · 共 ¥${totalText.value}`
+      : `共 ¥${totalText.value} · 已被领取`;
+  }
+  return isLucky.value
+    ? `已领取 ${cc.value}/${tc.value} 个 · 共 ¥${totalText.value}`
+    : `共 ¥${totalText.value}`;
+});
+
+function fmtClaimTime(ts) {
+  if (!ts) return '';
+  const d = new Date(Number(ts));
+  if (Number.isNaN(d.getTime())) return '';
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** 强制展示领取明细（自己发出的 / 已领完 / 已领过） */
+const showClaimDetail = computed(() => {
+  if (!isRP.value || props.mode === 'create') return false;
+  if (!canClaim.value) return true;
+  return claimList.value.length > 0;
+});
+
 const claimAmt = computed(() => {
   const claims = props.claims || [];
   const mine = claims.find((c) => c.isMe) || claims.find((c) => c.claimedByMe);
@@ -180,7 +220,28 @@ const claimAmt = computed(() => {
         <div v-if="isRP && isLucky" class="rp-progress">
           {{ cc }}/{{tc}} 已领取 · 共 ¥{{ totalText }}<span v-if="isMine && leftN > 0"> · 剩余 ¥{{ remainText }}</span>
         </div>
-        <div v-if="claims && claims.length" class="claim-list">
+        <!-- 微信风格「领取详情」 -->
+        <div v-if="showClaimDetail" class="rp-detail-card">
+          <div class="rp-detail-title">领取详情</div>
+          <div class="rp-detail-sum">{{ summaryLine }}</div>
+          <div v-if="claimList.length" class="claim-list official">
+            <div v-for="(c, i) in claimList" :key="i" class="claim-row official" :class="{ me: c.isMe }">
+              <div class="claim-left">
+                <div class="claim-avatar">{{ (c.nickname || '?').slice(0, 1) }}</div>
+                <div class="claim-meta">
+                  <div class="claim-name">
+                    {{ c.nickname }}<span v-if="c.isMe">（你）</span>
+                    <span v-if="c.isBest" class="best-tag">手气最佳</span>
+                  </div>
+                  <div class="claim-time">{{ fmtClaimTime(c.createdAt) }}</div>
+                </div>
+              </div>
+              <div class="claim-amt">¥{{ c.amount.toFixed(2) }}</div>
+            </div>
+          </div>
+          <div v-else class="claim-empty">暂无人领取</div>
+        </div>
+        <div v-else-if="claims && claims.length" class="claim-list">
           <div class="claim-head">红包记录</div>
           <div v-for="(c, i) in claims" :key="i" class="claim-row">
             <span class="claim-name">{{ c.nickname }}<span v-if="c.isBest" class="best-tag">手气最佳</span></span>
@@ -263,6 +324,57 @@ const claimAmt = computed(() => {
   padding: 1px 4px; border-radius: 3px; color: #ffe08a;
 }
 .claim-amt { font-variant-numeric: tabular-nums; font-weight: 600; }
+.rp-detail-card {
+  width: min(340px, 100%);
+  margin-top: 16px;
+  background: #fff;
+  color: #191919;
+  border-radius: 12px;
+  padding: 14px 14px 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+}
+.rp-detail-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #191919;
+  text-align: center;
+}
+.rp-detail-sum {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #888;
+  text-align: center;
+  padding-bottom: 10px;
+  border-bottom: 0.5px solid #eee;
+}
+.claim-list.official { background: transparent; padding: 0; margin-top: 0; width: 100%; }
+.claim-row.official {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 0.5px solid #f0f0f0;
+}
+.claim-row.official:last-child { border-bottom: 0; }
+.claim-left { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
+.claim-avatar {
+  width: 36px; height: 36px; border-radius: 4px;
+  background: #07c160; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; font-weight: 600; flex-shrink: 0;
+}
+.claim-row.official.me .claim-avatar { background: #576b95; }
+.claim-meta { min-width: 0; }
+.claim-row.official .claim-name { color: #191919; font-size: 14px; }
+.claim-time { margin-top: 2px; font-size: 11px; color: #b2b2b2; }
+.claim-row.official .claim-amt { color: #191919; font-size: 15px; }
+.claim-empty {
+  padding: 16px 0 12px;
+  text-align: center;
+  font-size: 13px;
+  color: #b2b2b2;
+}
 .rp-brand { margin-top: auto; padding-top: 20px; font-size: 12px; opacity: 0.55; }
 .tf-page {
   width: 100%; max-width: 420px; margin: 48px auto; padding: 0 16px;
