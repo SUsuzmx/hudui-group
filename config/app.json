@@ -1,11 +1,11 @@
 {
   "groupName": "WeChat",
-  "port": 3000,
+  "port": 3010,
   "ai": {
     "interjectRate": 0.35,
     "mentionRate": 0.85,
     "silenceMinutes": 5,
     "welcomeEnabled": true,
-    "maxAIMessagesPer10Min": 30
+    "maxAIMessagesPer10Min": 20
   }
 }

@@ -78,6 +78,10 @@ export function createMetaRouter({ verifyToken, notify } = {}) {
       const conv = g.conversationId || groupConvId(g.id);
       const prefRow = stmts.getChatPref.get(userId, conv);
       const prefs = prefRow || { muted: 0, pinned: 0, folded: 0, draft: '', bg_key: null, cleared_before: 0 };
+      let prefExtra = {};
+      try { prefExtra = prefs.extra ? JSON.parse(prefs.extra) : {}; } catch { prefExtra = {}; }
+      // 「不显示该聊天」: 持续隐藏, 直到用户主动打开会话
+      if (prefExtra.hidden) continue;
       const unread = getUnread(userId, conv);
       // 默认主群: 无偏好时默认置顶
       const pinned = prefRow ? Boolean(prefRow.pinned) : Boolean(g.isDefault);
@@ -146,6 +150,9 @@ export function createMetaRouter({ verifyToken, notify } = {}) {
         }
 
         const prefs = getPrefs(userId, conv);
+        const prefExtra = prefs.extra || {};
+        // 「不显示该聊天」: 持续隐藏, 直到用户主动打开会话
+        if (prefExtra.hidden) continue;
         const unread = getUnread(userId, conv);
         const cleared = Number(prefs.cleared_before || 0);
         const lastVisible = !cleared || (row.last_id ?? 0) > cleared;
@@ -214,7 +221,14 @@ export function createMetaRouter({ verifyToken, notify } = {}) {
       const conv = normConv(req.body?.conversationId);
       const { muted, pinned, folded, draft, bgKey, extra } = req.body || {};
       const now = Date.now();
-      const extraJson = parseExtra(extra);
+      // extra 需与已有字段合并, 避免单独写 hidden/saved 时冲掉其它键
+      let extraJson = null;
+      if (extra != null) {
+        const current = getPrefs(req.user.id, conv);
+        const base = current.extra || {};
+        const patch = typeof extra === 'object' && !Array.isArray(extra) ? extra : {};
+        extraJson = parseExtra({ ...base, ...patch });
+      }
       stmts.upsertChatPref.run(
         req.user.id, conv,
         muted ? 1 : 0,
@@ -259,6 +273,20 @@ export function createMetaRouter({ verifyToken, notify } = {}) {
         : (stmts.maxMessageId.get(conv)?.mid || 0);
       stmts.upsertChatRead.run(req.user.id, conv, mid, 0, Date.now());
       res.json({ ok: true, lastReadId: mid });
+    },
+
+    /** 标记未读: last_read_id 回退到最新一条之前, 使列表出现未读角标 */
+    markUnread(req, res) {
+      const conv = normConv(req.body?.conversationId);
+      const mid = conv === 'default'
+        ? (stmts.maxCountableMessageNull.get()?.mid || 0)
+        : (stmts.maxCountableMessage.get(conv)?.mid || 0);
+      if (!mid) {
+        return res.json({ ok: true, lastReadId: 0, unread: 0 });
+      }
+      const lastReadId = Math.max(0, mid - 1);
+      stmts.upsertChatRead.run(req.user.id, conv, lastReadId, 1, Date.now());
+      res.json({ ok: true, lastReadId, unread: 1 });
     },
 
     /** 清空会话记录 (仅本人视角, 不删除共享消息) */

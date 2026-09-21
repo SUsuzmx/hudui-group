@@ -468,6 +468,14 @@ export const stmts = {
   maxMessageIdNull: db.prepare(
     'SELECT MAX(id) AS mid FROM messages WHERE conversation_id IS NULL'
   ),
+  maxCountableMessage: db.prepare(
+    `SELECT MAX(id) AS mid FROM messages
+     WHERE conversation_id = ? AND sender_type IN ('user','ai') AND COALESCE(recalled,0)=0`
+  ),
+  maxCountableMessageNull: db.prepare(
+    `SELECT MAX(id) AS mid FROM messages
+     WHERE conversation_id IS NULL AND sender_type IN ('user','ai') AND COALESCE(recalled,0)=0`
+  ),
   countUnread: db.prepare(
     `SELECT COUNT(*) AS n FROM messages
      WHERE conversation_id = ? AND id > ? AND sender_type IN ('user','ai') AND COALESCE(recalled,0)=0`

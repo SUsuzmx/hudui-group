@@ -1,0 +1,52 @@
+.visual-stage-root {
+  position: absolute; inset: 0; z-index: 0; background: #050608;
+  overflow: hidden; pointer-events: auto; touch-action: none; cursor: grab;
+}
+.visual-stage-root #album-bg,
+.visual-stage-root #album-bg-next {
+  position: absolute; inset: 0; z-index: 0;
+  background-size: cover !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  filter: blur(90px) brightness(0.22) saturate(1.45);
+  transform: scale(1.45);
+  opacity: 0; transition: opacity .7s ease; pointer-events: none;
+}
+.visual-stage-root #album-bg.visible,
+.visual-stage-root #album-bg-next.visible { opacity: 0.9; }
+.visual-stage-root #canvas-container {
+  position: absolute !important; inset: 0 !important; z-index: 1 !important;
+  width: 100% !important; height: 100% !important; pointer-events: auto; touch-action: none;
+}
+.visual-stage-root #canvas-container canvas {
+  display: block !important; width: 100% !important; height: 100% !important;
+  outline: none !important; border: 0 !important; background: transparent !important;
+  pointer-events: auto; touch-action: none;
+}
+.visual-stage-root #custom-bg,
+.visual-stage-root #wallpaper-engine-layer,
+.visual-stage-root #splash-canvas,
+.visual-stage-root #thumb-cover,
+.visual-stage-root #ai-depth-chip,
+.visual-stage-root #preset-grid,
+.visual-stage-root .lyric-color-grid {
+  opacity: 0 !important; visibility: hidden !important; pointer-events: none !important;
+}
+.fx-dock {
+  position: absolute; right: 8px; top: 56px; z-index: 35;
+  width: min(200px, 48vw); max-height: 50%; overflow: auto;
+  background: rgba(12,14,18,.88); border: 1px solid rgba(255,255,255,.08);
+  border-radius: 12px; padding: 10px; color: #eef3f8; pointer-events: auto;
+}
+.preset-grid.local-presets { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; pointer-events: auto; }
+.preset-card {
+  border: 1px solid rgba(255,255,255,.08); border-radius: 8px; padding: 6px;
+  background: rgba(255,255,255,.04); color: inherit; text-align: left; cursor: pointer;
+}
+.preset-card.active { border-color: #07c160; background: rgba(7,193,96,.14); }
+.preset-card .pc-name { font-size: 11px; font-weight: 600; }
+.fx-slider-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 11px; }
+.fx-slider-row label { width: 32px; opacity: .7; }
+.fx-slider-row input { flex: 1; accent-color: #07c160; }
+.visual-toast { position: fixed; left: 50%; top: 18%; transform: translateX(-50%); z-index: 9999; background: rgba(20,22,26,.9); color: #fff; font-size: 12px; padding: 8px 14px; border-radius: 8px; opacity: 0; pointer-events: none; transition: opacity .2s; }
+.visual-toast.show { opacity: 1; }

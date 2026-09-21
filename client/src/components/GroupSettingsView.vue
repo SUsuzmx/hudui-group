@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue';
 import { api } from '../api.js';
 import { toast } from '../toast.js';
+import { clearMsgCache } from '../chat-cache.js';
 import UserAvatar from './UserAvatar.vue';
 
 const props = defineProps({
@@ -231,6 +232,18 @@ async function toggleExtra(key) {
   }
 }
 
+async function clearChatHistory() {
+  const conv = props.conversationId || 'default';
+  if (!confirm('确定清空该聊天记录？（仅自己视角，不删除群内消息）')) return;
+  try {
+    await api.chatClear(conv);
+    try { clearMsgCache(conv); } catch { /* ignore */ }
+    toast('已清空聊天记录');
+  } catch (e) {
+    toast(e.message || '清空失败');
+  }
+}
+
 async function saveRemark() {
   const val = remarkDraft.value.trim().slice(0, 20);
   groupRemark.value = val;
@@ -403,6 +416,10 @@ onMounted(loadAll);
       <section class="card">
         <div class="cell-row" @click="openGroupHistory">
           <span class="cell-label">查找聊天记录</span>
+          <span class="arrow">›</span>
+        </div>
+        <div class="cell-row" @click="clearChatHistory">
+          <span class="cell-label">清空聊天记录</span>
           <span class="arrow">›</span>
         </div>
       </section>

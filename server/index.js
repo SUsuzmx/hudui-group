@@ -14,6 +14,7 @@ import { personas } from './ai/personas.js';
 import { createFriendsRouter } from './friends.js';
 import { createMomentsRouter } from './moments.js';
 import { createMediaApi } from './media-api.js';
+import { createMusicProviderRouter } from './providers/music-routes.js';
 import { createLookApi } from './look-api.js';
 import { createMetaRouter, getUserSettings, setUserSettings } from './meta.js';
 import { seedGroups, listGroups, getGroup, groupConvId, DEFAULT_GROUP_KIND, setGroupNotice, createGroup, listGroupMembers, addGroupMembers, leaveGroup, removeGroupMember, renameGroup } from './groups.js';
@@ -130,6 +131,28 @@ app.use('/avatars', express.static(IMG_DIR, { maxAge: '1h' }));
 app.use('/media', express.static(path.join(ROOT, 'data', 'media'), { maxAge: '7d' }));
 
 app.get('/api/avatars', (req, res) => res.json({ avatars: listAvatars() }));
+
+// 视觉舞台封面代理
+app.get('/api/cover', async (req, res) => {
+  const raw = String(req.query.url || '');
+  if (!/^https?:\/\//i.test(raw)) return res.status(400).json({ error: 'invalid cover url' });
+  try {
+    const upstream = await fetch(raw, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        Referer: raw.includes('qq.com') ? 'https://y.qq.com/' : 'https://music.163.com/',
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!upstream.ok) return res.status(502).json({ error: 'cover fetch failed' });
+    const ct = upstream.headers.get('content-type') || 'image/jpeg';
+    if (!/^image\//i.test(ct)) return res.status(502).json({ error: 'not an image' });
+    res.setHeader('Content-Type', ct);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.end(Buffer.from(await upstream.arrayBuffer()));
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
 
 // AI 群友列表仅供群成员/群设置使用, 不作为通讯录联系人
 app.get('/api/ai-contacts', (req, res) => {
@@ -488,6 +511,7 @@ app.get('/api/chats', metaApi.requireAuth, metaApi.chats);
 app.get('/api/chat/pref', metaApi.requireAuth, metaApi.getPref);
 app.post('/api/chat/pref', metaApi.requireAuth, metaApi.upsertPref);
 app.post('/api/chat/read', metaApi.requireAuth, metaApi.markRead);
+app.post('/api/chat/unread', metaApi.requireAuth, metaApi.markUnread);
 app.post('/api/chat/clear', metaApi.requireAuth, metaApi.clearHistory);
 
 // 标签
@@ -525,6 +549,8 @@ function mediaAuth(req, res, next) {
   req.user = user;
   next();
 }
+app.use('/api/netease', createMusicProviderRouter({ requireAuth: mediaAuth, provider: 'netease' }));
+app.use('/api/qq', createMusicProviderRouter({ requireAuth: mediaAuth, provider: 'qq' }));
 app.get('/api/music/list', mediaAuth, (req, res) => mediaApi.musicList(req, res));
 app.get('/api/music/stream/:source/:id', mediaAuth, (req, res) => mediaApi.musicStreamInfo(req, res));
 app.get('/api/music/proxy', mediaAuth, (req, res) => mediaApi.musicProxy(req, res));

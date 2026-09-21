@@ -35,3 +35,5 @@ Thumbs.db
 # accidental local artifacts (do not commit)
 /[A-Za-z]
 /rel.json
+.netease-cookie
+.qq-cookie

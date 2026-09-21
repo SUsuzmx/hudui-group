@@ -9,6 +9,11 @@ import { isStarFriend, refreshStarFriends, starRevision } from '../profile-extra
 import { statusGradient, statusIconPath, statusRemaining } from '../status-bg.js';
 import { loadProfileExtras, saveProfileExtras } from '../profile-extras.js';
 import { toast } from '../toast.js';
+import {
+  readHiddenChatIds,
+  addHiddenChatId,
+  removeHiddenChatId,
+} from '../chat-cache.js';
 
 const props = defineProps({
   me: { type: Object, required: true },
@@ -89,6 +94,7 @@ const showMore = ref(false);
 const searchQuery = ref('');
 const searchInputEl = ref(null);
 const chatsScrollEl = ref(null);
+const mainPageEl = ref(null);
 const contactsScrollEl = ref(null);
 const discoverScrollEl = ref(null);
 const meScrollEl = ref(null);
@@ -97,8 +103,23 @@ const unreadMap = ref({});
 const unreadTotalServer = ref(0);
 const momentsDot = ref(true);
 const chatActionTarget = ref(null);
+const chatActionPos = ref({ top: 0, left: 0 });
 const friendRequests = ref({ incoming: [], outgoing: [], pending: 0 });
 let longPressTimer = null;
+let hideLockUntil = 0;
+let suppressChatClick = false;
+const hiddenIds = ref(readHiddenChatIds());
+
+function isHiddenConv(id) {
+  return hiddenIds.value.has(String(id));
+}
+
+function unhideConv(id) {
+  if (!id) return;
+  removeHiddenChatId(id);
+  hiddenIds.value = readHiddenChatIds();
+  api.chatPref({ conversationId: id, extra: { hidden: false } }).catch(() => {});
+}
 const swipeId = ref(null);
 let swipeStartX = 0;
 let swipeStartY = 0;
@@ -252,7 +273,9 @@ function fmtChatTime(ts) {
 function fmtTime(ts) { return fmtChatTime(ts); }
 
 function applyChats(apiChats, serverUnreadTotal) {
-  const list = (apiChats || []).map((c) => ({ ...c }));
+  const list = (apiChats || [])
+    .map((c) => ({ ...c }))
+    .filter((c) => !isHiddenConv(c.id) && !c.hidden);
   const unreads = {};
   for (const c of list) if (c.unread) unreads[c.id] = c.unread;
   unreadMap.value = unreads;
@@ -272,7 +295,9 @@ async function loadChats() {
 
 function scheduleReloadChats(delay = 400) {
   clearTimeout(chatsReloadTimer);
-  chatsReloadTimer = setTimeout(() => { loadChats(); }, delay);
+  // 「不显示」写偏好后短暂锁刷新, 避免竞态把会话刷回来
+  const wait = Math.max(delay, hideLockUntil - Date.now());
+  chatsReloadTimer = setTimeout(() => { loadChats(); }, Math.max(0, wait));
 }
 
 async function loadFriendRequests() {
@@ -411,7 +436,10 @@ function groupTileParts(av, groupName) {
 }
 
 function openChatItem(c) {
-  clearUnread(c.id || c.conversationId);
+  const conv = c.id || c.conversationId;
+  clearUnread(conv);
+  // 打开会话时取消「不显示」
+  unhideConv(conv);
   if (c.type === 'private') {
     const av = privateAvatarParts(c);
     const uid = Number(c.peerId ?? c.userId ?? 0);
@@ -708,10 +736,30 @@ function startChatLongPress(c, e) {
   if (swipeId.value) return;
   const startX = e?.clientX ?? 0;
   const startY = e?.clientY ?? 0;
+  const el = e?.currentTarget;
   longPressTimer = setTimeout(() => {
     // 期间有明显位移则取消
     if (Math.abs((lastMoveX ?? startX) - startX) > 12 || Math.abs((lastMoveY ?? startY) - startY) > 12) return;
+    const pageEl = mainPageEl.value;
+    const pageRect = pageEl?.getBoundingClientRect?.();
+    const itemRect = el?.getBoundingClientRect?.();
+    const menuW = 176;
+    const menuH = 6 * 48 + 4;
+    const pageTop = pageRect?.top ?? 0;
+    const pageLeft = pageRect?.left ?? 0;
+    const pageH = pageRect?.height ?? (window.innerHeight || 667);
+    const pageW = pageRect?.width ?? (window.innerWidth || 375);
+    const itemTop = (itemRect?.top ?? startY) - pageTop;
+    const itemBottom = (itemRect?.bottom ?? startY + 64) - pageTop;
+    const itemRight = (itemRect?.right ?? pageLeft + pageW) - pageLeft;
+    let top = itemBottom + 4;
+    if (top + menuH > pageH - 8) top = Math.max(8, itemTop - menuH - 4);
+    let left = itemRight - menuW - 12;
+    if (left < 8) left = 8;
+    if (left + menuW > pageW - 8) left = Math.max(8, pageW - menuW - 8);
+    chatActionPos.value = { top, left };
     chatActionTarget.value = c;
+    suppressChatClick = true;
   }, 480);
 }
 function clearChatLongPress() { clearTimeout(longPressTimer); }
@@ -743,6 +791,10 @@ function onSwipeMove(id, e) {
   }
 }
 function onChatItemClick(c) {
+  if (suppressChatClick) {
+    suppressChatClick = false;
+    return;
+  }
   // 左滑展开时, 点击先收起而不是进聊天
   if (swipeId.value === c.id) {
     swipeId.value = null;
@@ -756,9 +808,36 @@ function onChatItemClick(c) {
 }
 
 function hideSwiped(id) {
+  const target = chats.value.find((x) => x.id === id);
+  addHiddenChatId(id);
+  hiddenIds.value = readHiddenChatIds();
   chats.value = chats.value.filter((x) => x.id !== id);
-  api.chatClear(id).then(() => loadChats()).catch(() => {});
   swipeId.value = null;
+  hideLockUntil = Date.now() + 2000;
+  // 「不显示」只记偏好, 不清聊天记录; 主动打开会话前保持隐藏
+  api.chatPref({
+    conversationId: id,
+    muted: Boolean(target?.muted),
+    pinned: Boolean(target?.pinned),
+    folded: Boolean(target?.folded),
+    extra: { hidden: true, hiddenAt: Date.now() },
+  }).then(() => {
+    toast('已不显示该聊天');
+  }).catch((e) => {
+    // 偏好写失败也先本地隐藏, 避免列表立刻刷回
+    toast(e.message || '已不显示（本地）');
+  });
+}
+
+function markChatUnread(c, conv) {
+  const id = c.id;
+  unreadMap.value = { ...unreadMap.value, [id]: 1 };
+  chats.value = chats.value.map((x) => (x.id === id ? { ...x, unread: 1 } : x));
+  api.chatUnread(conv).then(() => {
+    hideLockUntil = Date.now() + 400;
+    loadChats();
+  }).catch(() => {});
+  toast('已标为未读');
 }
 
 let pullStartY = 0;
@@ -783,25 +862,39 @@ function doChatAction(kind) {
   chatActionTarget.value = null;
   if (!c) return;
   const conv = c.id || c.conversationId || 'default';
-  if (kind === 'read') clearUnread(conv);
+  if (kind === 'read') {
+    const isUnread = (unreadMap.value[c.id] || 0) > 0;
+    if (isUnread) {
+      clearUnread(conv);
+      toast('已标为已读');
+    } else {
+      markChatUnread(c, conv);
+    }
+  }
   if (kind === 'mute') {
     const next = !c.muted;
     chats.value = chats.value.map((x) => (x.id === c.id ? { ...x, muted: next } : x));
     api.chatPref({ conversationId: conv, muted: next }).catch(() => {});
+    toast(next ? '已开启消息免打扰' : '已关闭消息免打扰');
   }
   if (kind === 'pin') {
     const next = !c.pinned;
     chats.value = chats.value.map((x) => (x.id === c.id ? { ...x, pinned: next } : x));
     sortChats(chats.value);
     api.chatPref({ conversationId: conv, pinned: next }).catch(() => {});
+    toast(next ? '已置顶' : '已取消置顶');
   }
   if (kind === 'float') {
     toggleFloatChat(c);
+    const on = floatChats.value.some((x) => x.id === c.id);
+    toast(on ? '已添加到浮窗' : '已取消浮窗');
     return;
   }
   if (kind === 'fold') {
     chats.value = chats.value.map((x) => (x.id === c.id ? { ...x, folded: true, pinned: false } : x));
+    hideLockUntil = Date.now() + 800;
     api.chatPref({ conversationId: conv, folded: true, pinned: false }).catch(() => {});
+    toast('已折叠该聊天');
     return;
   }
   if (kind === 'delete' || kind === 'hide') {
@@ -811,7 +904,7 @@ function doChatAction(kind) {
 </script>
 
 <template>
-  <div class="main-page">
+  <div class="main-page" ref="mainPageEl">
     <header v-if="showNav" class="nav-bar">
       <div class="nav-spacer"></div>
       <div class="nav-title">
@@ -1138,15 +1231,21 @@ function doChatAction(kind) {
       </div>
     </section>
 
-    <div v-if="chatActionTarget" class="mask" @click="chatActionTarget = null">
-      <div class="pop-menu wide">
-        <button class="pop-item" @click="doChatAction('read')">标为未读/已读</button>
-        <button class="pop-item" @click="doChatAction('mute')">消息免打扰</button>
-        <button class="pop-item" @click="doChatAction('pin')">置顶聊天</button>
-        <button class="pop-item" @click="doChatAction('float')">浮窗</button>
-        <button class="pop-item" @click="doChatAction('fold')">折叠该聊天</button>
-        <button class="pop-item danger" @click="doChatAction('hide')">不显示该聊天</button>
-      </div>
+    <div v-if="chatActionTarget" class="mask" @click="chatActionTarget = null"></div>
+    <div
+      v-if="chatActionTarget"
+      class="pop-menu chat-action-menu"
+      :style="{ top: chatActionPos.top + 'px', left: chatActionPos.left + 'px' }"
+      @click.stop
+    >
+      <button class="pop-item" @click="doChatAction('read')">
+        {{ (unreadMap[chatActionTarget.id] || 0) > 0 ? '标为已读' : '标为未读' }}
+      </button>
+      <button class="pop-item" @click="doChatAction('mute')">{{ chatActionTarget.muted ? '取消免打扰' : '消息免打扰' }}</button>
+      <button class="pop-item" @click="doChatAction('pin')">{{ chatActionTarget.pinned ? '取消置顶' : '置顶聊天' }}</button>
+      <button class="pop-item" @click="doChatAction('float')">浮窗</button>
+      <button class="pop-item" @click="doChatAction('fold')">折叠该聊天</button>
+      <button class="pop-item danger" @click="doChatAction('hide')">不显示该聊天</button>
     </div>
 
     <div v-if="floatChats.length" class="float-stack">
@@ -1650,6 +1749,15 @@ function doChatAction(kind) {
   z-index: 45; transform-origin: top right; animation: popIn 160ms var(--ease);
 }
 .pop-menu.wide { width: 176px; }
+/* 长按菜单: 相对 .main-page 绝对定位, top/left 由内联样式给出 */
+.chat-action-menu {
+  position: absolute;
+  top: auto;
+  right: auto;
+  width: 176px;
+  z-index: 50;
+  transform-origin: top right;
+}
 .pop-item {
   width: 100%; height: 48px; padding: 0 14px; color: #fff; font-size: 15px;
   text-align: left; display: flex; align-items: center; position: relative;

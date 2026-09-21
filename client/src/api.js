@@ -147,6 +147,7 @@ export const api = {
   chatPref: (payload) => request('/api/chat/pref', { body: payload }),
   getChatPref: (conversationId) => request('/api/chat/pref', { method: 'GET', query: { conversationId } }),
   chatRead: (conversationId) => request('/api/chat/read', { body: { conversationId } }),
+  chatUnread: (conversationId) => request('/api/chat/unread', { body: { conversationId } }),
   chatClear: (conversationId) => request('/api/chat/clear', { body: { conversationId } }),
 
   tags: () => request('/api/tags', { method: 'GET' }),
@@ -213,13 +214,40 @@ export const api = {
   settings: () => request('/api/settings', { method: 'GET' }),
   updateSettings: (settings) => request('/api/settings', { method: 'PUT', body: { settings } }),
 
-  // 发现页: 听一听 / 看一看（本地优先）
-  musicList: ({ q = '', source = 'local', limit = 30 } = {}) =>
+  // 发现页: 听一听 — 网易云 / QQ
+  musicList: ({ q = '', source = 'qq', limit = 30 } = {}) =>
     request('/api/music/list', { method: 'GET', query: { q, source, limit } }),
-  musicStreamInfo: (source, id) =>
-    request(`/api/music/stream/${encodeURIComponent(source)}/${encodeURIComponent(id)}`, { method: 'GET' }),
-  musicProxyUrl: (source, id) =>
-    `/api/music/proxy?source=${encodeURIComponent(source)}&id=${encodeURIComponent(id)}`,
+  musicStreamInfo: (source, id, extra = {}) =>
+    request(`/api/music/stream/${encodeURIComponent(source)}/${encodeURIComponent(id)}`, {
+      method: 'GET',
+      query: extra,
+    }),
+  musicProxyUrl: (source, id, extra = {}) => {
+    const qs = new URLSearchParams({
+      source: String(source),
+      id: String(id),
+      ...Object.fromEntries(Object.entries(extra || {}).filter(([, v]) => v !== undefined && v !== null && v !== '')),
+    });
+    return `/api/music/proxy?${qs.toString()}`;
+  },
+  musicProviderSearch: (provider, { q = '', limit = 20 } = {}) =>
+    request(`/${''}api/${provider}/search`, { method: 'GET', query: { q, limit } }),
+  musicProviderSongUrl: (provider, params = {}) =>
+    request(`/api/${provider}/song/url`, { method: 'GET', query: params }),
+  musicProviderLyric: (provider, params = {}) =>
+    request(`/api/${provider}/lyric`, { method: 'GET', query: params }),
+  musicProviderLoginCookie: (provider, cookie) =>
+    request(`/api/${provider}/login/cookie`, { method: 'POST', body: { cookie } }),
+  musicProviderLoginStatus: (provider) =>
+    request(`/api/${provider}/login/status`, { method: 'GET' }),
+  musicProviderLogout: (provider) =>
+    request(`/api/${provider}/logout`, { method: 'POST', body: {} }),
+  musicProviderPlaylists: (provider) =>
+    request(`/api/${provider}/playlists`, { method: 'GET' }),
+  musicProviderPlaylistTracks: (provider, id, limit = 100) =>
+    request(`/api/${provider}/playlist/tracks`, { method: 'GET', query: { id, limit } }),
+  musicProviderLikes: (provider) =>
+    request(`/api/${provider}/likes`, { method: 'GET' }),
   lookFeed: ({ refresh = false, source = 'local' } = {}) =>
     request('/api/videos/look', {
       method: 'GET',

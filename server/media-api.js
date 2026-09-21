@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stmts } from './db.js';
+import netease from './providers/netease.js';
+import qq from './providers/qq.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.dirname(__dirname);
@@ -290,193 +292,88 @@ function searchLocalTracks(q = '') {
 }
 
 export function createMediaApi() {
+  const ALLOWED = new Set(['netease', 'qq']);
   return {
-    /**
-     * 听一听列表：默认本地优先
-     * source: local | all | audius | netease
-     */
+    /** 听一听：仅网易云 / QQ，默认 QQ */
     async musicList(req, res) {
-      const q = String(req.query.q || '').trim();
-      const source = String(req.query.source || 'local');
+      const q = String(req.query.q || '').trim() || '热歌';
+      const source = ALLOWED.has(String(req.query.source)) ? String(req.query.source) : 'qq';
       const limit = Math.min(40, Number(req.query.limit) || 30);
       const notes = [];
-      const tracks = [];
-
-      // 1) 本地始终优先
-      const local = searchLocalTracks(q);
-      for (const t of local) tracks.push(t);
-
-      if (source === 'local') {
-        return res.json({
-          tracks: tracks.slice(0, limit),
-          source: 'local',
-          notes: tracks.length ? [] : ['本地 demo 素材未就绪，请运行 scripts/gen-demo-media.py'],
-        });
-      }
-
-      // 2) 网络源（可选回退）
-      const wantAudius = source === 'audius' || source === 'all';
-      const wantNetease = source === 'netease' || source === 'all' || (Boolean(q) && source !== 'audius');
-
-      if (wantAudius) {
+      let tracks = [];
+      try {
+        tracks = source === 'netease'
+          ? await netease.search({ q, limit })
+          : await qq.search({ q, limit });
+      } catch (e) {
+        notes.push(e.message);
         try {
-          const pathname = q
-            ? `/v1/tracks/search?query=${encodeURIComponent(q)}&app_name=${encodeURIComponent(APP_NAME)}&limit=${limit}`
-            : `/v1/tracks/trending?app_name=${encodeURIComponent(APP_NAME)}&limit=${limit}`;
-          const list = await audiusPath(pathname);
-          for (const t of list || []) {
-            if (t?.id) tracks.push(mapAudiusTrack(t));
-          }
-        } catch (e) {
-          notes.push(`Audius: ${e.message}`);
-        }
+          const other = source === 'netease' ? 'qq' : 'netease';
+          tracks = other === 'netease' ? await netease.search({ q, limit }) : await qq.search({ q, limit });
+          notes.push(`已切换到${other}`);
+          return res.json({ tracks, source: other, notes, sources: ['netease', 'qq'], defaultSource: 'qq' });
+        } catch (e2) { notes.push(e2.message); }
       }
-
-      if (wantNetease) {
-        try {
-          const raw = q ? await neteaseSearch(q, 8) : await neteaseToplist(8);
-          const seen = new Set(tracks.map((t) => `${t.source}:${t.id}`));
-          for (const t of raw) {
-            const key = `${t.source}:${t.id}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            tracks.push(t);
-          }
-        } catch (e) {
-          notes.push(`网易云: ${e.message}`);
-        }
-      }
-
-      if (!tracks.length) {
-        notes.push('网络媒体源不可达，已回退本地 demo');
-        tracks.push(...availableLocalTracks());
-      }
-
-      res.json({ tracks: tracks.slice(0, limit), source, notes });
+      res.json({ tracks, source, notes, sources: ['netease', 'qq'], defaultSource: 'qq' });
     },
-
-    /** 播放地址：本地直出，网络走解析 */
     async musicStreamInfo(req, res) {
       const source = String(req.params.source || '');
       const id = String(req.params.id || '');
       if (!id) return res.status(400).json({ error: '缺少歌曲 ID' });
-
-      const local = findLocalTrack(id) || (source === 'local' ? findLocalTrack(id) : null);
-      if (local && localFileExists(local.url)) {
-        return res.json({ url: local.url, source: 'local' });
+      if (!ALLOWED.has(source)) {
+        return res.status(400).json({ error: '仅支持网易云与 QQ 音乐', playable: false, restriction: { category: 'url_unavailable', message: '仅支持网易云与 QQ 音乐', action: 'switch_source' } });
       }
-
+      const meta = req.query.title ? { title: String(req.query.title), artists: String(req.query.artist || '').split(/[\/,]/).filter(Boolean), mid: req.query.mid, mediaMid: req.query.mediaMid } : null;
       try {
-        if (source === 'netease') {
-          const url = await neteasePlayUrl(id);
-          if (!url) return res.status(404).json({ error: '该歌曲暂无可用播放地址（网络源）' });
-          return res.json({ url, source });
-        }
-        if (source === 'audius') {
-          const url = await audiusStreamUrl(id);
-          return res.json({ url, source: 'audius' });
-        }
-      } catch (e) {
-        return res.status(502).json({ error: e.message || '获取播放地址失败' });
-      }
-      return res.status(404).json({ error: '未找到可播放资源' });
+        const result = source === 'netease'
+          ? await netease.getSongUrl({ id, level: String(req.query.level || 'exhigh'), songMeta: meta })
+          : await qq.getSongUrl({ id, mid: req.query.mid, mediaMid: req.query.mediaMid, level: String(req.query.level || 'exhigh'), songMeta: meta });
+        res.json({ ...result, source, error: result.playable ? undefined : (result.restriction?.message || '暂无可用播放地址') });
+      } catch (e) { res.status(502).json({ error: e.message, playable: false, url: '' }); }
     },
-
-    /** 音频代理：本地文件直读；网络源失败时明确报错 */
     async musicProxy(req, res) {
-      const source = String(req.query.source || 'local');
+      const source = String(req.query.source || '');
       const id = String(req.query.id || '');
-
-      const local = findLocalTrack(id);
-      if (local) return streamLocalFile(local.url, req, res);
-
-      if (source === 'local' || String(id).startsWith('local-')) {
-        return res.status(404).json({ error: '本地媒体不存在' });
-      }
-
+      if (!ALLOWED.has(source)) return res.status(400).json({ error: '仅支持网易云与 QQ 音乐' });
       try {
-        let url = null;
-        if (source === 'netease') url = await neteasePlayUrl(id);
-        else url = await audiusStreamUrl(id);
-        if (!url) {
-          return res.status(404).json({ error: '网络媒体源不可用（国内可能无法访问），请播放「本地」曲目' });
+        const result = source === 'netease'
+          ? await netease.getSongUrl({ id, level: String(req.query.level || 'exhigh') })
+          : await qq.getSongUrl({ id, mid: req.query.mid, mediaMid: req.query.mediaMid, level: String(req.query.level || 'exhigh') });
+        if (!result.playable || !result.url) {
+          return res.status(404).json({ error: result.restriction?.message || '暂无可用播放地址', restriction: result.restriction || null });
         }
-
         const headers = { 'User-Agent': 'Mozilla/5.0', Accept: '*/*' };
         if (req.headers.range) headers.Range = req.headers.range;
         if (source === 'netease') headers.Referer = 'https://music.163.com/';
-
-        const upstream = await fetch(url, {
-          headers,
-          redirect: 'follow',
-          signal: AbortSignal.timeout(15000),
-        });
-        if (!upstream.ok && upstream.status !== 206) {
-          return res.status(502).json({ error: '网络媒体拉取失败（可能被墙或无版权）' });
-        }
-        const ct = upstream.headers.get('content-type') || 'audio/mpeg';
-        const range = upstream.headers.get('content-range');
-        const len = upstream.headers.get('content-length');
+        else headers.Referer = 'https://y.qq.com/';
+        const upstream = await fetch(result.url, { headers, redirect: 'follow', signal: AbortSignal.timeout(15000) });
+        if (!upstream.ok && upstream.status !== 206) return res.status(502).json({ error: '媒体拉取失败' });
         res.status(upstream.status === 206 ? 206 : 200);
-        res.setHeader('Content-Type', ct);
-        res.setHeader('Accept-Ranges', upstream.headers.get('accept-ranges') || 'bytes');
-        if (len) res.setHeader('Content-Length', len);
-        if (range) res.setHeader('Content-Range', range);
+        res.setHeader('Content-Type', upstream.headers.get('content-type') || 'audio/mpeg');
+        if (upstream.headers.get('content-length')) res.setHeader('Content-Length', upstream.headers.get('content-length'));
+        if (upstream.headers.get('content-range')) res.setHeader('Content-Range', upstream.headers.get('content-range'));
         res.setHeader('Cache-Control', 'no-store');
-        const buf = Buffer.from(await upstream.arrayBuffer());
-        res.end(buf);
-      } catch (e) {
-        res.status(502).json({ error: `网络媒体代理失败：${e.message}` });
-      }
+        res.end(Buffer.from(await upstream.arrayBuffer()));
+      } catch (e) { res.status(502).json({ error: e.message }); }
     },
-
-    /**
-     * 看一看 feed：仅本地 demo + UGC 用户上传（不拉抖音/Coverr 等外站）
-     */
     async lookFeed(req, res) {
       const uid = req.user?.id;
       const localVideos = availableLocalVideos();
-
       let ugc = [];
       try {
         const rows = stmts.listLookPosts.all() || [];
-        ugc = rows
-          .map((r) => ({
-            id: `ugc-${r.id}`,
-            title: r.title || '用户视频',
-            author: r.author || r.uname || '用户',
-            likes: String(r.likes || 0),
-            cover: r.cover_url || null,
-            url: String(r.media_url || '').startsWith('/media/') ? r.media_url : null,
-            source: 'ugc',
-            mine: Number(uid) === Number(r.user_id),
-            userId: r.user_id,
-            description: '用户上传',
-          }))
-          .filter((v) => v.url);
-      } catch {
-        ugc = [];
-      }
-
-      // UGC 在前，本地 demo 在后
+        ugc = rows.map((r) => ({
+          id: `ugc-${r.id}`, title: r.title || '用户视频', author: r.author || r.uname || '用户',
+          likes: String(r.likes || 0), cover: r.cover_url || null,
+          url: String(r.media_url || '').startsWith('/media/') ? r.media_url : null,
+          source: 'ugc', mine: Number(uid) === Number(r.user_id), userId: r.user_id, description: '用户上传',
+        })).filter((v) => v.url);
+      } catch { ugc = []; }
       const videos = [...ugc, ...localVideos];
-      res.json({
-        source: 'local+ugc',
-        tip: videos.length
-          ? `本地/自有片源 · ${ugc.length} 条用户上传 · ${localVideos.length} 条系统样片`
-          : '暂无视频，可点右上角「发布」上传',
-        blocked: false,
-        videos,
-      });
+      res.json({ source: 'local+ugc', tip: videos.length ? `本地/自有片源 · ${ugc.length} 条用户上传` : '暂无视频', blocked: false, videos });
     },
-
-    /** 调试：列出本地 demo 文件 */
     demoCatalog(req, res) {
-      res.json({
-        dir: DEMO_DIR,
-        tracks: LOCAL_TRACKS.map((t) => ({ ...t, exists: localFileExists(t.url) })),
-        videos: LOCAL_VIDEOS.map((v) => ({ ...v, exists: localFileExists(v.url) })),
-      });
+      res.json({ tracks: LOCAL_TRACKS.map((t) => ({ ...t, exists: localFileExists(t.url) })), videos: LOCAL_VIDEOS.map((v) => ({ ...v, exists: localFileExists(v.url) })) });
     },
   };
 }

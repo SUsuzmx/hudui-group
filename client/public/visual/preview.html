@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>视觉舞台预览</title>
+  <link rel="stylesheet" href="stage-embed.css" />
+  <style>
+    html, body { margin: 0; height: 100%; background: #07090c; color: #eef3f8; font-family: system-ui, sans-serif; }
+    #stage-root { position: fixed; inset: 0; }
+    #hud { position: fixed; left: 12px; bottom: 12px; z-index: 50; background: rgba(12,14,18,.9); border-radius: 10px; padding: 10px 12px; font-size: 12px; max-width: 360px; pointer-events: auto; }
+    #hud button { margin: 2px; cursor: pointer; }
+    audio { width: 100%; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div id="stage-root" class="visual-stage-root">
+    <div id="custom-bg"><video id="custom-bg-video" muted loop playsinline></video></div>
+    <div id="wallpaper-engine-layer">
+      <img id="wallpaper-engine-image" alt="" />
+      <canvas id="wallpaper-engine-freeze"></canvas>
+      <video id="wallpaper-engine-video" muted loop playsinline></video>
+    </div>
+    <div id="album-bg"></div>
+    <div id="album-bg-next"></div>
+    <div id="canvas-container"></div>
+    <canvas id="splash-canvas"></canvas>
+    <img id="thumb-cover" alt="" />
+    <div id="ai-depth-chip"><span id="ai-depth-text">…</span></div>
+    <div id="cover-crop-modal" style="display:none">
+      <div id="cover-crop-stage"><img id="cover-crop-img" alt="" /></div>
+      <input id="cover-crop-zoom" type="range" min="1" max="3" step="0.01" value="1" />
+      <div id="cover-crop-preview"></div>
+    </div>
+    <div class="preset-grid" id="preset-grid"></div>
+    <div class="lyric-color-grid" id="lyric-color-grid"></div>
+  </div>
+  <div id="hud">
+    <div><strong>视觉舞台预览</strong></div>
+    <div id="status">加载中…</div>
+    <div id="presets" style="margin-top:6px"></div>
+    <audio id="preview-audio" controls></audio>
+    <div style="margin-top:6px;opacity:.75">封面 URL <input id="cover-url" style="width:100%" /></div>
+  </div>
+  <script>
+    (function () {
+      var statusEl = document.getElementById('status');
+      function loadScript(src) {
+        return new Promise(function (resolve, reject) {
+          var s = document.createElement('script');
+          s.src = src + '?t=' + Date.now();
+          s.async = false;
+          s.onload = function () { resolve(); };
+          s.onerror = function () { reject(new Error(src)); };
+          document.head.appendChild(s);
+        });
+      }
+      (async function () {
+        try {
+          await loadScript('visual-loader.js');
+          await window.loadMineradioVisual();
+          var audio = document.getElementById('preview-audio');
+          window.audio = audio;
+          window.playing = false;
+          audio.addEventListener('play', function () {
+            window.playing = true;
+            if (window.initAudio) window.initAudio();
+          });
+          audio.addEventListener('pause', function () { window.playing = false; });
+          if (window.uniforms && window.uniforms.uAlpha && !(window.uniforms.uAlpha.value > 0.01)) {
+            window.uniforms.uAlpha.value = 0.96;
+          }
+          if (window.uniforms && window.uniforms.uParticleDim) window.uniforms.uParticleDim.value = 1;
+          if (window.particles) window.particles.visible = true;
+          if (window.fx) window.fx.particleLyrics = true;
+          if (typeof window.buildPresetGrid === 'function' && Array.isArray(window.presetMeta)) {
+            try { window.buildPresetGrid(); } catch (e) {}
+          }
+          var host = document.getElementById('presets');
+          var list = [
+            [0,'丝绸'],[1,'隧道'],[2,'星球'],[3,'虚空'],[4,'唱片'],[5,'星河'],
+            [6,'安魂'],[7,'Topo'],[8,'WE'],[9,'月蚀'],[10,'雨幕'],[11,'折光'],[12,'深海']
+          ];
+          list.forEach(function (p) {
+            var b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = p[1];
+            b.onclick = function () {
+              if (typeof window.setPreset === 'function') window.setPreset(p[0]);
+              if (window.uniforms?.uAlpha && !(window.uniforms.uAlpha.value > 0.01)) window.uniforms.uAlpha.value = 0.96;
+              statusEl.textContent = '预设 #' + p[0] + ' · a=' + (window.uniforms?.uAlpha?.value) + ' p=' + !!window.particles + ' fx=' + (window.fx && window.fx.preset);
+            };
+            host.appendChild(b);
+          });
+          var demo = 'https://y.qq.com/music/photo_new/T002R300x300M000000MkMni19ClKG.jpg?max_age=2592000';
+          document.getElementById('cover-url').value = demo;
+          if (typeof window.loadCoverFromUrl === 'function') window.loadCoverFromUrl(demo, {});
+          if (typeof window.parseLyricText === 'function') {
+            var lrc = '[00:00.00]视觉舞台预览\n[00:04.00]切换预设看粒子\n[00:08.00]播放后歌词会动';
+            window.lyricsLines = window.parseLyricText(lrc);
+            window.lyricsVisible = true;
+            window.lyricsTimingSource = 'lrc';
+            if (typeof window.createLyricsParticles === 'function') window.createLyricsParticles();
+            if (typeof window.showStageLine === 'function' && window.lyricsLines[0]) {
+              window.showStageLine(window.lyricsLines[0].text);
+            }
+          }
+          statusEl.textContent = '就绪 · setPreset=' + (typeof window.setPreset)
+            + ' a=' + (window.uniforms?.uAlpha?.value)
+            + ' particles=' + !!window.particles
+            + ' renderer=' + !!window.renderer
+            + ' canvas=' + document.querySelectorAll('#canvas-container canvas').length
+            + ' lyricLines=' + (window.lyricsLines ? window.lyricsLines.length : 0);
+        } catch (e) {
+          statusEl.textContent = '失败: ' + e.message;
+          console.error(e);
+        }
+      })();
+    })();
+  </script>
+</body>
+</html>

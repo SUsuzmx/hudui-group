@@ -1,375 +1,197 @@
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import { musicPlayer, fmtAudioTime } from '../music-player.js';
+import {
+  initVisualStage,
+  syncTrackToVisual,
+  setVisualPreset,
+  setFxField,
+  startVisualWatch,
+  stopVisualWatch,
+  getVisualStageError,
+  ensureDefaultPreset,
+  getActivePresetId,
+  PRESET_LIST,
+  DEFAULT_PRESET_ID,
+} from '../visual-stage.js';
 
 const emit = defineEmits(['close']);
-
 const showQueue = ref(false);
-const liked = ref(false);
+const showFx = ref(false);
+const stageReady = ref(false);
+const stageError = ref('');
+const presetId = ref(0);
+const fxIntensity = ref(1);
+const fxDepth = ref(1);
+const fxSpeed = ref(1);
+const fxPoint = ref(1);
+const currentLine = ref('');
+const windowLyricLines = ref(0);
+const debugInfo = ref('');
 
 const current = computed(() => musicPlayer.state.current);
 const playing = computed(() => musicPlayer.state.playing);
 const progress = computed(() => musicPlayer.state.progress);
 const duration = computed(() => musicPlayer.state.duration);
 const tracks = computed(() => musicPlayer.state.tracks);
-const sourceLabel = computed(() => (current.value?.source === 'netease' ? '网易云公开接口' : 'Audius 免费音乐'));
+const sourceLabel = computed(() => (current.value?.source === 'netease' ? '网易云' : 'QQ音乐'));
+const progressPercent = computed(() => (duration.value ? Math.min(100, (progress.value / duration.value) * 100) : 0));
 
-const progressPercent = computed(() => {
-  if (!duration.value) return 0;
-  return Math.min(100, Math.max(0, (progress.value / duration.value) * 100));
-});
-
-function onSeek(e) {
-  musicPlayer.seek(e.target.value);
+function onSeek(e) { musicPlayer.seek(e.target.value); }
+function playFromQueue(t) { showQueue.value = false; musicPlayer.playTrack(t); }
+function isActive(t) { return current.value && current.value.id === t.id && current.value.source === t.source; }
+function applyPreset(id) { presetId.value = setVisualPreset(id); }
+function onFx(key, e) {
+  const v = Number(e.target.value);
+  if (key === 'intensity') fxIntensity.value = v;
+  if (key === 'depth') fxDepth.value = v;
+  if (key === 'speed') fxSpeed.value = v;
+  if (key === 'point') fxPoint.value = v;
+  setFxField(key, v);
 }
 
-function playFromQueue(t) {
-  showQueue.value = false;
-  musicPlayer.playTrack(t);
+function pollCurrentLyric() {
+  try {
+    const lines = window.lyricsLines;
+    const el = window.audio;
+    windowLyricLines.value = Array.isArray(lines) ? lines.length : 0;
+    window.playing = !!(el && !el.paused && !el.ended);
+    if (!Array.isArray(lines) || !lines.length || !el) { currentLine.value = ''; return; }
+    const t = el.currentTime || 0;
+    let idx = -1;
+    for (let i = 0; i < lines.length; i += 1) {
+      if (Number(lines[i]?.t) <= t + 0.05) idx = i; else break;
+    }
+    currentLine.value = idx >= 0 ? (lines[idx]?.text || '') : '';
+  } catch { currentLine.value = ''; }
+  try {
+    const u = window.uniforms?.uAlpha?.value;
+    const hasP = !!window.particles;
+    const canvas = document.querySelectorAll('#canvas-container canvas').length;
+    debugInfo.value = `a=${u != null ? Number(u).toFixed(2) : '-'} p=${hasP ? 1 : 0} c=${canvas} fx=${window.fx?.preset ?? '-'}`;
+  } catch { /* ignore */ }
 }
 
-function isActive(t) {
-  return current.value && current.value.id === t.id && current.value.source === t.source;
+let lyricTimer = 0;
+async function bootStage() {
+  try {
+    await initVisualStage();
+    stageReady.value = true;
+    presetId.value = ensureDefaultPreset();
+    if (current.value) syncTrackToVisual(current.value);
+    startVisualWatch();
+    lyricTimer = setInterval(pollCurrentLyric, 200);
+    pollCurrentLyric();
+  } catch (e) {
+    stageReady.value = false;
+    stageError.value = (e && e.message) || getVisualStageError() || '视觉引擎加载失败';
+    console.error('[SongDetail] visual stage failed', e);
+  }
 }
+
+watch(current, (t) => { if (t) syncTrackToVisual(t); });
+watch(playing, (p) => { window.playing = p; });
+onMounted(() => { musicPlayer.ensureAudio(); bootStage(); });
+onBeforeUnmount(() => { stopVisualWatch(); if (lyricTimer) clearInterval(lyricTimer); });
 </script>
 
 <template>
-  <div v-if="current" class="song-detail">
-    <header class="nav">
-      <button class="nav-back" type="button" aria-label="收起" @click="emit('close')">⌄</button>
-      <div class="nav-title">正在播放</div>
-      <button class="nav-right-btn" type="button" @click="showQueue = !showQueue">
-        {{ showQueue ? '封面' : '列表' }}
-      </button>
+  <div v-if="current" class="stage-page">
+    <div class="visual-stage-root" aria-hidden="true">
+      <div id="custom-bg"><video id="custom-bg-video" muted loop playsinline></video></div>
+      <div id="wallpaper-engine-layer">
+        <img id="wallpaper-engine-image" alt="" />
+        <canvas id="wallpaper-engine-freeze"></canvas>
+        <video id="wallpaper-engine-video" muted loop playsinline></video>
+      </div>
+      <div id="album-bg"></div>
+      <div id="album-bg-next"></div>
+      <div id="canvas-container"></div>
+      <canvas id="splash-canvas"></canvas>
+      <img id="thumb-cover" alt="" />
+      <div id="ai-depth-chip"><span id="ai-depth-text">…</span></div>
+      <div id="cover-crop-modal" style="display:none">
+        <div id="cover-crop-stage"><img id="cover-crop-img" alt="" /></div>
+        <input id="cover-crop-zoom" type="range" min="1" max="3" step="0.01" value="1" />
+        <div id="cover-crop-preview"></div>
+      </div>
+      <div class="preset-grid" id="preset-grid"></div>
+      <div class="lyric-color-grid" id="lyric-color-grid"></div>
+    </div>
+
+    <header class="bar top">
+      <button type="button" class="icon-btn" @click="emit('close')">‹</button>
+      <div class="now">
+        <div class="t">{{ current.title }}</div>
+        <div class="s">{{ current.artist }} · {{ sourceLabel }}</div>
+      </div>
+      <button type="button" class="icon-btn" @click="showFx = !showFx">FX</button>
+      <button type="button" class="icon-btn" @click="showQueue = !showQueue">☰</button>
     </header>
 
-    <main v-if="!showQueue" class="detail-body">
-      <div class="disc-wrap">
-        <div class="disc" :class="{ spin: playing }">
-          <img v-if="current.cover" :src="current.cover" :alt="current.title" />
-          <div v-else class="disc-fallback">♪</div>
-        </div>
-      </div>
+    <div v-if="!stageReady" class="stage-status">{{ stageError || '引擎加载中…' }}</div>
 
-      <div class="song-head">
-        <h1 class="song-title">{{ current.title }}</h1>
-        <div class="song-artist">{{ current.artist }}</div>
-        <div class="song-tags">
-          <span class="tag">{{ sourceLabel }}</span>
-          <span v-if="current.genre" class="tag">{{ current.genre }}</span>
-          <span class="tag">{{ fmtAudioTime(duration || current.duration) }}</span>
-        </div>
-      </div>
-
-      <div class="progress-block">
-        <input
-          class="seek"
-          type="range"
-          min="0"
-          :max="duration || 0"
-          step="0.1"
-          :value="progress"
-          @input="onSeek"
-        />
-        <div class="time-row">
-          <span>{{ fmtAudioTime(progress) }}</span>
-          <span>{{ fmtAudioTime(duration || current.duration) }}</span>
-        </div>
-        <div class="bar">
-          <div class="bar-fill" :style="{ width: progressPercent + '%' }"></div>
-        </div>
-      </div>
-
-      <div class="ctrl-row">
-        <button class="ctrl" type="button" @click="musicPlayer.prevTrack()">‹‹</button>
-        <button class="ctrl main" type="button" @click="musicPlayer.togglePlay()">
-          {{ playing ? '❚❚' : '▶' }}
+    <div v-if="showFx" class="fx-dock">
+      <div class="fx-title">舞台预设</div>
+      <div class="preset-grid local-presets">
+        <button v-for="p in PRESET_LIST" :key="p.id" type="button" class="preset-card" :class="{ active: presetId === p.id }" @click="applyPreset(p.id)">
+          <div class="pc-name">{{ p.name }}</div>
         </button>
-        <button class="ctrl" type="button" @click="musicPlayer.nextTrack()">››</button>
       </div>
+      <div class="fx-slider-row"><label>强度</label><input type="range" min="0.2" max="2.5" step="0.05" :value="fxIntensity" @input="onFx('intensity', $event)" /></div>
+      <div class="fx-slider-row"><label>深度</label><input type="range" min="0.2" max="2.5" step="0.05" :value="fxDepth" @input="onFx('depth', $event)" /></div>
+      <div class="fx-slider-row"><label>速度</label><input type="range" min="0.2" max="2.5" step="0.05" :value="fxSpeed" @input="onFx('speed', $event)" /></div>
+      <div class="fx-slider-row"><label>粒子</label><input type="range" min="0.2" max="2.5" step="0.05" :value="fxPoint" @input="onFx('point', $event)" /></div>
+    </div>
 
-      <div class="actions">
-        <button class="act" type="button" :class="{ on: liked }" @click="liked = !liked">
-          {{ liked ? '♥ 已喜欢' : '♡ 喜欢' }}
-        </button>
-        <button class="act" type="button" @click="showQueue = true">播放列表</button>
-        <button class="act" type="button" @click="emit('close')">返回列表</button>
-      </div>
-
-      <section class="info-card">
-        <div class="row"><span>歌曲</span><span>{{ current.title }}</span></div>
-        <div class="row"><span>歌手</span><span>{{ current.artist }}</span></div>
-        <div class="row"><span>来源</span><span>{{ sourceLabel }}</span></div>
-        <div class="row"><span>时长</span><span>{{ fmtAudioTime(duration || current.duration) }}</span></div>
-        <div class="row"><span>ID</span><span>{{ current.id }}</span></div>
-      </section>
-    </main>
-
-    <main v-else class="queue-body scroll-y">
-      <div class="queue-title">播放列表 · {{ tracks.length }} 首</div>
-      <button
-        v-for="t in tracks"
-        :key="t.source + '-' + t.id"
-        class="queue-item"
-        type="button"
-        :class="{ active: isActive(t) }"
-        @click="playFromQueue(t)"
-      >
-        <div class="q-cover">
-          <img v-if="t.cover" :src="t.cover" alt="" />
-          <span v-else>♪</span>
-        </div>
-        <div class="q-meta">
-          <div class="q-title">{{ t.title }}</div>
-          <div class="q-sub">{{ t.artist }}</div>
-        </div>
-        <div class="q-ico">{{ isActive(t) && playing ? '❚❚' : '▶' }}</div>
+    <div v-if="showQueue" class="queue-sheet">
+      <button v-for="t in tracks" :key="t.source + '-' + t.id" type="button" class="queue-item" :class="{ active: isActive(t) }" @click="playFromQueue(t)">
+        <span class="q-title">{{ t.title }}</span>
+        <span class="q-sub">{{ t.artist }}</span>
       </button>
-    </main>
+    </div>
+
+    <footer class="bar bottom">
+      <div class="lyric-now">
+        {{ currentLine || '♪' }}
+        <span class="lyric-debug">L{{ windowLyricLines }} · P{{ playing ? 1 : 0 }} · {{ debugInfo }}</span>
+      </div>
+      <div class="ctrl-row">
+        <button type="button" class="icon-btn" @click="musicPlayer.prevTrack()">‹‹</button>
+        <button type="button" class="icon-btn main" @click="musicPlayer.togglePlay()">{{ playing ? '❚❚' : '▶' }}</button>
+        <button type="button" class="icon-btn" @click="musicPlayer.nextTrack()">››</button>
+      </div>
+      <div class="seek-row">
+        <span class="time">{{ fmtAudioTime(progress) }}</span>
+        <input class="seek" type="range" min="0" :max="duration || 0" step="0.1" :value="progress" @input="onSeek" />
+        <span class="time">{{ fmtAudioTime(duration || current.duration) }}</span>
+      </div>
+    </footer>
   </div>
 </template>
 
 <style scoped>
-.song-detail {
-  position: absolute;
-  inset: 0;
-  z-index: 40;
-  background: var(--bg);
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-.nav {
-  height: var(--nav-h);
-  flex-shrink: 0;
-  position: relative;
-  display: flex;
-  align-items: center;
-  border-bottom: 0.5px solid var(--divider);
-  background: var(--bg);
-}
-.nav-back,
-.nav-right-btn {
-  width: 56px;
-  height: 44px;
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  font-size: 22px;
-}
-.nav-right-btn { font-size: 14px; margin-left: auto; }
-.nav-title {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text);
-}
-.detail-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 12px 16px calc(20px + var(--safe-b));
-}
-.disc-wrap {
-  display: flex;
-  justify-content: center;
-  margin: 12px 0 18px;
-}
-.disc {
-  width: min(64vw, 240px);
-  aspect-ratio: 1;
-  border-radius: 50%;
-  background: #222;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  box-shadow: 0 12px 32px rgba(0,0,0,0.18);
-}
-.disc img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.disc-fallback {
-  color: #fff;
-  font-size: 48px;
-}
-.disc.spin { animation: spin 10s linear infinite; }
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-.song-head { text-align: center; }
-.song-title {
-  font-size: 22px;
-  font-weight: 600;
-  color: var(--text);
-  line-height: 1.3;
-}
-.song-artist {
-  margin-top: 8px;
-  font-size: 15px;
-  color: var(--text-2);
-}
-.song-tags {
-  margin-top: 12px;
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.tag {
-  font-size: 12px;
-  color: var(--text-2);
-  background: var(--white);
-  border: 1px solid var(--divider);
-  border-radius: 12px;
-  padding: 4px 10px;
-}
-.progress-block { margin-top: 22px; }
-.seek {
-  width: 100%;
-  accent-color: var(--green);
-}
-.time-row {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 4px;
-  font-size: 12px;
-  color: var(--text-3);
-}
-.bar {
-  margin-top: 6px;
-  height: 3px;
-  border-radius: 2px;
-  background: var(--divider);
-  overflow: hidden;
-}
-.bar-fill {
-  height: 100%;
-  background: var(--green);
-}
-.ctrl-row {
-  margin-top: 18px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 22px;
-}
-.ctrl {
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  border: 0;
-  background: var(--white);
-  color: var(--text);
-  font-size: 18px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-}
-.ctrl.main {
-  width: 72px;
-  height: 72px;
-  background: var(--green);
-  color: #fff;
-  font-size: 22px;
-}
-.actions {
-  margin-top: 20px;
-  display: flex;
-  justify-content: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.act {
-  min-height: 36px;
-  padding: 0 14px;
-  border-radius: 18px;
-  border: 1px solid var(--divider);
-  background: var(--white);
-  color: var(--text);
-  font-size: 13px;
-}
-.act.on {
-  color: var(--red);
-  border-color: var(--red);
-}
-.info-card {
-  margin-top: 22px;
-  background: var(--white);
-  border-radius: 12px;
-  padding: 4px 14px;
-}
-.row {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 0;
-  font-size: 14px;
-  color: var(--text);
-  border-bottom: 0.5px solid var(--divider-soft);
-}
-.row:last-child { border-bottom: 0; }
-.row span:first-child { color: var(--text-2); flex-shrink: 0; }
-.row span:last-child {
-  text-align: right;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.queue-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding-bottom: 20px;
-  background: var(--white);
-}
-.queue-title {
-  padding: 14px 16px 8px;
-  font-size: 13px;
-  color: var(--text-2);
-}
-.queue-item {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
-  border: 0;
-  background: var(--white);
-  text-align: left;
-}
-.queue-item.active { background: rgba(7, 193, 96, 0.06); }
-.q-cover {
-  width: 44px;
-  height: 44px;
-  border-radius: 6px;
-  overflow: hidden;
-  background: var(--divider-soft);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.q-cover img { width: 100%; height: 100%; object-fit: cover; }
-.q-meta { flex: 1; min-width: 0; }
-.q-title {
-  font-size: 14px;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.q-sub {
-  margin-top: 4px;
-  font-size: 12px;
-  color: var(--text-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.q-ico { color: var(--text-2); font-size: 13px; }
+.stage-page { position: absolute; inset: 0; z-index: 40; background: #050608; overflow: hidden; color: #eef3f8; }
+.stage-page :deep(.visual-stage-root) { pointer-events: auto; touch-action: none; cursor: grab; }
+.bar { position: absolute; left: 0; right: 0; z-index: 30; display: flex; align-items: center; gap: 8px; padding: 8px 10px; pointer-events: none; }
+.bar > * { pointer-events: auto; }
+.top { top: 0; background: linear-gradient(180deg, rgba(0,0,0,.55), transparent); }
+.bottom { bottom: 0; flex-direction: column; align-items: stretch; gap: 6px; padding: 8px 12px calc(10px + var(--safe-b)); background: linear-gradient(0deg, rgba(0,0,0,.72), transparent); }
+.icon-btn { min-width: 40px; height: 40px; border: 0; border-radius: 20px; background: rgba(255,255,255,.12); color: #fff; font-size: 16px; }
+.icon-btn.main { width: 56px; height: 56px; background: #07c160; font-size: 20px; }
+.now { flex: 1; min-width: 0; text-align: center; }
+.now .t { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.now .s { font-size: 11px; opacity: .75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stage-status { position: absolute; top: 56px; left: 12px; right: 12px; z-index: 32; padding: 8px 12px; border-radius: 8px; background: rgba(80,20,20,.75); font-size: 12px; text-align: center; }
+.lyric-now { text-align: center; font-size: 13px; min-height: 1.4em; text-shadow: 0 2px 10px rgba(0,0,0,.8); }
+.lyric-debug { margin-left: 6px; font-size: 10px; opacity: .45; }
+.ctrl-row { display: flex; justify-content: center; gap: 18px; }
+.seek-row { display: flex; align-items: center; gap: 8px; }
+.seek-row .time { font-size: 11px; opacity: .7; width: 36px; }
+.seek { flex: 1; accent-color: #07c160; }
+.queue-sheet { position: absolute; left: 10px; right: 10px; top: 80px; bottom: 100px; z-index: 34; background: rgba(10,12,16,.92); border-radius: 12px; overflow: auto; padding: 8px; pointer-events: auto; }
+.queue-item { width: 100%; display: flex; flex-direction: column; gap: 2px; padding: 10px 8px; border: 0; border-radius: 8px; background: transparent; color: #fff; text-align: left; }
+.queue-item.active { background: rgba(7,193,96,.15); }
+.q-title { font-size: 14px; }
+.q-sub { font-size: 12px; opacity: .6; }
 </style>

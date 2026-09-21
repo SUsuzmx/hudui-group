@@ -9,8 +9,10 @@ import { makeLocalMsg, patchLocalMsg, dropLocalEcho } from '../chat-send-status.
 import { toast } from '../toast.js';
 import { createDraftSync } from '../draft-sync.js';
 import { getSocket, bindSocket } from '../socket-store.js';
-import { saveMsgCache, loadMsgCache } from '../chat-cache.js';
+import { saveMsgCache, loadMsgCache, clearMsgCache } from '../chat-cache.js';
 import UserAvatar from './UserAvatar.vue';
+import EmojiPicker from './EmojiPicker.vue';
+import { addSticker, stickerFromChatMessage, canSaveStickerFromMsg, loadStickers } from '../stickers.js';
 import ForwardSheet from './ForwardSheet.vue';
 import ImagePreview from './ImagePreview.vue';
 import WxPayCard from './WxPayCard.vue';
@@ -344,11 +346,13 @@ function insertAt() {
 }
 
 function setDock(mode) {
-  if (dockMode.value === mode) {
-    dockMode.value = 0;
-  } else {
-    dockMode.value = mode;
-    showMentionPicker.value = false;
+  const next = dockMode.value === mode ? 0 : mode;
+  dockMode.value = next;
+  showMentionPicker.value = false;
+  if (next === 1 || next === 2) {
+    requestAnimationFrame(() => {
+      try { textareaRef.value?.blur?.(); } catch { /* ignore */ }
+    });
   }
   if (dockMode.value !== 3) nextTick(() => autoSizeInput());
 }
@@ -366,7 +370,6 @@ function insertEmoji(emoji) {
     autoSizeInput();
     const newPos = pos + emoji.length;
     ta.setSelectionRange(newPos, newPos);
-    ta.focus();
   });
 }
 
@@ -375,6 +378,40 @@ function deleteEmoji() {
   chars.pop();
   draft.value = chars.join('');
   nextTick(autoSizeInput);
+}
+
+function sendStickerMsg(sticker) {
+  if (!sticker?.url) return;
+  if (!socket?.connected) {
+    showToast('网络连接中，请稍后再试');
+    return;
+  }
+  const url = sticker.url;
+  const isGif = sticker.kind === 'gif'
+    || /\.gif(\?|$)/i.test(String(url))
+    || String(url).startsWith('data:image/gif');
+  const content = isGif ? '[动画表情]' : '[图片]';
+  const emitSend = (mediaUrl) => {
+    socket.emit('message:send', {
+      conversationId: conversationId.value,
+      content,
+      mediaType: 'image',
+      mediaUrl,
+    }, (res) => {
+      if (res?.error) showToast(res.error);
+    });
+  };
+  if (String(url).startsWith('data:')) {
+    api.uploadChatMedia(url, 'image')
+      .then((d) => {
+        if (!d?.url) throw new Error('发送失败');
+        emitSend(d.url);
+      })
+      .catch((e) => showToast(e.message || '发送失败'));
+  } else {
+    emitSend(url);
+  }
+  dockMode.value = 0;
 }
 
 function onInputFocus() {
@@ -868,6 +905,17 @@ function doAction(kind) {
       mediaUrl: m.mediaUrl || null,
       fromName: m.senderName || '',
     }).then(() => showToast('已收藏，可在「我 → 收藏」查看')).catch((e) => showToast(e.message || '收藏失败'));
+    return;
+  }
+  if (kind === 'save-sticker') {
+    const item = stickerFromChatMessage(m);
+    if (!item) {
+      showToast('该消息不是可收藏的表情图片');
+      return;
+    }
+    const before = loadStickers().some((s) => s.url === item.url);
+    addSticker(item);
+    showToast(before ? '已在收藏表情中' : '已添加到收藏表情');
     return;
   }
   if (kind === 'delete') {
@@ -1629,10 +1677,14 @@ function loadHistoryNow(beforeId = null) {
       const list = Array.isArray(rows) ? rows : [];
       if (!list.length && beforeId) noMoreHistory.value = true;
       seedSeenIds(list);
-      const merged = beforeId ? [...list, ...messages.value] : (list.length ? list : messages.value);
+      // 初始拉取以服务端为准: 清空后服务端返回空列表时必须清掉本地消息
+      const merged = beforeId ? [...list, ...messages.value] : list;
       const map = new Map();
       for (const m of merged) if (m?.id != null) map.set(m.id, m);
       messages.value = [...map.values()].sort((a, b) => a.id - b.id);
+      if (!beforeId && !list.length) {
+        try { clearMsgCache(cacheKey.value); } catch { /* ignore */ }
+      }
       persistMessages();
       loadingHistory.value = false;
       booting.value = false;
@@ -2067,31 +2119,12 @@ onBeforeUnmount(() => {
         <button v-else class="icon-btn" aria-label="更多" @click="insertAt">@</button>
       </div>
 
-      <div v-if="dockMode === 1" class="dock-panel emoji-panel">
-        <div class="emoji-grid">
-          <button
-            v-for="(e, i) in displayEmojis"
-            :key="emojiPackKey + '-' + i + '-' + e"
-            class="emoji-item"
-            :class="{ fav: emojiPackKey === 'fav' }"
-            @click="insertEmojiTracked(e)"
-          >{{ e }}</button>
-          <div v-if="!displayEmojis.length" class="emoji-empty">
-            {{ emojiPackKey === 'recent' ? '暂无最近表情，点几个试试' : emojiPackKey === 'fav' ? '暂无收藏表情' : '暂无表情' }}
-          </div>
-        </div>
-        <div class="emoji-tabs">
-          <button
-            v-for="t in emojiTabs"
-            :key="t.key"
-            type="button"
-            class="emoji-tab"
-            :class="{ on: emojiPackKey === t.key }"
-            @click="pickEmojiTab(t.key)"
-          >{{ t.label }}</button>
-          <button class="emoji-del" type="button" @click="deleteEmoji">⌫</button>
-        </div>
-      </div>
+      <EmojiPicker
+        v-if="dockMode === 1"
+        @insert-emoji="insertEmojiTracked"
+        @send-sticker="sendStickerMsg"
+        @delete="deleteEmoji"
+      />
 
       <div v-if="dockMode === 2" class="dock-panel plus-panel">
         <div class="plus-grid">
@@ -2193,6 +2226,9 @@ onBeforeUnmount(() => {
           </button>
           <button class="action-item" @click="doAction('favorite')">
             <span class="ai-ico">☆</span><span>收藏</span>
+          </button>
+          <button v-if="canSaveStickerFromMsg(actionMsg)" class="action-item" @click="doAction('save-sticker')">
+            <span class="ai-ico">💝</span><span>收藏表情</span>
           </button>
           <button v-if="actionMsg.content && actionMsg.mediaType !== 'image' && actionMsg.mediaType !== 'voice'" class="action-item" @click="doAction('quote')">
             <span class="ai-ico">❝</span><span>引用</span>

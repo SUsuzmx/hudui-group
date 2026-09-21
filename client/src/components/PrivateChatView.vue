@@ -8,8 +8,10 @@ import { makeLocalMsg, patchLocalMsg, dropLocalEcho } from '../chat-send-status.
 import { toast } from '../toast.js';
 import { createDraftSync } from '../draft-sync.js';
 import { getSocket, bindSocket } from '../socket-store.js';
-import { saveMsgCache, loadMsgCache } from '../chat-cache.js';
+import { saveMsgCache, loadMsgCache, clearMsgCache } from '../chat-cache.js';
 import UserAvatar from './UserAvatar.vue';
+import EmojiPicker from './EmojiPicker.vue';
+import { addSticker, stickerFromChatMessage, canSaveStickerFromMsg, loadStickers } from '../stickers.js';
 import ForwardSheet from './ForwardSheet.vue';
 import ImagePreview from './ImagePreview.vue';
 import FilePreview from './FilePreview.vue';
@@ -266,10 +268,14 @@ async function loadHistory(beforeId = null) {
       clearTimeout(timer);
       const list = Array.isArray(rows) ? rows : [];
       if (!list.length && beforeId) noMoreHistory.value = true;
-      const merged = beforeId ? [...list, ...messages.value] : (list.length ? list : messages.value);
+      // 初始拉取以服务端为准: 清空后服务端返回空列表时必须清掉本地消息
+      const merged = beforeId ? [...list, ...messages.value] : list;
       const map = new Map();
       for (const m of merged) if (m?.id != null) map.set(m.id, m);
       messages.value = [...map.values()].sort((a, b) => a.id - b.id);
+      if (!beforeId && !list.length) {
+        try { clearMsgCache(conversationId); } catch { /* ignore */ }
+      }
       seedSeen(messages.value);
       persistMessages();
       loadingHistory.value = false;
@@ -309,7 +315,14 @@ function onScroll() {
 }
 
 function setDock(mode) {
-  dockMode.value = dockMode.value === mode ? 0 : mode;
+  const next = dockMode.value === mode ? 0 : mode;
+  dockMode.value = next;
+  if (next === 1 || next === 2) {
+    // 打开面板时先让输入框失焦，避免 focus 立刻把面板关掉
+    requestAnimationFrame(() => {
+      try { textareaRef.value?.blur?.(); } catch { /* ignore */ }
+    });
+  }
 }
 
 function insertEmoji(emoji) {
@@ -325,7 +338,6 @@ function insertEmoji(emoji) {
     autoSizeInput();
     const newPos = pos + emoji.length;
     ta.setSelectionRange(newPos, newPos);
-    ta.focus();
   });
 }
 
@@ -336,8 +348,39 @@ function deleteEmoji() {
   nextTick(autoSizeInput);
 }
 
+function sendStickerMsg(sticker) {
+  if (!sticker?.url) return;
+  if (!socket?.connected) {
+    showToast('网络连接中，请稍后再试');
+    return;
+  }
+  const url = sticker.url;
+  const isGif = sticker.kind === 'gif'
+    || /\.gif(\?|$)/i.test(String(url))
+    || String(url).startsWith('data:image/gif');
+  const content = isGif ? '[动画表情]' : '[图片]';
+  const emitSend = (mediaUrl) => {
+    socket.emit('private:send', { conversationId, content, mediaType: 'image', mediaUrl }, (res) => {
+      if (res?.error) showToast(res.error);
+      else playSendSound();
+    });
+  };
+  if (String(url).startsWith('data:')) {
+    api.uploadChatMedia(url, 'image')
+      .then((d) => {
+        if (!d?.url) throw new Error('发送失败');
+        emitSend(d.url);
+      })
+      .catch((e) => showToast(e.message || '发送失败'));
+  } else {
+    emitSend(url);
+  }
+  dockMode.value = 0;
+}
+
 function onInputFocus() {
   draftSync.setFocused(true);
+  // 仅在输入框真正获得焦点且面板已打开时收起（由用户点输入框触发）
   if (dockMode.value === 1 || dockMode.value === 2) dockMode.value = 0;
   setTimeout(() => scrollToBottom(false), 80);
 }
@@ -611,6 +654,17 @@ function doAction(kind) {
     }).then(() => showToast('已收藏，可在「我 → 收藏」查看')).catch((e) => showToast(e.message || '收藏失败'));
     return;
   }
+  if (kind === 'save-sticker') {
+    const item = stickerFromChatMessage(m);
+    if (!item) {
+      showToast('该消息不是可收藏的表情图片');
+      return;
+    }
+    const before = loadStickers().some((s) => s.url === item.url);
+    addSticker(item);
+    showToast(before ? '已在收藏表情中' : '已添加到收藏表情');
+    return;
+  }
   if (kind === 'delete') {
     messages.value = messages.value.filter((x) => x.id !== m.id);
   }
@@ -853,9 +907,11 @@ function toastMore(label) {
     return;
   }
   if (label === '清空聊天记录') {
-    if (!confirm('确定清空本机视角的聊天记录吗？（不删除服务器消息）')) return;
+    if (!confirm('确定清空该聊天记录？（仅自己视角，不删除对方消息）')) return;
     api.chatClear(conversationId).then(() => {
       messages.value = [];
+      noMoreHistory.value = true;
+      try { clearMsgCache(conversationId); } catch { /* ignore */ }
       persistMessages();
       toast('已清空聊天记录');
     }).catch((e) => toast(e.message || '清空失败'));
@@ -1593,15 +1649,12 @@ onBeforeUnmount(() => {
         <button v-if="draft.trim() && dockMode !== 3" class="send-btn" @click="send">发送</button>
       </div>
 
-      <div v-if="dockMode === 1" class="dock-panel emoji-panel">
-        <div class="emoji-grid">
-          <button v-for="(e, i) in emojiList" :key="i" class="emoji-item" @click="insertEmoji(e)">{{ e }}</button>
-          <button v-for="e in favEmojis" :key="'fav-'+e" class="emoji-item fav" @click="insertEmoji(e)">{{ e }}</button>
-        </div>
-        <div class="emoji-footer">
-          <button class="emoji-del" @click="deleteEmoji">删除</button>
-        </div>
-      </div>
+      <EmojiPicker
+        v-if="dockMode === 1"
+        @insert-emoji="insertEmoji"
+        @send-sticker="sendStickerMsg"
+        @delete="deleteEmoji"
+      />
 
       <div v-if="dockMode === 2" class="dock-panel plus-panel">
         <div class="plus-grid">
@@ -1647,6 +1700,9 @@ onBeforeUnmount(() => {
           </button>
           <button class="action-item" @click="doAction('favorite')">
             <span class="ai-ico">☆</span><span>收藏</span>
+          </button>
+          <button v-if="canSaveStickerFromMsg(actionMsg)" class="action-item" @click="doAction('save-sticker')">
+            <span class="ai-ico">💝</span><span>收藏表情</span>
           </button>
           <button v-if="actionMsg.content && actionMsg.mediaType !== 'image' && actionMsg.mediaType !== 'voice'" class="action-item" @click="doAction('quote')">
             <span class="ai-ico">❝</span><span>引用</span>

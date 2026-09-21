@@ -3,6 +3,7 @@ import { ref, onMounted, onBeforeUnmount, defineAsyncComponent, computed } from 
 import { getToken, setToken, api } from './api.js';
 import { createNavStack } from './nav-stack.js';
 import { toast } from './toast.js';
+import { clearMsgCache, removeHiddenChatId } from './chat-cache.js';
 import { notifyMessage } from './notify.js';
 import { getSocket, bindSocket, releaseSocket } from './socket-store.js';
 import ToastHost from './components/ToastHost.vue';
@@ -152,11 +153,25 @@ onBeforeUnmount(() => {
   try { unbindKick?.(); } catch { /* ignore */ }
 });
 
+function unhideChatPref(conversationId) {
+  if (!conversationId) return;
+  removeHiddenChatId(conversationId);
+  api.chatPref({ conversationId, extra: { hidden: false } }).catch(() => {});
+}
+
+function privateConvIdOf(a, b) {
+  const x = Number(a);
+  const y = Number(b);
+  if (!x || !y) return null;
+  return `pv_u_${Math.min(x, y)}_${Math.max(x, y)}`;
+}
+
 function openChat(chat = null) {
   nav.push();
   activeChat.value = chat;
   transitionName.value = 'page-push';
   view.value = 'chat';
+  unhideChatPref(chat?.conversationId || chat?.id || null);
 }
 
 function openPrivateChat(contact) {
@@ -182,6 +197,8 @@ function openPrivateChat(contact) {
       userId: Number.isInteger(uid) && uid > 0 ? uid : contact.userId,
       remark: contact.remark || null,
     };
+    const conv = privateConvIdOf(me.value?.id, uid);
+    unhideChatPref(conv);
   }
   transitionName.value = 'page-push';
   view.value = 'private-chat';
@@ -422,6 +439,7 @@ async function onChatInfoAction(action) {
     if (!confirm('确定清空该聊天记录？')) return;
     try {
       await api.chatClear(conv);
+      try { clearMsgCache(conv); } catch { /* ignore */ }
       toast('已清空');
       goBack();
     } catch (e) {
