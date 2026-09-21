@@ -5,7 +5,7 @@ import http from 'node:http';
 import express from 'express';
 import { Server } from 'socket.io';
 import { ROOT, stmts, db } from './db.js';
-import { register, login, verifyToken, publicUser, listAvatars, updateProfile, IMG_DIR, loginRateLimited, registerRateLimited, publicProfile, parseUserStatus } from './auth.js';
+import { register, login, verifyToken, publicUser, listAvatars, updateProfile, IMG_DIR, loginRateLimited, registerRateLimited, publicProfile, parseUserStatus, changePassword, keepOnlyCurrentSession } from './auth.js';
 import { initChat } from './chat.js';
 import { createEngine } from './ai/engine.js';
 import { isAiEnabled } from './ai/provider.js';
@@ -14,6 +14,7 @@ import { personas } from './ai/personas.js';
 import { createFriendsRouter } from './friends.js';
 import { createMomentsRouter } from './moments.js';
 import { createMediaApi } from './media-api.js';
+import { createLookApi } from './look-api.js';
 import { createMetaRouter, getUserSettings, setUserSettings } from './meta.js';
 import { seedGroups, listGroups, getGroup, groupConvId, DEFAULT_GROUP_KIND, setGroupNotice, createGroup, listGroupMembers, addGroupMembers, leaveGroup, removeGroupMember, renameGroup } from './groups.js';
 import { canAccessConversation } from './acl.js';
@@ -251,6 +252,16 @@ app.get('/api/users/resolve', (req, res) => {
   }
   if (!target) return res.status(404).json({ error: '未找到对应用户' });
   if (target.id === user.id) return res.status(400).json({ error: '不能添加自己' });
+  // 隐私：关闭「通过微信号搜索到我」
+  try {
+    const tset = getUserSettings(target.id);
+    if (tset.searchWxid === false && wxid) {
+      return res.status(403).json({ error: '对方设置了权限，无法通过微信号搜索到' });
+    }
+    if (tset.searchMobile === false && /^\d{6,}$/.test(code) && !code.startsWith('U') && !userId) {
+      return res.status(403).json({ error: '对方设置了权限，无法通过手机号搜索到' });
+    }
+  } catch { /* ignore */ }
   const fr = stmts.getFriend.get(user.id, target.id);
   res.json({
     user: {
@@ -308,7 +319,8 @@ app.post('/api/register', (req, res) => {
   const r = register(req.body?.nickname, req.body?.password, req.body?.avatar);
   if (r.error) return res.status(400).json({ error: r.error });
   log(`新用户注册: ${r.user.nickname}`);
-  res.json({ token: r.token, user: r.user, isNew: true });
+  kickOtherSessions(r.user?.id, r.kickedTokens);
+  res.json({ token: r.token, user: r.user, isNew: true, singleLogin: true });
 });
 
 app.post('/api/login', (req, res) => {
@@ -318,7 +330,9 @@ app.post('/api/login', (req, res) => {
   }
   const r = login(req.body?.nickname, req.body?.password);
   if (r.error) return res.status(400).json({ error: r.error });
-  res.json({ token: r.token, user: r.user, isNew: false });
+  log(`用户登录: ${r.user.nickname}（单端挤下 ${r.kickedTokens?.length || 0} 个旧会话）`);
+  kickOtherSessions(r.user?.id, r.kickedTokens);
+  res.json({ token: r.token, user: r.user, isNew: false, singleLogin: true });
 });
 
 app.get('/api/me', (req, res) => {
@@ -335,6 +349,27 @@ app.put('/api/me', (req, res) => {
   if (r.error) return res.status(400).json({ error: r.error });
   log(`用户更新资料: ${r.user.nickname}`);
   res.json({ user: r.user });
+});
+
+// 修改密码（成功后返回新 token，旧会话挤下线）
+app.put('/api/password', (req, res) => {
+  const session = verifyToken(req.get('Authorization')?.replace(/^Bearer /, ''));
+  if (!session) return res.status(401).json({ error: '未登录' });
+  const r = changePassword(session.id, req.body?.oldPassword, req.body?.newPassword);
+  if (r.error) return res.status(400).json({ error: r.error });
+  kickOtherSessions(session.id, r.kickedTokens);
+  log(`用户修改密码: ${r.user?.nickname || session.id}`);
+  res.json({ ok: true, token: r.token, user: r.user });
+});
+
+// 下线其它设备（保留当前登录）
+app.post('/api/auth/kick-others', (req, res) => {
+  const token = req.get('Authorization')?.replace(/^Bearer /, '');
+  const session = verifyToken(token);
+  if (!session) return res.status(401).json({ error: '未登录' });
+  const r = keepOnlyCurrentSession(session.id, token);
+  kickOtherSessions(session.id, r.kickedTokens);
+  res.json({ ok: true, kicked: r.kickedTokens.length });
 });
 
 app.get('/api/users/:id', (req, res) => {
@@ -404,6 +439,26 @@ app.put('/api/settings', (req, res) => {
 
 // 好友 + 会话元数据
 let ioRef = null;
+
+/** 单端登录：通知被挤掉的旧 Socket 下线 */
+function kickOtherSessions(userId, kickedTokens) {
+  if (!ioRef || !userId) return;
+  const tokens = (kickedTokens || []).filter(Boolean);
+  if (!tokens.length) return;
+  const kickSet = new Set(tokens);
+  ioRef.in(`user_${userId}`).fetchSockets().then((sockets) => {
+    for (const s of sockets) {
+      const tok = s.data?.token;
+      if (tok && kickSet.has(tok)) {
+        try {
+          s.emit('auth:kicked', { reason: 'login_elsewhere', message: '该账号已在其他设备登录' });
+        } catch { /* ignore */ }
+        try { s.disconnect(true); } catch { /* ignore */ }
+      }
+    }
+  }).catch(() => {});
+}
+
 const metaApi = createMetaRouter({
   verifyToken,
   notify: (userId, payload) => {
@@ -474,6 +529,35 @@ app.get('/api/music/list', mediaAuth, (req, res) => mediaApi.musicList(req, res)
 app.get('/api/music/stream/:source/:id', mediaAuth, (req, res) => mediaApi.musicStreamInfo(req, res));
 app.get('/api/music/proxy', mediaAuth, (req, res) => mediaApi.musicProxy(req, res));
 app.get('/api/videos/look', mediaAuth, (req, res) => mediaApi.lookFeed(req, res));
+app.get('/api/media/demo-catalog', mediaAuth, (req, res) => mediaApi.demoCatalog(req, res));
+
+// 看一看 UGC：上传视频 + 发布/删除（仅本地 /media 源）
+const lookApi = createLookApi();
+app.post('/api/look/upload', express.raw({ type: () => true, limit: '45mb' }), (req, res) => {
+  if (!requireUser(req, res)) return;
+  const ct = String(req.get('Content-Type') || '');
+  const kind = normalizeKind(req.query.kind || req.get('x-media-kind') || 'video');
+  let result;
+  if (ct.includes('application/json')) {
+    let body = req.body;
+    if (Buffer.isBuffer(body)) {
+      try { body = JSON.parse(body.toString('utf8')); } catch { body = {}; }
+    }
+    result = mediaFromBodyJson({ ...body, kind: body?.kind || kind });
+  } else if (ct.includes('multipart/form-data')) {
+    result = mediaFromMultipart(req.body, ct, kind);
+  } else if (Buffer.isBuffer(req.body) && req.body.length) {
+    result = mediaFromRaw(req.body, ct, kind, req.get('x-filename') || '');
+  } else {
+    result = { error: '不支持的上传格式' };
+  }
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.json(result);
+});
+app.get('/api/look/posts', mediaAuth, (req, res) => lookApi.list(req, res));
+app.post('/api/look/posts', mediaAuth, (req, res) => lookApi.create(req, res));
+app.post('/api/look/posts/delete', mediaAuth, (req, res) => lookApi.remove(req, res));
+app.delete('/api/look/posts/:id', mediaAuth, (req, res) => lookApi.remove(req, res));
 app.post('/api/moments', momentsApi.requireAuth, momentsApi.create);
 app.delete('/api/moments/:id', momentsApi.requireAuth, momentsApi.remove);
 app.post('/api/moments/like', momentsApi.requireAuth, momentsApi.like);

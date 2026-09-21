@@ -11,7 +11,7 @@ const props = defineProps({
   conversationId: { type: String, default: null },
   members: { type: Object, default: () => ({ onlineUsers: [], aiMembers: [], allUsers: [] }) },
 });
-const emit = defineEmits(['back', 'open-private', 'open-profile', 'left-group']);
+const emit = defineEmits(['back', 'open-private', 'open-profile', 'left-group', 'open-search']);
 
 const showQR = ref(false);
 const showInvite = ref(false);
@@ -25,7 +25,10 @@ const members = ref([]);
 const friends = ref([]);
 const aiList = ref([]);
 const picked = ref({});
-const prefs = ref({ muted: false, pinned: false, saved: false, folded: false, showNick: true });
+const prefs = ref({ muted: false, pinned: false, saved: false, folded: false, showNick: true, atRemind: true });
+const groupRemark = ref('');
+const editingRemark = ref(false);
+const remarkDraft = ref('');
 const busy = ref(false);
 
 function resolveGroupId() {
@@ -139,7 +142,9 @@ async function loadAll() {
         folded: Boolean(p.folded),
         saved: Boolean(extra.saved),
         showNick: extra.showNick !== false,
+        atRemind: extra.atRemind !== false,
       };
+      groupRemark.value = extra.groupRemark || '';
     } catch { /* ignore */ }
   }
 }
@@ -199,21 +204,65 @@ async function togglePref(key) {
 }
 
 async function toggleExtra(key) {
-  const nextVal = key === 'showNick' ? prefs.value.showNick === false : !prefs.value[key];
+  const nextVal = key === 'showNick' || key === 'atRemind'
+    ? prefs.value[key] === false
+    : !prefs.value[key];
   const next = { ...prefs.value, [key]: nextVal };
   prefs.value = next;
   try {
     await api.chatPref({
       conversationId: props.conversationId || 'default',
-      extra: { saved: !!next.saved, showNick: next.showNick !== false },
+      extra: {
+        saved: !!next.saved,
+        showNick: next.showNick !== false,
+        atRemind: next.atRemind !== false,
+        groupRemark: groupRemark.value || '',
+      },
     });
-    toast(key === 'saved'
-      ? (nextVal ? '已保存到通讯录' : '已从通讯录移除')
-      : (nextVal ? '已显示群成员昵称' : '已隐藏群成员昵称'));
+    const tips = {
+      saved: nextVal ? '已保存到通讯录' : '已从通讯录移除',
+      showNick: nextVal ? '已显示群成员昵称' : '已隐藏群成员昵称',
+      atRemind: nextVal ? '已开启@我提醒' : '已关闭@我提醒',
+    };
+    toast(tips[key] || '已保存');
   } catch (e) {
     prefs.value = { ...prefs.value, [key]: !nextVal };
     toast(e.message || '设置失败');
   }
+}
+
+async function saveRemark() {
+  const val = remarkDraft.value.trim().slice(0, 20);
+  groupRemark.value = val;
+  editingRemark.value = false;
+  try {
+    await api.chatPref({
+      conversationId: props.conversationId || 'default',
+      extra: {
+        saved: !!prefs.value.saved,
+        showNick: prefs.value.showNick !== false,
+        atRemind: prefs.value.atRemind !== false,
+        groupRemark: val,
+      },
+    });
+    toast(val ? `备注已设为「${val}」` : '已清除群备注');
+  } catch (e) {
+    toast(e.message || '保存失败');
+  }
+}
+
+function openGroupHistory() {
+  emit('open-search', {
+    conversationId: props.conversationId,
+    groupId: resolveGroupId(),
+    groupName: props.groupName,
+  });
+}
+
+function copyGroupId() {
+  const id = String(resolveGroupId() || '');
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(id).catch(() => {});
+  toast('已复制群 ID');
 }
 
 function togglePick(item) {
@@ -344,14 +393,15 @@ onMounted(loadAll);
           <span class="cell-label">群公告</span>
           <span class="arrow">›</span>
         </div>
-        <div class="cell-row" @click="toast('备注（演示）')">
+        <div class="cell-row" @click="editingRemark = true; remarkDraft = groupRemark">
           <span class="cell-label">备注</span>
+          <span class="cell-value">{{ groupRemark || '未设置' }}</span>
           <span class="arrow">›</span>
         </div>
       </section>
 
       <section class="card">
-        <div class="cell-row" @click="toast('查找聊天记录 · 请在聊天页搜索')">
+        <div class="cell-row" @click="openGroupHistory">
           <span class="cell-label">查找聊天记录</span>
           <span class="arrow">›</span>
         </div>
@@ -366,12 +416,9 @@ onMounted(loadAll);
           <span class="cell-label">折叠该聊天</span>
           <button class="switch" :class="{ on: prefs.folded }" type="button" aria-label="折叠该聊天"></button>
         </div>
-        <div class="cell-row indent" @click="toast('@我、@所有人和群公告 · 演示')">
-          <span class="cell-label">
-            以下消息仍通知
-            <span class="cell-sub">@我、@所有人和群公告</span>
-          </span>
-          <span class="arrow">›</span>
+        <div class="cell-row indent" @click="toggleExtra('atRemind')">
+          <span class="cell-label">@我、@所有人和群公告仍通知</span>
+          <button class="switch" :class="{ on: prefs.atRemind !== false }" type="button" aria-label="消息提醒"></button>
         </div>
         <div class="cell-row" @click="togglePref('pinned')">
           <span class="cell-label">置顶聊天</span>
@@ -439,6 +486,17 @@ onMounted(loadAll);
       </div>
     </div>
 
+    <div v-if="editingRemark" class="mask" @click.self="editingRemark = false">
+      <div class="dialog">
+        <div class="dialog-title">群备注</div>
+        <input v-model="remarkDraft" maxlength="20" placeholder="仅自己可见的群备注" />
+        <div class="dialog-actions">
+          <button type="button" @click="editingRemark = false">取消</button>
+          <button type="button" class="primary" @click="saveRemark">确定</button>
+        </div>
+      </div>
+    </div>
+
     <div v-if="showQR" class="mask" @click="showQR = false">
       <div class="qr-panel" @click.stop>
         <div class="qr-title">{{ groupName }}</div>
@@ -447,8 +505,11 @@ onMounted(loadAll);
             <div v-for="i in 49" :key="i" class="qr-dot" :class="{ on: ((i * 17 + (resolveGroupId()||1)) % 7) < 3 }"></div>
           </div>
         </div>
-        <p class="qr-tip">群 ID：{{ resolveGroupId() || '—' }} · 扫码加入（演示）</p>
-        <button class="qr-close" @click="showQR = false">完成</button>
+        <p class="qr-tip">群 ID：{{ resolveGroupId() || '—' }}</p>
+        <div class="dialog-actions" style="justify-content:center">
+          <button class="qr-close" type="button" @click="copyGroupId">复制群 ID</button>
+          <button class="qr-close" type="button" @click="showQR = false">完成</button>
+        </div>
       </div>
     </div>
   </div>

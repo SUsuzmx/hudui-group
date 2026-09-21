@@ -113,6 +113,22 @@ function createSession(userId) {
   return token;
 }
 
+/**
+ * 单端登录：创建新会话时挤掉该账号其它 token
+ * @returns {{ token: string, kickedTokens: string[] }}
+ */
+function createExclusiveSession(userId) {
+  const old = (stmts.listUserSessions.all(userId) || []).map((r) => r.token);
+  const token = createSession(userId);
+  try {
+    stmts.deleteUserSessionsExcept.run(userId, token);
+  } catch { /* ignore */ }
+  return {
+    token,
+    kickedTokens: old.filter((t) => t && t !== token),
+  };
+}
+
 function defaultWxid(nickname) {
   const slug = String(nickname || '')
     .toLowerCase()
@@ -152,7 +168,8 @@ export function register(nickname, password, avatar) {
       stmts.upsertChatRead.run(user.id, conv, gid, 0, now);
     }
   } catch { /* ignore */ }
-  return { token: createSession(user.id), user: publicUser(user), isNew: true };
+  const sess = createExclusiveSession(user.id);
+  return { token: sess.token, user: publicUser(user), isNew: true, kickedTokens: sess.kickedTokens };
 }
 
 export function login(nickname, password) {
@@ -160,7 +177,33 @@ export function login(nickname, password) {
   if (!user || !verifyPassword(password ?? '', user.password_hash)) {
     return { error: '昵称或密码不对' };
   }
-  return { token: createSession(user.id), user: publicUser(user), isNew: false };
+  const sess = createExclusiveSession(user.id);
+  return { token: sess.token, user: publicUser(user), isNew: false, kickedTokens: sess.kickedTokens };
+}
+
+/** 修改密码：校验旧密码后更新，并强制单端登录 */
+export function changePassword(userId, oldPassword, newPassword) {
+  const user = stmts.userById.get(Number(userId));
+  if (!user) return { error: '用户不存在' };
+  if (!verifyPassword(oldPassword ?? '', user.password_hash)) {
+    return { error: '原密码不正确' };
+  }
+  const next = String(newPassword ?? '');
+  if (next.length < 6 || next.length > 64) return { error: '新密码需要 6-64 位' };
+  if (/\s/.test(next)) return { error: '新密码不能包含空格' };
+  stmts.setUserPassword.run(hashPassword(next), user.id);
+  const sess = createExclusiveSession(user.id);
+  return { token: sess.token, user: publicUser(stmts.userById.get(user.id)), kickedTokens: sess.kickedTokens };
+}
+
+/** 保留当前 token，下线该账号其它登录 */
+export function keepOnlyCurrentSession(userId, currentToken) {
+  const tokens = (stmts.listUserSessions.all(Number(userId)) || []).map((r) => r.token);
+  const kicked = tokens.filter((t) => t && t !== currentToken);
+  try {
+    stmts.deleteUserSessionsExcept.run(Number(userId), currentToken);
+  } catch { /* ignore */ }
+  return { kickedTokens: kicked };
 }
 
 export function verifyToken(token) {

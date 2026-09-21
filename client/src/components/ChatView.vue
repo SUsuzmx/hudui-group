@@ -7,6 +7,7 @@ import { useVoicePlayer } from '../voice-player.js';
 import { ensureNotifyPermission, notifyMessage, playMsgSound, playSendSound } from '../notify.js';
 import { makeLocalMsg, patchLocalMsg, dropLocalEcho } from '../chat-send-status.js';
 import { toast } from '../toast.js';
+import { createDraftSync } from '../draft-sync.js';
 import { getSocket, bindSocket } from '../socket-store.js';
 import { saveMsgCache, loadMsgCache } from '../chat-cache.js';
 import UserAvatar from './UserAvatar.vue';
@@ -133,10 +134,12 @@ function seedSeenIds(rows) {
   }
 }
 
-function onCompositionStart() { composing = true; }
+function onCompositionStart() { composing = true; draftSync.setComposing(true); }
 function onCompositionEnd() {
   composing = false;
-  onDraftInput();
+  draftSync.setComposing(false);
+  draftSync.onLocalChange();
+  if (typeof onDraftInput === 'function') onDraftInput();
 }
 
 function onKeyDown(e) {
@@ -277,9 +280,9 @@ function onScroll() {
 function onDraftInput() {
   autoSizeInput();
   onDraftInputTyping();
+  draftSync.onLocalChange();
+  lastLocalDraft = draft.value.slice(0, 500);
   const val = draft.value;
-  lastLocalDraft = val.slice(0, 500);
-  api.chatPref({ conversationId: conversationId.value || 'default', draft: lastLocalDraft }).catch(() => {});
   const pos = textareaRef.value?.selectionStart ?? val.length;
   const beforeCursor = val.slice(0, pos);
   const atIdx = beforeCursor.lastIndexOf('@');
@@ -375,8 +378,12 @@ function deleteEmoji() {
 }
 
 function onInputFocus() {
+  draftSync.setFocused(true);
   if (dockMode.value === 1 || dockMode.value === 2) dockMode.value = 0;
   setTimeout(() => scrollToBottom(false), 80);
+}
+function onInputBlur() {
+  draftSync.setFocused(false);
 }
 
 function send() {
@@ -424,6 +431,7 @@ function send() {
   quoteMsg.value = null;
   showMentionPicker.value = false;
   dockMode.value = 0;
+  draftSync.clearLocal();
   stopTyping();
   api.chatPref({ conversationId: conversationId.value || 'default', draft: '' }).catch(() => {});
   api.chatRead(conversationId.value || 'default').catch(() => {});
@@ -1022,6 +1030,16 @@ let lastLocalDraft = '';
 const CONV_BG = ['#ededed', '#e7e7e7', '#dce9f7', '#e3f0e6', '#f3efe6', '#2a2a2a'];
 const convBg = ref('');
 
+const draftSync = createDraftSync({
+  getDraft: () => draft.value,
+  setDraft: (v) => { draft.value = v; },
+  getConversationId: () => conversationId.value || 'default',
+  saveDraft: (conv, text) => {
+    lastLocalDraft = text;
+    return api.chatPref({ conversationId: conv, draft: text });
+  },
+});
+
 function applyConvBgFromPref(d) {
   const key = Number(d?.pref?.bgKey);
   // 0/缺省跟随全局 --chat-bg；1-5 会话专属背景（作用于气泡所在聊天区）
@@ -1032,10 +1050,8 @@ function loadServerDraft() {
   const conv = conversationId.value || 'default';
   api.getChatPref(conv).then((d) => {
     const serverDraft = d?.pref?.draft || '';
-    if (serverDraft && !draft.value) {
-      draft.value = serverDraft;
-      lastLocalDraft = serverDraft;
-    }
+    draftSync.loadInitial(serverDraft);
+    lastLocalDraft = draft.value;
     applyConvBgFromPref(d);
   }).catch(() => {});
 }
@@ -1731,8 +1747,8 @@ onMounted(() => {
     if (p?.type !== 'draft') return;
     const conv = conversationId.value || 'default';
     if (p.conversationId !== conv) return;
-    if ((p.draft || '') === lastLocalDraft) return;
-    draft.value = p.draft || '';
+    draftSync.applyRemote(conv, p.draft || '');
+    lastLocalDraft = draft.value;
   };
 
   const onCallIncoming = (payload) => {
@@ -2034,6 +2050,7 @@ onBeforeUnmount(() => {
             @compositionend="onCompositionEnd"
             @input="onDraftInput"
             @focus="onInputFocus"
+            @blur="onInputBlur"
             @paste="onPasteChat"
           ></textarea>
           <button v-show="dockMode === 3" class="hold-talk" :class="{ cancel: recording && recCancel }" type="button" @pointerdown.prevent="startRecord" @pointermove="onRecordMove" @pointerup.prevent="stopRecord" @pointerleave="stopRecord">
@@ -2494,12 +2511,22 @@ onBeforeUnmount(() => {
 .msg-row {
   display: flex;
   gap: 10px;
-  margin-bottom: var(--wx-msg-gap, 12px);
+  margin-top: var(--wx-msg-gap, 12px);
+  margin-bottom: 0;
   align-items: flex-start;
 }
+/* 连续同人消息：保留可见间隙，避免气泡粘连 */
 .msg-row.cont {
-  margin-top: calc(var(--wx-msg-gap, 12px) * -1 + var(--wx-msg-gap-cont, 3px));
-  margin-bottom: var(--wx-msg-gap-cont, 3px);
+  margin-top: var(--wx-msg-gap-cont, 8px);
+}
+.chat-body > .msg-row:first-child {
+  margin-top: 0;
+}
+.chat-body > .time-divider + .msg-row,
+.chat-body > .sys-msg + .msg-row,
+.chat-body > .history-tip + .msg-row,
+.chat-body > .notice-bar + .msg-row {
+  margin-top: 0;
 }
 .msg-row.mine { flex-direction: row-reverse; }
 .msg-row.selected { background: rgba(7, 193, 96, 0.08); }

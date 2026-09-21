@@ -7,14 +7,20 @@ const MEDIA_DIR = path.join(ROOT, 'data', 'media');
 
 const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif']);
 const VOICE_EXT = new Set(['webm', 'ogg', 'mp3', 'wav', 'm4a', 'aac', 'x-m4a']);
+const VIDEO_EXT = new Set(['mp4', 'webm', 'mov', 'm4v']);
 const LIMITS = {
   image: 8 * 1024 * 1024,
   file: 8 * 1024 * 1024,
   voice: 5 * 1024 * 1024,
+  video: 40 * 1024 * 1024,
 };
 
 export function normalizeKind(kind) {
-  return kind === 'voice' ? 'voice' : kind === 'file' ? 'file' : 'image';
+  const k = String(kind || '').toLowerCase();
+  if (k === 'voice' || k === 'audio') return 'voice';
+  if (k === 'file') return 'file';
+  if (k === 'video' || k === 'movie') return 'video';
+  return 'image';
 }
 
 export function parseMultipartBuffer(buf, contentType) {
@@ -68,6 +74,10 @@ function extFromMime(mime, fallback = 'bin') {
     'audio/x-m4a': 'm4a',
     'audio/mp4': 'm4a',
     'audio/aac': 'aac',
+    'video/mp4': 'mp4',
+    'video/webm': 'webm',
+    'video/quicktime': 'mov',
+    'video/x-m4v': 'm4v',
   };
   return map[String(mime || '').toLowerCase()] || fallback;
 }
@@ -77,6 +87,10 @@ function sanitizeExt(ext, kind) {
   if (e === 'jpeg') e = 'jpg';
   if (kind === 'image' && !IMAGE_EXT.has(e)) return null;
   if (kind === 'voice' && !VOICE_EXT.has(e)) e = 'webm';
+  if (kind === 'video' && !VIDEO_EXT.has(e)) {
+    // 宽松：mov/m4v → mp4 容器不一定兼容，仍保留原扩展名校验失败则回 mp4
+    e = 'mp4';
+  }
   return e;
 }
 
@@ -84,7 +98,7 @@ export function saveMediaBuffer(buf, kind, ext) {
   const mediaKind = normalizeKind(kind);
   const max = LIMITS[mediaKind] || LIMITS.file;
   if (!buf || buf.length < 1 || buf.length > max) {
-    return { error: mediaKind === 'voice' ? '语音大小不合适' : '文件大小不合适' };
+    return { error: mediaKind === 'video' ? '视频大小不合适（上限 40MB）' : mediaKind === 'voice' ? '语音大小不合适' : '文件大小不合适' };
   }
   if (mediaKind === 'image' && buf.length < 20) {
     return { error: '图片大小不合适' };
@@ -112,6 +126,11 @@ export function mediaFromBodyJson(body) {
     if (!m) return { error: '文件格式不支持' };
     return saveMediaBuffer(Buffer.from(m[2], 'base64'), 'file', extFromMime(m[1], 'bin'));
   }
+  if (mediaKind === 'video') {
+    const m = b64.match(/^data:video\/([a-z0-9.+-]+)(?:;[^,]*)?;base64,(.+)$/i);
+    if (!m) return { error: '视频格式不支持' };
+    return saveMediaBuffer(Buffer.from(m[2], 'base64'), 'video', extFromMime(`video/${m[1]}`, 'mp4'));
+  }
   const m = b64.match(/^data:audio\/([a-z0-9.+-]+)(?:;[^,]*)?;base64,(.+)$/i);
   if (!m) return { error: '语音格式不支持' };
   const ext = m[1].toLowerCase().split('+')[0].replace('mpeg', 'mp3');
@@ -126,13 +145,19 @@ export function mediaFromMultipart(buf, contentType, queryKind) {
   if (!filePart?.data?.length) return { error: '缺少上传文件' };
   const mime = filePart.contentType || '';
   let ext = path.extname(filePart.filename || '').replace('.', '').toLowerCase();
-  if (!ext) ext = extFromMime(mime, mediaKind === 'image' ? 'png' : mediaKind === 'voice' ? 'webm' : 'bin');
+  if (!ext) {
+    const def = mediaKind === 'image' ? 'png' : mediaKind === 'voice' ? 'webm' : mediaKind === 'video' ? 'mp4' : 'bin';
+    ext = extFromMime(mime, def);
+  }
   return saveMediaBuffer(filePart.data, mediaKind, ext);
 }
 
 export function mediaFromRaw(buf, contentType, kind, filename) {
   const mediaKind = normalizeKind(kind);
   let ext = path.extname(String(filename || '')).replace('.', '').toLowerCase();
-  if (!ext) ext = extFromMime(contentType, mediaKind === 'image' ? 'png' : mediaKind === 'voice' ? 'webm' : 'bin');
+  if (!ext) {
+    const def = mediaKind === 'image' ? 'png' : mediaKind === 'voice' ? 'webm' : mediaKind === 'video' ? 'mp4' : 'bin';
+    ext = extFromMime(contentType, def);
+  }
   return saveMediaBuffer(buf, mediaKind, ext);
 }

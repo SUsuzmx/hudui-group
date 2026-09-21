@@ -6,6 +6,7 @@ import { useVoicePlayer } from '../voice-player.js';
 import { ensureNotifyPermission, notifyMessage, playMsgSound, playSendSound } from '../notify.js';
 import { makeLocalMsg, patchLocalMsg, dropLocalEcho } from '../chat-send-status.js';
 import { toast } from '../toast.js';
+import { createDraftSync } from '../draft-sync.js';
 import { getSocket, bindSocket } from '../socket-store.js';
 import { saveMsgCache, loadMsgCache } from '../chat-cache.js';
 import UserAvatar from './UserAvatar.vue';
@@ -74,6 +75,16 @@ const showImagePreview = ref(false);
 let lastLocalDraft = '';
 const CONV_BG = ['#ededed', '#e7e7e7', '#dce9f7', '#e3f0e6', '#f3efe6', '#2a2a2a'];
 
+const draftSync = createDraftSync({
+  getDraft: () => draft.value,
+  setDraft: (v) => { draft.value = v; },
+  getConversationId: () => conversationId,
+  saveDraft: (conv, text) => {
+    lastLocalDraft = text;
+    return api.chatPref({ conversationId: conv, draft: text });
+  },
+});
+
 function applyConvBgFromPref(d) {
   const key = Number(d?.pref?.bgKey);
   // 0/缺省跟随全局 --chat-bg；1-5 会话专属背景
@@ -100,10 +111,11 @@ function parseMergeItems(m) {
   });
 }
 
-function onCompositionStart() { composing = true; }
+function onCompositionStart() { composing = true; draftSync.setComposing(true); }
 function onCompositionEnd() {
   composing = false;
-  autoSizeInput();
+  draftSync.setComposing(false);
+  draftSync.onLocalChange();
 }
 function onKeyDown(e) {
   if (e.key !== 'Enter' || e.shiftKey) return;
@@ -325,6 +337,7 @@ function deleteEmoji() {
 }
 
 function onInputFocus() {
+  draftSync.setFocused(true);
   if (dockMode.value === 1 || dockMode.value === 2) dockMode.value = 0;
   setTimeout(() => scrollToBottom(false), 80);
 }
@@ -376,6 +389,7 @@ function send() {
   draft.value = '';
   quoteMsg.value = null;
   dockMode.value = 0;
+  draftSync.clearLocal();
   stopTyping();
   api.chatPref({ conversationId, draft: '' }).catch(() => {});
   api.privateRead(conversationId).then((d) => {
@@ -820,6 +834,31 @@ function toastMore(label) {
     showSearch.value = true;
     searchQuery.value = '';
     searchResults.value = [];
+    return;
+  }
+  if (label === '消息免打扰') {
+    const next = !chatPrefs.value.muted;
+    chatPrefs.value = { ...chatPrefs.value, muted: next };
+    api.chatPref({
+      conversationId,
+      muted: next,
+      pinned: chatPrefs.value.pinned,
+      folded: chatPrefs.value.folded,
+    }).then(() => {
+      toast(next ? '已开启消息免打扰' : '已关闭消息免打扰');
+    }).catch((e) => {
+      chatPrefs.value = { ...chatPrefs.value, muted: !next };
+      toast(e.message || '设置失败');
+    });
+    return;
+  }
+  if (label === '清空聊天记录') {
+    if (!confirm('确定清空本机视角的聊天记录吗？（不删除服务器消息）')) return;
+    api.chatClear(conversationId).then(() => {
+      messages.value = [];
+      persistMessages();
+      toast('已清空聊天记录');
+    }).catch((e) => toast(e.message || '清空失败'));
   }
 }
 
@@ -1221,7 +1260,8 @@ onMounted(() => {
   });
   api.getChatPref(conversationId).then((d) => {
     const s = d?.pref?.draft || '';
-    if (s && !draft.value) draft.value = s;
+    draftSync.loadInitial(s);
+    lastLocalDraft = draft.value;
     applyConvBgFromPref(d);
     let remind = false;
     try { remind = localStorage.getItem(`wx_remind_${conversationId}`) === '1'; } catch { /* ignore */ }
@@ -1307,7 +1347,8 @@ onMounted(() => {
   };
   const onChatSync = (p) => {
     if (p?.type === 'draft' && p.conversationId === conversationId) {
-      draft.value = p.draft || '';
+      draftSync.applyRemote(conversationId, p.draft || '');
+      lastLocalDraft = draft.value;
     }
   };
 
@@ -1525,8 +1566,9 @@ onBeforeUnmount(() => {
             @keydown="onKeyDown"
             @compositionstart="onCompositionStart"
             @compositionend="onCompositionEnd"
-            @input="autoSizeInput(); onInputTyping(); api.chatPref({ conversationId, draft: draft.slice(0, 500) })"
+            @input="autoSizeInput(); onInputTyping(); draftSync.onLocalChange()"
             @focus="onInputFocus"
+            @blur="draftSync.setFocused(false)"
             @paste="onPasteChat"
           ></textarea>
           <button
@@ -1776,12 +1818,21 @@ onBeforeUnmount(() => {
 .msg-row {
   display: flex;
   gap: 10px;
-  margin-bottom: var(--wx-msg-gap, 12px);
+  margin-top: var(--wx-msg-gap, 12px);
+  margin-bottom: 0;
   align-items: flex-start;
 }
+/* 连续同人消息：保留可见间隙，避免气泡粘连 */
 .msg-row.cont {
-  margin-top: calc(var(--wx-msg-gap, 12px) * -1 + var(--wx-msg-gap-cont, 3px));
-  margin-bottom: var(--wx-msg-gap-cont, 3px);
+  margin-top: var(--wx-msg-gap-cont, 8px);
+}
+.chat-body > .msg-row:first-child {
+  margin-top: 0;
+}
+.chat-body > .time-divider + .msg-row,
+.chat-body > .sys-msg + .msg-row,
+.chat-body > .history-tip + .msg-row {
+  margin-top: 0;
 }
 .msg-row.mine { flex-direction: row-reverse; }
 .avatar-spacer { width: var(--wx-avatar-chat, 40px); flex-shrink: 0; }

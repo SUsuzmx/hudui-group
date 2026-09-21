@@ -36,6 +36,12 @@ function ensureAudio() {
   });
   audio.addEventListener('error', () => {
     state.playing = false;
+    const src = String(audio.src || '');
+    if (src.includes('/media/demo/') || (state.current && state.current.source === 'local')) {
+      toast('本地音频加载失败');
+    } else {
+      toast('媒体源加载失败，可切换「本地」曲目');
+    }
   });
   return audio;
 }
@@ -56,13 +62,21 @@ async function playTrack(track, retry = 0) {
   state.playing = false;
   state.ready = true;
   booting = true;
-  const proxyUrl = api.musicProxyUrl(track.source, track.id);
-  el.src = proxyUrl;
+
+  const isLocal = track.source === 'local' || String(track.url || '').startsWith('/media/');
+  const src = isLocal ? track.url : api.musicProxyUrl(track.source, track.id);
+  el.src = src;
   try {
     await el.play();
     state.playing = true;
     booting = false;
   } catch {
+    if (isLocal) {
+      state.playing = false;
+      booting = false;
+      toast('本地音频播放失败');
+      return;
+    }
     try {
       const info = await api.musicStreamInfo(track.source, track.id);
       if (!info?.url) throw new Error(info?.error || '无播放地址');
@@ -73,12 +87,14 @@ async function playTrack(track, retry = 0) {
     } catch (err) {
       state.playing = false;
       booting = false;
-      toast(err.message || '无法播放该歌曲');
+      toast(err.message || '无法播放该歌曲（网络源国内可能不可用）');
       if (retry < 2 && state.tracks.length > 1) {
         const i = indexOfCurrent();
         const n = state.tracks[(i + 1 + state.tracks.length) % state.tracks.length];
         if (n && !(n.id === track.id && n.source === track.source)) {
-          setTimeout(() => playTrack(n, retry + 1), 400);
+          // 优先跳到本地曲目
+          const localNext = state.tracks.find((t) => t.source === 'local' && t.id !== track.id);
+          setTimeout(() => playTrack(localNext || n, retry + 1), 400);
         }
       }
     }

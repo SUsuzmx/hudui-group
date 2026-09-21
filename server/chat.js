@@ -216,9 +216,11 @@ export function initChat(io, { config, engine }) {
   }
 
   io.use((socket, next) => {
-    const user = verifyToken(socket.handshake.auth?.token);
+    const token = socket.handshake.auth?.token;
+    const user = verifyToken(token);
     if (!user) return next(new Error('登录已过期, 请重新登录'));
     socket.data.user = user;
+    socket.data.token = token || null;
     next();
   });
 

@@ -11,6 +11,21 @@ const loading = ref(false);
 const q = ref('');
 const detail = ref(null); // 打开的公众号
 const detailTab = ref('home'); // home | history
+const oaArticle = ref(null);
+const oaService = ref(null);
+
+function openArticle(a) {
+  oaArticle.value = a;
+}
+
+function openOaService(kind) {
+  const map = {
+    files: { title: '资料', body: `「${detail.value?.name || '公众号'}」官方资料页占位，可接入运营方配置。` },
+    events: { title: '活动', body: '暂无进行中的活动。活动配置可在服务端运营后台扩展。' },
+    msg: { title: '留言', body: '向公众号留言功能接口已预留（POST /api/official/:id/message）。' },
+  };
+  oaService.value = map[kind] || { title: '服务', body: '' };
+}
 
 const filtered = computed(() => {
   const k = q.value.trim().toLowerCase();
@@ -185,24 +200,42 @@ onMounted(load);
           <section class="oa-card">
             <div class="oa-card-title">常用服务</div>
             <div class="oa-service-grid">
-              <button class="oa-svc" type="button" @click="toast('服务演示中')">📁 资料</button>
-              <button class="oa-svc" type="button" @click="toast('服务演示中')">🗓 活动</button>
-              <button class="oa-svc" type="button" @click="toast('服务演示中')">💬 留言</button>
+              <button class="oa-svc" type="button" @click="openOaService('files')">📁 资料</button>
+              <button class="oa-svc" type="button" @click="openOaService('events')">🗓 活动</button>
+              <button class="oa-svc" type="button" @click="openOaService('msg')">💬 留言</button>
               <button class="oa-svc" type="button" @click="detailTab = 'history'">📰 历史消息</button>
             </div>
           </section>
-          <p class="oa-hint">公众号为界面壳演示，消息与服务为占位内容。</p>
         </template>
         <template v-else>
-          <div v-for="a in demoArticles" :key="a.id" class="oa-article" @click="toast('文章详情演示中')">
+          <div v-for="a in demoArticles" :key="a.id" class="oa-article" @click="openArticle(a)">
             <div class="oa-art-title">{{ a.title }}</div>
             <div class="oa-art-digest">{{ a.digest }}</div>
             <div class="oa-art-sub">{{ a.sub }}</div>
           </div>
-          <p class="oa-hint">仅展示演示消息列表</p>
         </template>
       </main>
     </template>
+
+    <div v-if="oaArticle" class="mask" @click.self="oaArticle = null">
+      <div class="dialog oa-dialog">
+        <div class="dialog-title">{{ oaArticle.title }}</div>
+        <div class="oa-art-sub" style="margin:8px 0 12px">{{ oaArticle.sub }}</div>
+        <div class="oa-card-body">{{ oaArticle.digest }}</div>
+        <div class="dialog-actions">
+          <button type="button" class="ok" @click="oaArticle = null">关闭</button>
+        </div>
+      </div>
+    </div>
+    <div v-if="oaService" class="mask" @click.self="oaService = null">
+      <div class="dialog oa-dialog">
+        <div class="dialog-title">{{ oaService.title }}</div>
+        <div class="oa-card-body" style="margin-top:8px">{{ oaService.body }}</div>
+        <div class="dialog-actions">
+          <button type="button" class="ok" @click="oaService = null">知道了</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 

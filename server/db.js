@@ -240,6 +240,19 @@ try { db.exec(`
   )
 `); } catch { /* ignore */ }
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_wallet_tx_user ON wallet_tx(user_id, id DESC)'); } catch { /* ignore */ }
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS look_posts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    title      TEXT NOT NULL DEFAULT '',
+    media_url  TEXT NOT NULL,
+    cover_url  TEXT NOT NULL DEFAULT '',
+    author     TEXT NOT NULL DEFAULT '',
+    likes      INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  )
+`); } catch { /* ignore */ }
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_look_posts_user ON look_posts(user_id, id DESC)'); } catch { /* ignore */ }
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_messages_conv_id ON messages(conversation_id, id DESC)'); } catch { /* ignore */ }
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)'); } catch { /* ignore */ }
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_friend_requests_to ON friend_requests(to_id, status)'); } catch { /* ignore */ }
@@ -251,6 +264,7 @@ export const stmts = {
   userByName: db.prepare('SELECT * FROM users WHERE nickname = ? COLLATE NOCASE'),
   userById: db.prepare('SELECT * FROM users WHERE id = ?'),
   setUserAvatar: db.prepare('UPDATE users SET avatar = ? WHERE id = ?'),
+  setUserPassword: db.prepare('UPDATE users SET password_hash = ? WHERE id = ?'),
   setUserProfile: db.prepare(
     'UPDATE users SET nickname = ?, avatar = ?, wxid = ?, region = ?, signature = ? WHERE id = ?'
   ),
@@ -264,6 +278,9 @@ export const stmts = {
      FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?`
   ),
   deleteSession: db.prepare('DELETE FROM sessions WHERE token = ?'),
+  listUserSessions: db.prepare('SELECT token FROM sessions WHERE user_id = ?'),
+  deleteUserSessionsExcept: db.prepare('DELETE FROM sessions WHERE user_id = ? AND token != ?'),
+  deleteUserSessions: db.prepare('DELETE FROM sessions WHERE user_id = ?'),
   insertMessage: db.prepare(
     'INSERT INTO messages (sender_type, sender_id, sender_name, avatar, content, created_at, media_type, media_url, conversation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ),
@@ -617,4 +634,15 @@ export const stmts = {
   claimTransfer: db.prepare(
     "UPDATE transfers SET status='claimed', to_user_id=? WHERE id=? AND status='pending' AND from_id != ?"
   ),
+  // 看一看 UGC
+  insertLookPost: db.prepare(
+    'INSERT INTO look_posts (user_id, title, media_url, cover_url, author, likes, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)'
+  ),
+  listLookPosts: db.prepare(`
+    SELECT lp.*, u.nickname as uname, u.avatar as uavatar, u.avatar_color as ucolor
+    FROM look_posts lp LEFT JOIN users u ON u.id = lp.user_id
+    ORDER BY lp.id DESC LIMIT 80
+  `),
+  getLookPost: db.prepare('SELECT * FROM look_posts WHERE id = ?'),
+  deleteLookPost: db.prepare('DELETE FROM look_posts WHERE id = ? AND user_id = ?'),
 };

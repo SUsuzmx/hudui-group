@@ -10,8 +10,9 @@ const emit = defineEmits(['back']);
 const tracks = ref([]);
 const loading = ref(false);
 const query = ref('');
-const source = ref('all');
+const source = ref('local');
 const showDetail = ref(false);
+const listNote = ref('');
 
 const current = computed(() => musicPlayer.state.current);
 const playing = computed(() => musicPlayer.state.playing);
@@ -25,10 +26,14 @@ async function load(resetQuery) {
     const q = typeof resetQuery === 'string' ? resetQuery.trim() : query.value.trim();
     const data = await api.musicList({ q, source: source.value, limit: 30 });
     tracks.value = data.tracks || [];
+    listNote.value = (data.notes || []).join('；') || (data.source === 'local' ? '本地素材 · 国内可播' : '');
     musicPlayer.setTracks(tracks.value);
-    if (!tracks.value.length) toast('暂无歌曲，换个关键词试试');
+    if (!tracks.value.length) {
+      toast(data.source === 'local' ? '本地 demo 素材未就绪' : '暂无歌曲，可切回「本地」');
+    }
   } catch (e) {
     toast(e.message || '加载失败');
+    listNote.value = '';
   } finally {
     loading.value = false;
   }
@@ -90,10 +95,12 @@ onMounted(() => {
     </div>
 
     <div class="source-tabs">
+      <button type="button" :class="{ on: source === 'local' }" @click="setSource('local')">本地</button>
       <button type="button" :class="{ on: source === 'all' }" @click="setSource('all')">全部</button>
       <button type="button" :class="{ on: source === 'audius' }" @click="setSource('audius')">免费热榜</button>
       <button type="button" :class="{ on: source === 'netease' }" @click="setSource('netease')">中文热歌</button>
     </div>
+    <div v-if="listNote" class="list-note">{{ listNote }}</div>
 
     <main class="list scroll-y" :class="{ 'has-player': !!current }">
       <div v-if="loading" class="empty">加载中…</div>
@@ -115,8 +122,10 @@ onMounted(() => {
           <div class="sub">
             {{ t.artist }}
             <template v-if="t.duration"> · {{ fmtAudioTime(t.duration) }}</template>
-            <template v-if="t.source === 'netease'"> · 网易云</template>
-            <template v-else> · Audius</template>
+            <template v-if="t.source === 'local'"> · 本地</template>
+            <template v-else-if="t.source === 'netease'"> · 网易云</template>
+            <template v-else-if="t.source === 'audius'"> · Audius</template>
+            <template v-else> · {{ t.source || '网络' }}</template>
           </div>
         </div>
         <div class="play-ico">{{ isActive(t) && playing ? '❚❚' : '▶' }}</div>
@@ -214,7 +223,15 @@ onMounted(() => {
   display: flex;
   gap: 8px;
   padding: 0 12px 8px;
+  background: var(--bg);
+  overflow-x: auto;
 }
+.list-note {
+  padding: 0 16px 8px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.list-note:empty { display: none; }
 .source-tabs button {
   min-height: 32px;
   padding: 0 12px;

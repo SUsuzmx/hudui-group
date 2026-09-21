@@ -18,6 +18,15 @@ export function getSocket() {
       timeout: 8000,
       autoConnect: true,
     });
+    socket.on('auth:kicked', () => {
+      try { releaseSocket(); } catch { /* ignore */ }
+    });
+    socket.on('connect_error', (err) => {
+      const msg = String(err?.message || '');
+      if (msg.includes('登录') || msg.includes('expired') || msg.includes('unauthorized')) {
+        try { releaseSocket(); } catch { /* ignore */ }
+      }
+    });
   } else if (socket.disconnected) {
     socket.auth = { token };
     socket.connect();

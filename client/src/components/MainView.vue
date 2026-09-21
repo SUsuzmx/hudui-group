@@ -5,6 +5,7 @@ import { getToken, api } from '../api.js';
 import UserAvatar from './UserAvatar.vue';
 import WxIcons from './WxIcons.vue';
 import { pinyinInitial, groupContactsByLetter } from '../pinyin-initial.js';
+import { isStarFriend, refreshStarFriends, starRevision } from '../profile-extras.js';
 import { statusGradient, statusIconPath, statusRemaining } from '../status-bg.js';
 import { loadProfileExtras, saveProfileExtras } from '../profile-extras.js';
 import { toast } from '../toast.js';
@@ -165,7 +166,11 @@ const navTitleText = computed(() => {
   return tab.value === 'contacts' ? '通讯录' : tab.value === 'discover' ? '发现' : '我';
 });
 const showNav = computed(() => tab.value !== 'me');
-const starFriends = computed(() => contactPeople().filter((p) => p.isFriend && !p.isAI).slice(0, 4));
+// 星标朋友：仅显示手动设为星标的好友，新增好友默认不展示
+const starFriends = computed(() => {
+  starRevision.value;
+  return contactPeople().filter((p) => !p.isAI && isStarFriend(p.userId ?? p.id));
+});
 const contactLetterIds = computed(() => {
   const map = {};
   for (const g of contactGroups.value) {
@@ -282,6 +287,7 @@ async function loadFriends() {
 }
 
 onMounted(async () => {
+  refreshStarFriends();
   loadContactTags();
   loadChats();
   loadFriends();
@@ -342,10 +348,11 @@ function switchTab(next) {
   if (cur) scrollPos.value[tab.value] = cur.scrollTop;
   tab.value = next;
   try { localStorage.setItem(TAB_KEY, next); } catch { /* ignore */ }
-  // 进通讯录时刷新好友/标签，保证黑名单与标签筛选同步
+  // 进通讯录时刷新好友/标签/星标，保证展示与设置同步
   if (next === 'contacts') {
     loadFriends();
     loadContactTags();
+    refreshStarFriends();
   }
   requestAnimationFrame(() => {
     const el = scrollElOf(next);

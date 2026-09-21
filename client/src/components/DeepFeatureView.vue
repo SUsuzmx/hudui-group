@@ -282,8 +282,53 @@ function openGroup(g) {
   });
 }
 
+const lookWatched = ref(false);
+const lookFaved = ref(false);
+const channelPlayer = ref(null);
+const chTab = ref('all');
+
 function openChannel(v) {
-  toast(`播放：${v.title}`);
+  channelPlayer.value = v || null;
+}
+
+const channelList = computed(() => {
+  const all = videos.value || [];
+  if (chTab.value === 'follow') return all.slice(0, 2);
+  return all;
+});
+
+async function actionLook(kind) {
+  const t = lookItem.value || {};
+  const title = t.title || '看一看';
+  const body = t.body || '';
+  try {
+    if (kind === 'watch') {
+      lookWatched.value = !lookWatched.value;
+      if (lookWatched.value) {
+        await api.addFavorite({ kind: 'text', content: `[在看] ${title}`, fromName: t.sub || '看一看' });
+        toast('已标记在看');
+      } else {
+        toast('已取消在看');
+      }
+      return;
+    }
+    if (kind === 'fav') {
+      lookFaved.value = !lookFaved.value;
+      if (lookFaved.value) {
+        await api.addFavorite({ kind: 'text', content: `${title}\n${body}`, fromName: t.sub || '看一看' });
+        toast('已收藏');
+      } else {
+        toast('已取消收藏');
+      }
+      return;
+    }
+    if (kind === 'share') {
+      await api.addFavorite({ kind: 'text', content: `[分享] ${title}`, fromName: props.me?.nickname || '我' });
+      toast('已生成分享卡片');
+    }
+  } catch (e) {
+    toast(e.message || '操作失败');
+  }
 }
 </script>
 
@@ -307,41 +352,37 @@ function openChannel(v) {
           <p>在本项目中，你可以通过 AI 人设、多模型故障转移与朋友圈互动，体验接近真人的群聊节奏。后续可扩展「在看」关系链与文章评论。</p>
         </div>
         <div class="article-actions">
-          <button type="button" @click="toast('已标记在看')">👀 在看</button>
-          <button type="button" @click="toast('已收藏')">⭐ 收藏</button>
-          <button type="button" @click="toast('已分享到聊天')">↗ 分享</button>
+          <button type="button" :class="{ on: lookWatched }" @click="actionLook('watch')">👀 {{ lookWatched ? '已在看' : '在看' }}</button>
+          <button type="button" :class="{ on: lookFaved }" @click="actionLook('fav')">⭐ {{ lookFaved ? '已收藏' : '收藏' }}</button>
+          <button type="button" @click="actionLook('share')">↗ 分享</button>
         </div>
       </article>
 
       <!-- 视频号（全屏流） -->
       <div v-else-if="type === 'videoChannels'" class="channels-page">
         <div class="ch-tabs">
-          <button class="ch-tab on" type="button">推荐</button>
-          <button class="ch-tab" type="button" @click="toast('关注流演示中')">关注</button>
-          <button class="ch-tab" type="button" @click="toast('同城演示中')">同城</button>
+          <button class="ch-tab" :class="{ on: chTab === 'all' }" type="button" @click="chTab = 'all'">推荐</button>
+          <button class="ch-tab" :class="{ on: chTab === 'follow' }" type="button" @click="chTab = 'follow'">关注</button>
+          <button class="ch-tab" :class="{ on: chTab === 'local' }" type="button" @click="chTab = 'local'">同城</button>
         </div>
-        <div class="ch-feed scroll-y">
-          <button
-            v-for="(v, i) in videos"
-            :key="v.id"
-            class="ch-card"
-            type="button"
-            @click="openChannel(v)"
-          >
-            <div class="ch-cover">
-              <span class="ch-emoji">{{ v.cover }}</span>
-              <div class="ch-play">▶</div>
-              <div class="ch-bottom">
-                <div class="ch-author">@{{ v.author }}</div>
-                <div class="ch-title">{{ v.title }}</div>
-              </div>
-            </div>
-            <div class="ch-side">
-              <div class="ch-like">❤️<span>{{ v.likes }}</span></div>
-              <div class="ch-cmt">💬<span>{{ 3 + i }}</span></div>
-              <div class="ch-share">↗</div>
-            </div>
+        <div class="video-grid">
+          <button v-for="v in channelList" :key="v.id" class="video-card" type="button" @click="openChannel(v)">
+            <div class="video-cover">{{ v.cover }}</div>
+            <div class="video-title">{{ v.title }}</div>
+            <div class="video-meta">{{ v.author }} · ❤️ {{ v.likes }}</div>
           </button>
+        </div>
+        <div v-if="channelPlayer" class="game-layer">
+          <div class="game-layer-bar">
+            <button class="game-layer-back" type="button" @click="channelPlayer = null">‹ 返回</button>
+            <span class="game-layer-title">{{ channelPlayer.title }}</span>
+          </div>
+          <div class="game-layer-frame" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#fff">
+            <div style="font-size:56px">{{ channelPlayer.cover }}</div>
+            <div>{{ channelPlayer.title }}</div>
+            <div style="opacity:.75;font-size:13px">{{ channelPlayer.author }} · ❤️ {{ channelPlayer.likes }}</div>
+            <div style="opacity:.55;font-size:12px">演示播放页（预留视频流接口）</div>
+          </div>
         </div>
       </div>
 
@@ -730,6 +771,14 @@ function openChannel(v) {
 .article-actions button {
   flex: 1; min-height: 40px; border: 0; border-radius: 8px; background: var(--divider-soft); color: var(--text); font-size: 13px;
 }
+.article-actions button:active { opacity: 0.85; }
+.article-actions button.on { background: #07c160; color: #fff; }
+.ch-tabs { display: flex; gap: 8px; padding: 10px 12px 0; }
+.ch-tab {
+  border: 0; border-radius: 16px; min-height: 30px; padding: 0 12px;
+  background: var(--divider-soft); color: var(--text-2); font-size: 13px;
+}
+.ch-tab.on { background: #07c160; color: #fff; }
 
 .video-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px; }
 .video-card {

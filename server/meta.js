@@ -40,6 +40,7 @@ export function setUserSettings(userId, patch) {
   const ALLOW = new Set([
     'allowFriendReq', 'searchMobile', 'searchWxid', 'addByGroup', 'addByQr', 'addByCard',
     'strangerSee10', 'momentsPublic', 'multiLogin', 'autoDownload', 'voiceInput', 'haptic',
+    'voiceLock', 'msgPreview',
   ]);
   const clean = {};
   for (const [k, v] of Object.entries(next)) {

@@ -67,6 +67,17 @@ async function request(path, { method = 'POST', body, query } = {}) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    try {
+      const had = getToken();
+      setToken(null);
+      if (had && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('hudui:logout', {
+          detail: { reason: data?.reason || 'session_expired' },
+        }));
+      }
+    } catch { /* ignore */ }
+  }
   if (!res.ok) throw new Error(data.error || '网络异常, 请稍后再试');
   return data;
 }
@@ -202,13 +213,33 @@ export const api = {
   settings: () => request('/api/settings', { method: 'GET' }),
   updateSettings: (settings) => request('/api/settings', { method: 'PUT', body: { settings } }),
 
-  // 发现页: 听一听 / 看一看
-  musicList: ({ q = '', source = 'all', limit = 30 } = {}) =>
+  // 发现页: 听一听 / 看一看（本地优先）
+  musicList: ({ q = '', source = 'local', limit = 30 } = {}) =>
     request('/api/music/list', { method: 'GET', query: { q, source, limit } }),
   musicStreamInfo: (source, id) =>
     request(`/api/music/stream/${encodeURIComponent(source)}/${encodeURIComponent(id)}`, { method: 'GET' }),
   musicProxyUrl: (source, id) =>
     `/api/music/proxy?source=${encodeURIComponent(source)}&id=${encodeURIComponent(id)}`,
-  lookFeed: ({ refresh = false } = {}) =>
-    request('/api/videos/look', { method: 'GET', query: refresh ? { refresh: '1' } : {} }),
+  lookFeed: ({ refresh = false, source = 'local' } = {}) =>
+    request('/api/videos/look', {
+      method: 'GET',
+      query: {
+        ...(refresh ? { refresh: '1' } : {}),
+        source,
+      },
+    }),
+  lookPosts: () => request('/api/look/posts', { method: 'GET' }),
+  lookPublish: (payload) => request('/api/look/posts', { body: payload }),
+  lookDelete: (id) => request(`/api/look/posts/${Number(id)}`, { method: 'DELETE' }),
+  lookUploadVideo: async (file, onProgress) => {
+    if (!file) throw new Error('请选择视频文件');
+    return uploadWithProgress('/api/look/upload', file, {
+      kind: 'video',
+      filename: file.name || 'video.mp4',
+      onProgress,
+    });
+  },
+  changePassword: (oldPassword, newPassword) =>
+    request('/api/password', { method: 'PUT', body: { oldPassword, newPassword } }),
+  kickOtherDevices: () => request('/api/auth/kick-others', { method: 'POST', body: {} }),
 };

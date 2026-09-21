@@ -5,12 +5,16 @@ import { api } from '../api.js';
 import { toast } from '../toast.js';
 
 onMounted(async () => {
+  estimateCache();
   try {
     const d = await api.settings();
     const s = d?.settings || {};
     if (Object.keys(s).length) {
       privacy.value = { ...privacy.value, ...s };
       general.value = { ...general.value, ...s };
+      voiceLock.value = s.voiceLock !== false && general.value.voiceLock !== false
+        ? Boolean(s.voiceLock ?? general.value.voiceLock)
+        : Boolean(s.voiceLock);
       saveJson('wx_privacy', privacy.value);
       saveJson('wx_general', general.value);
     }
@@ -151,6 +155,121 @@ async function removeFromBlack(f) {
   } catch (e) { toast(e.message || '操作失败'); }
 }
 
+// ── 账号与安全 ──
+const voiceLock = ref(localStorage.getItem('wx_voice_lock') !== '0');
+const showPwd = ref(false);
+const pwdOld = ref('');
+const pwdNew = ref('');
+const pwdBusy = ref(false);
+const cacheSize = ref('—');
+
+function toggleVoiceLock() {
+  voiceLock.value = !voiceLock.value;
+  try { localStorage.setItem('wx_voice_lock', voiceLock.value ? '1' : '0'); } catch { /* ignore */ }
+  api.updateSettings({ voiceLock: voiceLock.value }).catch(() => {});
+  toast(voiceLock.value ? '声音锁已开启' : '声音锁已关闭');
+}
+
+async function kickOthers() {
+  try {
+    const d = await api.kickOtherDevices();
+    const n = Number(d?.kicked || 0);
+    toast(n > 0 ? `已下线其它 ${n} 台设备` : '当前仅本设备在线');
+  } catch (e) {
+    toast(e.message || '操作失败');
+  }
+}
+
+async function submitPassword() {
+  if (pwdBusy.value) return;
+  if (pwdNew.value.length < 6) { toast('新密码至少 6 位'); return; }
+  pwdBusy.value = true;
+  try {
+    const d = await api.changePassword(pwdOld.value, pwdNew.value);
+    if (d?.token) {
+      try { localStorage.setItem('hudui_token', d.token); } catch { /* ignore */ }
+    }
+    showPwd.value = false;
+    pwdOld.value = '';
+    pwdNew.value = '';
+    toast('密码已修改，其它设备已下线');
+  } catch (e) {
+    toast(e.message || '修改失败');
+  } finally {
+    pwdBusy.value = false;
+  }
+}
+
+// ── 存储空间 ──
+function estimateCache() {
+  let bytes = 0;
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i) || '';
+      const v = localStorage.getItem(k) || '';
+      bytes += (k.length + v.length) * 2;
+    }
+  } catch { bytes = 0; }
+  cacheSize.value = bytes > 1024 * 1024
+    ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function clearLocalCache() {
+  const removed = [];
+  try {
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k) keys.push(k);
+    }
+    for (const k of keys) {
+      // 清理会话/消息缓存，保留登录与偏好设置
+      if (
+        k.startsWith('hudui_msg_')
+        || k.startsWith('hudui_chat_')
+        || k.startsWith('wx_friend_extras')
+        || k.startsWith('wx_profile_extras')
+      ) {
+        localStorage.removeItem(k);
+        removed.push(k);
+      }
+    }
+  } catch { /* ignore */ }
+  estimateCache();
+  toast(removed.length ? `已清理 ${removed.length} 项本地缓存` : '没有可清理的缓存');
+}
+
+function exportChatBackup() {
+  const prefs = {};
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i) || '';
+      if (k.startsWith('wx_') || k.startsWith('hudui_')) {
+        if (k === 'hudui_token') continue;
+        prefs[k] = localStorage.getItem(k);
+      }
+    }
+  } catch { /* ignore */ }
+  const payload = {
+    app: 'hudui-group',
+    exportedAt: new Date().toISOString(),
+    account: { nickname: props.me?.nickname || '', wxid: props.me?.wxid || '' },
+    privacy: privacy.value,
+    general: general.value,
+    localPrefs: prefs,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `hudui-backup-${Date.now()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  toast('备份文件已下载');
+}
+
 const titles = [
   '账号与安全', '新消息通知', '聊天', '通用', '隐私', '通讯录黑名单', '存储空间', '关于微信',
 ];
@@ -218,12 +337,23 @@ onMounted(() => { appearance.value = getAppearance(); });
     <main v-else-if="section === 'security'" class="content scroll-y">
       <section class="card">
         <div class="row"><span class="label">微信号</span><span class="value">{{ me.wxid || '未设置' }}</span></div>
-        <div class="row"><span class="label">微信密码</span><span class="value">已设置</span><span class="arrow">›</span></div>
-        <div class="row"><span class="label">声音锁</span><span class="value">未开启</span><span class="arrow">›</span></div>
-        <div class="row"><span class="label">登录设备管理</span><span class="value">2 台</span><span class="arrow">›</span></div>
-        <div class="row"><span class="label">更多安全设置</span><span class="arrow">›</span></div>
+        <button class="row" type="button" @click="showPwd = true">
+          <span class="label">微信密码</span>
+          <span class="value">修改</span>
+          <span class="arrow">›</span>
+        </button>
+        <div class="row">
+          <span class="label">声音锁</span>
+          <button class="switch" :class="{ on: voiceLock }" @click="toggleVoiceLock"></button>
+        </div>
+        <button class="row" type="button" @click="kickOthers">
+          <span class="label">登录设备管理</span>
+          <span class="value">单端 · 下线其它</span>
+          <span class="arrow">›</span>
+        </button>
+        <div class="row"><span class="label">更多安全设置</span><span class="value">单端登录已强制</span></div>
       </section>
-      <p class="hint">演示环境：密码/设备管理为界面对齐，不接入真实风控。</p>
+      <p class="hint">修改密码后其它设备会自动下线；也可手动「下线其它设备」。</p>
     </main>
 
     <main v-else-if="section === 'privacy'" class="content scroll-y">
@@ -247,13 +377,14 @@ onMounted(() => { appearance.value = getAppearance(); });
         <div class="row"><span class="label">朋友圈更新提醒</span>
           <button class="switch" :class="{ on: privacy.momentsPublic }" @click="togglePrivacy('momentsPublic')"></button></div>
       </section>
-      <p class="hint">开关保存在本机，用于完整复刻隐私设置页结构。</p>
+      <p class="hint">隐私开关已同步服务端：关闭「通过微信号搜索到我」后，扫码/搜索将无法找到你。</p>
     </main>
 
     <main v-else-if="section === 'general'" class="content scroll-y">
       <section class="card">
-        <div class="row"><span class="label">多端同时登录</span>
-          <button class="switch" :class="{ on: general.multiLogin }" @click="toggleGeneral('multiLogin')"></button></div>
+        <div class="row"><span class="label">单端登录</span>
+          <button class="switch on" type="button" disabled title="同一账号仅允许一处登录"></button>
+        </div>
         <div class="row"><span class="label">自动下载微信安装包</span>
           <button class="switch" :class="{ on: general.autoDownload }" @click="toggleGeneral('autoDownload')"></button></div>
         <div class="row"><span class="label">语音输入</span>
@@ -289,11 +420,19 @@ onMounted(() => { appearance.value = getAppearance(); });
 
     <main v-else-if="section === 'storage'" class="content scroll-y">
       <section class="card">
-        <div class="row"><span class="label">缓存</span><span class="value">演示 · 本地媒体</span></div>
-        <div class="row"><span class="label">聊天记录</span><span class="value">SQLite 持久化</span></div>
-        <div class="row"><span class="label">清理缓存</span><span class="value">需在服务器清理 data/media</span></div>
+        <div class="row"><span class="label">本地缓存</span><span class="value">{{ cacheSize }}</span></div>
+        <div class="row"><span class="label">聊天记录</span><span class="value">服务端 SQLite 保留</span></div>
+        <button class="row" type="button" @click="clearLocalCache">
+          <span class="label">清理本地缓存</span>
+          <span class="value">消息缓存 / 表情</span>
+          <span class="arrow">›</span>
+        </button>
+        <button class="row" type="button" @click="estimateCache">
+          <span class="label">重新计算缓存</span>
+          <span class="arrow">›</span>
+        </button>
       </section>
-      <p class="hint">Web 演示环境不在浏览器端做深度存储清理。</p>
+      <p class="hint">清理后重新进会话会从服务器拉取历史消息。</p>
     </main>
 
     <main v-else-if="section === 'notify'" class="content scroll-y">
@@ -335,13 +474,13 @@ onMounted(() => { appearance.value = getAppearance(); });
         </div>
         <div class="row">
           <span class="label">拍一拍</span>
-          <span class="value">双击头像</span>
+          <span class="value">双击对方头像</span>
         </div>
-        <div class="row">
+        <button class="row" type="button" @click="exportChatBackup">
           <span class="label">聊天记录迁移与备份</span>
-          <span class="value">演示</span>
+          <span class="value">导出本地配置</span>
           <span class="arrow">›</span>
-        </div>
+        </button>
       </section>
     </main>
 
@@ -395,6 +534,20 @@ onMounted(() => { appearance.value = getAppearance(); });
         <div class="row"><span class="label">技术栈</span><span class="value">Vue3 + Express + SQLite</span></div>
       </section>
     </main>
+
+    <div v-if="showPwd" class="mask" @click.self="showPwd = false">
+      <div class="dialog">
+        <div class="dialog-title">修改微信密码</div>
+        <input v-model="pwdOld" type="password" placeholder="原密码" autocomplete="current-password" />
+        <input v-model="pwdNew" type="password" placeholder="新密码（至少 6 位）" autocomplete="new-password" />
+        <div class="dialog-actions">
+          <button type="button" @click="showPwd = false">取消</button>
+          <button type="button" class="ok" :disabled="pwdBusy || !pwdOld || pwdNew.length < 6" @click="submitPassword">
+            {{ pwdBusy ? '提交中…' : '确定' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -452,4 +605,27 @@ onMounted(() => { appearance.value = getAppearance(); });
 .link-btn {
   border: 0; background: transparent; color: #07c160; font-size: 14px; min-height: 40px; padding: 0 8px;
 }
+.mask {
+  position: absolute; inset: 0; z-index: 60; background: var(--mask);
+  display: flex; align-items: center; justify-content: center;
+}
+.dialog {
+  width: min(320px, 88%);
+  background: var(--white);
+  border-radius: 12px;
+  padding: 16px;
+}
+.dialog-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; text-align: center; color: var(--text); }
+.dialog input {
+  width: 100%; min-height: 40px; margin-bottom: 10px;
+  border: 0; border-radius: 8px; background: var(--divider-soft);
+  padding: 0 12px; font-size: 15px; color: var(--text);
+}
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.dialog-actions button {
+  border: 0; background: transparent; color: var(--text-2);
+  min-height: 36px; padding: 0 12px; font-size: 14px;
+}
+.dialog-actions button.ok { color: #07c160; font-weight: 600; }
+.dialog-actions button.ok:disabled { opacity: 0.45; }
 </style>

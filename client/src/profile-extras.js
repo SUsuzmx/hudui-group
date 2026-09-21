@@ -1,6 +1,58 @@
+import { ref } from 'vue';
+
 // 个人/好友资料扩展字段（手机号、拍一拍、铃声等演示数据，本地持久化）
 const PROFILE_KEY = 'wx_profile_extras_v1';
 const FRIEND_KEY = 'wx_friend_extras_v1';
+const STAR_KEY_PREFIX = 'wx_star_friend_';
+
+/** 星标朋友变更时递增，供通讯录 computed 依赖刷新 */
+export const starRevision = ref(0);
+
+// 星标朋友：默认不星标，仅在「朋友设置」里手动打开
+const starState = {
+  ids: new Set(),
+  loaded: false,
+};
+
+function loadStarsFromStorage() {
+  const next = new Set();
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(STAR_KEY_PREFIX) && localStorage.getItem(k) === '1') {
+        const id = Number(k.slice(STAR_KEY_PREFIX.length));
+        if (Number.isFinite(id) && id > 0) next.add(id);
+      }
+    }
+  } catch { /* ignore */ }
+  starState.ids = next;
+  starState.loaded = true;
+}
+
+export function refreshStarFriends() {
+  loadStarsFromStorage();
+  starRevision.value += 1;
+  return starState.ids;
+}
+
+export function isStarFriend(userId) {
+  if (!starState.loaded) loadStarsFromStorage();
+  const id = Number(userId);
+  return Number.isFinite(id) && id > 0 && starState.ids.has(id);
+}
+
+export function setStarFriend(userId, on) {
+  const id = Number(userId);
+  if (!Number.isFinite(id) || id <= 0) return false;
+  try {
+    localStorage.setItem(STAR_KEY_PREFIX + id, on ? '1' : '0');
+  } catch { /* ignore */ }
+  if (on) starState.ids.add(id);
+  else starState.ids.delete(id);
+  starState.loaded = true;
+  starRevision.value += 1;
+  return Boolean(on);
+}
 
 function readMap(key) {
   try {
@@ -51,6 +103,7 @@ const FRIEND_DEFAULTS = {
   memo: '',
   photos: [],
   source: '通过搜索账号添加',
+  starred: false,
 };
 
 export function loadFriendExtras(friendId) {

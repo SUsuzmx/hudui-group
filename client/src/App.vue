@@ -1,9 +1,10 @@
 <script setup>
-import { ref, onMounted, defineAsyncComponent, computed } from 'vue';
+import { ref, onMounted, onBeforeUnmount, defineAsyncComponent, computed } from 'vue';
 import { getToken, setToken, api } from './api.js';
 import { createNavStack } from './nav-stack.js';
 import { toast } from './toast.js';
 import { notifyMessage } from './notify.js';
+import { getSocket, bindSocket, releaseSocket } from './socket-store.js';
 import ToastHost from './components/ToastHost.vue';
 import LoginView from './components/LoginView.vue';
 import MainView from './components/MainView.vue';
@@ -17,6 +18,7 @@ const EditProfileView = defineAsyncComponent(() => import('./components/EditProf
 const AddFriendView = defineAsyncComponent(() => import('./components/AddFriendView.vue'));
 const FriendProfileView = defineAsyncComponent(() => import('./components/FriendProfileView.vue'));
 const FriendDetailView = defineAsyncComponent(() => import('./components/FriendDetailView.vue'));
+const FriendSettingsView = defineAsyncComponent(() => import('./components/FriendSettingsView.vue'));
 const CreateGroupView = defineAsyncComponent(() => import('./components/CreateGroupView.vue'));
 const SettingsView = defineAsyncComponent(() => import('./components/SettingsView.vue'));
 const QrCodeView = defineAsyncComponent(() => import('./components/QrCodeView.vue'));
@@ -91,9 +93,40 @@ function handleAuthed({ token, user, isNew }) {
   transitionName.value = 'page-fade';
   nav.reset('main');
   view.value = 'main';
+  try {
+    unbindKick?.();
+    getSocket();
+    unbindKick = bindSocket('auth:kicked', onAuthKicked);
+  } catch { /* ignore */ }
+}
+
+let unbindKick = null;
+
+function forceLogout(reason = 'session') {
+  setToken(null);
+  me.value = null;
+  callSession.value = null;
+  try { releaseSocket(); } catch { /* ignore */ }
+  nav.reset('login');
+  transitionName.value = 'page-fade';
+  view.value = 'login';
+  if (reason === 'login_elsewhere') {
+    toast('该账号已在其他地方登录');
+  } else if (reason === 'session_expired') {
+    toast('登录已失效，请重新登录');
+  }
+}
+
+function onAuthKicked() {
+  forceLogout('login_elsewhere');
+}
+
+function onWindowLogout(e) {
+  forceLogout(e?.detail?.reason || 'session');
 }
 
 onMounted(async () => {
+  window.addEventListener('hudui:logout', onWindowLogout);
   if (!getToken()) {
     view.value = 'login';
     return;
@@ -103,10 +136,20 @@ onMounted(async () => {
     me.value = user;
     nav.reset('main');
     view.value = 'main';
+    // 单端登录：被挤下线时立刻回登录页
+    try {
+      getSocket();
+      unbindKick = bindSocket('auth:kicked', onAuthKicked);
+    } catch { /* ignore */ }
   } catch {
     setToken(null);
     view.value = 'login';
   }
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('hudui:logout', onWindowLogout);
+  try { unbindKick?.(); } catch { /* ignore */ }
 });
 
 function openChat(chat = null) {
@@ -160,11 +203,7 @@ function openUserMoments(user) {
 }
 
 function handleLogout() {
-  setToken(null);
-  me.value = null;
-  nav.reset('login');
-  transitionName.value = 'page-fade';
-  view.value = 'login';
+  forceLogout('manual');
 }
 
 function onGroupMembers(data) {
@@ -298,6 +337,21 @@ function onFeatureBack(payload) {
     view.value = 'sub';
     return;
   }
+  if (payload.then === 'open-search') {
+    const info = payload.payload || {};
+    goBack();
+    setTimeout(() => {
+      openChat({
+        conversationId: info.conversationId,
+        groupId: info.groupId,
+        kind: 'group',
+        name: info.groupName || 'WeChat',
+        isDefault: false,
+      });
+      setTimeout(() => { pendingSearch.value = true; }, 240);
+    }, 60);
+    return;
+  }
   subView.value = { type: 'stub', title: payload.title || '功能页' };
   transitionName.value = 'page-push';
   view.value = 'sub';
@@ -406,6 +460,11 @@ async function onChatInfoAction(action) {
     }
     return;
   }
+  if (action === 'appearance' || action === 'bg-settings') {
+    openSub({ type: 'settings' });
+    setTimeout(() => { /* 设置页内选择聊天背景 */ }, 0);
+    return;
+  }
   if (action === 'bg') {
     const presets = ['默认', '浅灰', '淡蓝', '淡绿', '米色', '深色'];
     const pick = prompt('选择当前聊天背景：\n' + presets.map((s, i) => `${i + 1} ${s}`).join('\n') + '\n（输入数字）', '1');
@@ -493,6 +552,7 @@ async function onChatInfoToggle({ key, value }) {
         @open-private="openChatFromFriend"
         @open-profile="openProfileFromChat"
         @left-group="onLeftGroup"
+        @open-search="(p) => onFeatureBack({ then: 'open-search', payload: p })"
       />
       <GlobalSearchView
         v-else-if="view === 'sub' && subView?.type === 'global-search'"
@@ -537,6 +597,18 @@ async function onChatInfoToggle({ key, value }) {
         @open-video-call="openVideoCall"
         @open-moments="openMomentsForUser"
         @open-detail="(u) => openSub({ type: 'friend-detail', user: u })"
+        @open-settings="(u) => openSub({ type: 'friend-settings', user: u })"
+        @open-channel="(p) => openSub({ type: 'deep-feature', feature: 'videoChannels', title: p?.channel?.name || '视频号', payload: p })"
+      />
+      <FriendSettingsView
+        v-else-if="view === 'sub' && subView?.type === 'friend-settings'"
+        key="friend-settings"
+        :user="subView.user"
+        :me="me"
+        @back="goBack"
+        @open-detail="(u) => openSub({ type: 'friend-detail', user: u })"
+        @deleted="(u) => { goBack(); }"
+        @updated="() => {}"
       />
       <FriendDetailView
         v-else-if="view === 'sub' && subView?.type === 'friend-detail'"
@@ -593,6 +665,7 @@ async function onChatInfoToggle({ key, value }) {
       <LookView
         v-else-if="view === 'sub' && subView?.type === 'look'"
         key="look"
+        :me="me"
         @back="goBack"
       />
       <DeepFeatureView

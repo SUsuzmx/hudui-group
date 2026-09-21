@@ -6,7 +6,11 @@ export function uploadWithProgress(path, blob, { kind = 'image', filename = '', 
   const token = localStorage.getItem('hudui_token');
   return new Promise((resolve, reject) => {
     const fd = new FormData();
-    const name = filename || (kind === 'voice' ? 'voice.webm' : kind === 'file' ? 'file.bin' : 'image.jpg');
+    const name = filename
+      || (kind === 'voice' ? 'voice.webm'
+        : kind === 'video' ? 'video.mp4'
+          : kind === 'file' ? 'file.bin'
+            : 'image.jpg');
     fd.append('kind', kind || 'image');
     fd.append('file', blob, name);
 
