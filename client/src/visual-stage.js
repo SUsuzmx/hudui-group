@@ -403,14 +403,17 @@ export function setVisualPreset(index) {
   const next = Number.isFinite(id) && id >= 0 && id <= 12 ? id : DEFAULT_PRESET_ID;
   try {
     const apply = window.setPreset;
+    // 音域回响 Topo/WE 会关粒子并依赖完整 Mineradio 壳；嵌入版会透出微信主页
+    const blocked = (next === 7 || next === 8) && !(window.MineradioSonicWorkshop && typeof window.MineradioSonicWorkshop.isActive === 'function' && window.MineradioSonicWorkshop.isActive(window.fx));
+    const target = blocked ? 0 : next;
     if (typeof apply === 'function') {
-      apply(next, { silent: true });
+      apply(target, { silent: true });
     } else {
-      if (window.fx) window.fx.preset = next;
-      if (window.uniforms?.uPreset) window.uniforms.uPreset.value = next;
+      if (window.fx) window.fx.preset = target;
+      if (window.uniforms?.uPreset) window.uniforms.uPreset.value = target;
       if (typeof window.syncFxUniforms === 'function') window.syncFxUniforms();
       if (typeof window.applyPresetOrbitBaseline === 'function') {
-        window.applyPresetOrbitBaseline(next, { syncCurrent: true });
+        window.applyPresetOrbitBaseline(target, { syncCurrent: true });
       }
     }
     const o = window.orbit;
@@ -418,8 +421,8 @@ export function setVisualPreset(index) {
   } catch (e) { console.warn('[visual] setPreset', e); }
   forceParticleVisible();
   adoptRendererCanvas();
-  savePresetId(next);
-  return next;
+  savePresetId(target);
+  return target;
 }
 
 /** 进详情页自动应用默认/上次预设，避免每次手动点 */
