@@ -83,7 +83,18 @@ function playTrack(t) {
   musicPlayer.playTrack(t);
 }
 
-function onSeek(e) { musicPlayer.seek(e.target.value); }
+const seeking = ref(false);
+const seekPct = ref(0);
+const displayPct = computed(() => {
+  if (seeking.value) return seekPct.value;
+  return duration.value ? Math.min(100, Math.max(0, (progress.value / duration.value) * 100)) : 0;
+});
+function onSeekInput(e) { seeking.value = true; seekPct.value = Number(e.target.value); }
+function onSeekDone(e) {
+  const d = duration.value || 0;
+  if (d) musicPlayer.seek((Number(e.target.value) / 100) * d);
+  seeking.value = false;
+}
 function setSource(s) { source.value = s; load(query.value || ''); }
 function isActive(t) { return current.value && current.value.id === t.id && current.value.source === t.source; }
 function openDetail() { if (current.value) showDetail.value = true; }
@@ -266,27 +277,39 @@ onMounted(() => {
     </main>
 
     <footer v-if="current && !showDetail" class="player">
-      <div class="player-progress" @click.stop>
-        <input type="range" min="0" :max="duration || 0" step="0.1" :value="progress" @input="onSeek" />
-      </div>
-      <div class="player-row">
-        <button class="player-open" type="button" @click="openDetail">
-          <div class="player-cover">
-            <img v-if="current.cover" :src="current.cover" alt="" loading="lazy" />
-            <span v-else>♪</span>
+      <div class="player-console" @click.stop>
+        <div class="progress-bar" :class="{ 'is-dragging': seeking }">
+          <div class="progress-fill" :style="{ width: displayPct + '%' }"></div>
+          <div class="progress-thumb" :style="{ left: displayPct + '%' }"></div>
+          <input class="progress-input" type="range" min="0" max="100" step="0.1" :value="displayPct" @input="onSeekInput" @change="onSeekDone" />
+        </div>
+        <div class="controls">
+          <div class="control-cluster actions">
+            <button type="button" class="control-track" @click="openDetail">
+              <div class="control-cover" :class="{ 'cover-empty': !current.cover }">
+                <img v-if="current.cover" :src="current.cover" alt="" />
+              </div>
+              <div class="control-meta">
+                <div class="control-title">{{ current.title }}</div>
+                <div class="control-artist">{{ current.artist }} · {{ current.source === 'netease' ? '网易云' : 'QQ' }}</div>
+              </div>
+            </button>
           </div>
-          <div class="player-info">
-            <div class="player-title">{{ current.title }}</div>
-            <div class="player-sub">{{ current.artist }} · {{ current.source === 'netease' ? '网易云' : 'QQ音乐' }}</div>
+          <div class="control-cluster transport">
+            <button type="button" class="ctrl-btn" title="上一首" @click="musicPlayer.prevTrack()">
+              <svg width="18" height="18" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+            </button>
+            <button type="button" class="ctrl-btn play-btn" :class="{ playing }" title="播放/暂停" @click="musicPlayer.togglePlay()">
+              <svg v-if="!playing" width="22" height="22" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+              <svg v-else width="22" height="22" fill="currentColor" viewBox="0 0 24 24"><path d="M7 5h3v14H7zm7 0h3v14h-3z"/></svg>
+            </button>
+            <button type="button" class="ctrl-btn" title="下一首" @click="musicPlayer.nextTrack()">
+              <svg width="18" height="18" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+            </button>
           </div>
-        </button>
-        <div class="player-ctrl" @click.stop>
-          <span class="player-time">{{ fmtAudioTime(progress) }}</span>
-          <button type="button" :title="modeLabel" @click="musicPlayer.cyclePlayMode()">{{ modeIcon }}</button>
-          <button type="button" title="上一首" @click="musicPlayer.prevTrack()">‹‹</button>
-          <button type="button" class="main" :title="playing ? '暂停' : '播放'" @click="musicPlayer.togglePlay()">{{ playing ? '❚❚' : '▶' }}</button>
-          <button type="button" title="下一首" @click="musicPlayer.nextTrack()">››</button>
-          <button type="button" title="打开视觉舞台" @click="openDetail">✦</button>
+          <div class="control-cluster modes">
+            <div class="time-display">{{ fmtAudioTime(progress) }} / {{ fmtAudioTime(duration || current.duration) }}</div>
+          </div>
         </div>
       </div>
     </footer>
@@ -376,8 +399,8 @@ onMounted(() => {
 .login-actions { margin-top: 10px; display: flex; gap: 8px; justify-content: flex-end; }
 .login-actions button { min-height: 36px; padding: 0 14px; border-radius: 8px; border: 0; font-size: 13px; background: var(--divider-soft); color: var(--text); }
 .login-actions button:last-child { background: var(--green); color: #fff; }
-.player-open .player-cover { width: 48px !important; height: 48px !important; max-width: 48px; max-height: 48px; border-radius: 8px; overflow: hidden; flex-shrink: 0; background: var(--bg); }
-.player-open .player-cover img { width: 48px !important; height: 48px !important; max-width: 48px; max-height: 48px; object-fit: cover; display: block; }
+
+
 .player-open .player-info { min-width: 0; overflow: hidden; }
 .player-row { display: flex !important; align-items: center; gap: 8px; min-height: 56px; }
 </style>
