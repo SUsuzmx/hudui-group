@@ -31,21 +31,50 @@ const playing = computed(() => musicPlayer.state.playing);
 const progress = computed(() => musicPlayer.state.progress);
 const duration = computed(() => musicPlayer.state.duration);
 const tracksList = computed(() => (tracks.value.length ? tracks.value : musicPlayer.state.tracks));
+const modeIcon = computed(() => ({ order: '→', one: '①', shuffle: '🔀' }[musicPlayer.state.playMode] || '→'));
+const modeLabel = computed(() => ({ order: '顺序播放', one: '单曲循环', shuffle: '随机播放' }[musicPlayer.state.playMode] || '顺序播放'));
+
+let loadSeq = 0;
+
+async function fetchList(q, src) {
+  let data = await api.musicList({ q, source: src, limit: 30 });
+  let list = data.tracks || [];
+  // QQ 首查偶发只回几首，换关键词再试一次
+  if (src === 'qq' && list.length > 0 && list.length < 8) {
+    const alt = q === '热歌' ? '热门' : (q ? q + ' 歌曲' : '新歌');
+    try {
+      const data2 = await api.musicList({ q: alt, source: src, limit: 30 });
+      if ((data2.tracks || []).length > list.length) {
+        data = data2;
+        list = data2.tracks || [];
+      }
+    } catch { /* keep first */ }
+  }
+  return { data, list };
+}
 
 async function load(resetQuery) {
+  const seq = ++loadSeq;
+  const q = typeof resetQuery === 'string' ? resetQuery.trim() : query.value.trim();
+  if (typeof resetQuery === 'string') query.value = resetQuery;
   loading.value = true;
   try {
-    const q = typeof resetQuery === 'string' ? resetQuery.trim() : query.value.trim();
-    const data = await api.musicList({ q, source: source.value, limit: 30 });
-    tracks.value = data.tracks || [];
+    const { data, list } = await fetchList(q, source.value);
+    if (seq !== loadSeq) return;
+    tracks.value = list;
     listNote.value = (data.notes || []).join('；') || (source.value === 'qq' ? 'QQ音乐 · 默认音源' : '网易云音乐');
     musicPlayer.setTracks(tracks.value);
     if (!tracks.value.length) toast(listNote.value || '暂无歌曲');
   } catch (e) {
+    if (seq !== loadSeq) return;
     toast(e.message || '加载失败');
   } finally {
-    loading.value = false;
+    if (seq === loadSeq) loading.value = false;
   }
+}
+
+function runSearch() {
+  load(query.value || '');
 }
 
 function playTrack(t) {
@@ -55,7 +84,7 @@ function playTrack(t) {
 }
 
 function onSeek(e) { musicPlayer.seek(e.target.value); }
-function setSource(s) { source.value = s; load(''); }
+function setSource(s) { source.value = s; load(query.value || ''); }
 function isActive(t) { return current.value && current.value.id === t.id && current.value.source === t.source; }
 function openDetail() { if (current.value) showDetail.value = true; }
 
@@ -167,8 +196,8 @@ onMounted(() => {
     </header>
 
     <div class="search-bar">
-      <input v-model="query" type="search" placeholder="搜索歌曲 / 音乐人" @keydown.enter="load(query)" />
-      <button type="button" @click="load(query)">搜索</button>
+      <input v-model="query" type="search" placeholder="搜索歌曲 / 音乐人" @keydown.enter="runSearch()" />
+      <button type="button" @click="runSearch()">搜索</button>
     </div>
 
     <div class="source-tabs">
@@ -244,6 +273,7 @@ onMounted(() => {
             <div class="player-sub">{{ current.artist }} · 点击查看详情</div>
           </div>
           <div class="player-ctrl" @click.stop>
+            <button type="button" :title="modeLabel" @click="musicPlayer.cyclePlayMode()">{{ modeIcon }}</button>
             <button type="button" @click="musicPlayer.prevTrack()">‹‹</button>
             <button type="button" class="main" @click="musicPlayer.togglePlay()">{{ playing ? '❚❚' : '▶' }}</button>
             <button type="button" @click="musicPlayer.nextTrack()">››</button>
