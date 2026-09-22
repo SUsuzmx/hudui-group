@@ -305,8 +305,10 @@ async function playTrack(track, opts = {}) {
   try {
     const url = await resolveStreamUrl(track);
     if (token !== loadToken) return;
-    el.src = (/^https?:/i.test(url) ? '/api/audio?url=' + encodeURIComponent(url) : url);
-    await el.play();
+    const el2 = el || ensureAudio();
+    if (!el2) return;
+    el2.src = (/^https?:/i.test(url) ? '/api/audio?url=' + encodeURIComponent(url) : url);
+    await el2.play();
     if (token === loadToken) {
       state.playing = true;
       autoFailStreak = 0;
