@@ -205,3 +205,19 @@ UI 只保留底栏 control-cover + 曲名，不要 thumb-wrap 浮层。
 
 ### 4.4 构建
 export 源必须是字符串文件拼进 bundle，不能写在 .mjs 里 IIFE（Node 无 window）。
+
+
+## 6. 播放台 UI / 取流补充踩坑
+
+### 6.1 QQ 取流 mid
+- 搜索结果 id 常直接是 songmid；getSongUrl 必须 mid 或 songmid 或 params.id 兜底。
+- 路由 /api/music/stream/:source/:id 的 id 在 params，不要只读 query.id。
+
+### 6.2 听一听底栏封面
+- player-cover 与 img 必须固定 48px + object-fit cover，否则原图撑爆底栏。
+
+### 6.3 搜索竞态 / QQ 只回 4 首
+- 用 loadSeq 丢弃过期响应；QQ 结果过少换关键词重试。
+
+### 6.4 音域回响 Topo/WE
+- 会关粒子；嵌入壳不完整时舞台要不透明底，避免透出聊天页。
