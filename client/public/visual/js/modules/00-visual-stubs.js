@@ -113,11 +113,11 @@ function stepSonicAudioMonitor() { return null; }
 function applySkullCameraPoseSafe() {}
 function sampleRenderPerf() {}
 function sampleAdaptiveFrameCost() { return null; }
-function shouldSkipAdaptiveRenderFrame() { return false; }
+function shouldSkipAdaptiveRenderFrame() { return isCoarsePointer() ? false : false; }
 function mainLoopDeepBackgroundSleeping() { return false; }
 function isMainSceneCoveredBySplash() { return false; }
 function shouldSkipFixedRenderCadenceFrame() { return false; }
-function capMainLoopFpsForBudget(a, b) { return Number(b) || Number(a) || 30; }
+function capMainLoopFpsForBudget(a, b) { var n = Number(b) || Number(a) || 30; return isCoarsePointer() ? Math.max(n, 45) : n; }
 function mainLoopInteractionActive() { return false; }
 function unlockCenteredView() {}
 function markRenderInteraction() {}
@@ -160,6 +160,7 @@ function consumeFrameGate(gate, now, dt, fps) {
 }
 function createFrameGate() { return { last: 0, pendingDt: 0 }; }
 function getRenderLoadTier() { return 0; }
+function isCoarsePointer() { try { return !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches); } catch (e) { return false; } }
 function isDeepBackgroundMode() { return false; }
 function visibleMotionFollowVsync() { return false; }
 function normalizeForegroundFpsMode() { return 'adaptive'; }

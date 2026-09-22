@@ -167,16 +167,16 @@ export function ensureStageGestures() {
     if (!dx && !dy) return;
     if (orbit) {
       unlockOrbit(orbit);
-      orbit.userTheta = (orbit.userTheta || 0) + dx * 0.006;
-      orbit.userPhi = Math.min(orbit.maxPhi ?? 1.4, Math.max(orbit.minPhi ?? -1.4, (orbit.userPhi || 0.08) + dy * 0.004));
+      orbit.userTheta = (orbit.userTheta || 0) - dx * 0.006;
+      orbit.userPhi = Math.min(orbit.maxPhi ?? 1.4, Math.max(orbit.minPhi ?? -1.4, (orbit.userPhi || 0.08) - dy * 0.004));
       orbit.theta = orbit.userTheta;
       orbit.phi = orbit.userPhi;
       if (orbit.last) { orbit.last.x = e.clientX; orbit.last.y = e.clientY; }
     }
     const gr = getLiveGestureRotation();
     if (gr) {
-      gr.y = (gr.y || 0) + dx * 0.006;
-      gr.x = Math.max(-0.8, Math.min(0.8, (gr.x || 0) + dy * 0.004));
+      gr.y = (gr.y || 0) - dx * 0.006;
+      gr.x = Math.max(-0.8, Math.min(0.8, (gr.x || 0) - dy * 0.004));
     }
   };
   const onUp = (e) => {
