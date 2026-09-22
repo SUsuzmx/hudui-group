@@ -280,8 +280,9 @@ function absoluteCover(cover) {
 function scheduleBeatForTrack(track, el) {
   try {
     if (typeof window.scheduleBeatAnalysis !== 'function') return;
-    const audioUrl = (el && (el.currentSrc || el.src)) || track.url || '';
-    if (!audioUrl) return;
+    const rawUrl = (el && (el.currentSrc || el.src)) || track.url || '';
+    if (!rawUrl) return;
+    const audioUrl = /^https?:/i.test(rawUrl) ? ('/api/audio?url=' + encodeURIComponent(rawUrl)) : rawUrl;
     const songObj = {
       source: track.source,
       id: track.id,
@@ -321,8 +322,11 @@ export function syncTrackToVisual(track) {
     scheduleBeatForTrack(track, el);
   }
   try {
-    try { if (el) el.__mineradioForceCaptureSource = true; } catch (e) {}
-    if (typeof window.initAudio === 'function' && (el.readyState >= 2 || !el.paused)) window.initAudio();
+    try {
+      const srcUrl = el && (el.currentSrc || el.src || '');
+      const sameOrigin = !srcUrl || srcUrl.startsWith(location.origin) || srcUrl.startsWith('/') || srcUrl.startsWith('blob:') || srcUrl.startsWith('data:');
+      if (sameOrigin && typeof window.initAudio === 'function' && (el.readyState >= 2 || !el.paused)) window.initAudio();
+    } catch (e) { console.warn('[visual] initAudio skip', e); }
     ensureAudioAudible();
   } catch (e) { console.warn('[visual] initAudio', e); }
 }

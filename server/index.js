@@ -154,6 +154,35 @@ app.get('/api/cover', async (req, res) => {
   } catch (e) { res.status(502).json({ error: e.message }); }
 });
 
+
+// 同源音频代理：离线节拍分析 fetch 需要同源，CDN 直链会 CORS 失败
+app.get('/api/audio', async (req, res) => {
+  const raw = String(req.query.url || '');
+  if (!/^https?:\/\//i.test(raw)) return res.status(400).json({ error: 'invalid audio url' });
+  try {
+    const upstream = await fetch(raw, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        Referer: raw.includes('qq.com') ? 'https://y.qq.com/' : 'https://music.163.com/',
+        Range: req.headers.range || '',
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!upstream.ok && upstream.status !== 206) return res.status(502).json({ error: 'audio fetch failed' });
+    const ct = upstream.headers.get('content-type') || 'audio/mpeg';
+    res.status(upstream.status);
+    res.setHeader('Content-Type', ct);
+    res.setHeader('Accept-Ranges', upstream.headers.get('accept-ranges') || 'bytes');
+    const cr = upstream.headers.get('content-range');
+    if (cr) res.setHeader('Content-Range', cr);
+    const cl = upstream.headers.get('content-length');
+    if (cl) res.setHeader('Content-Length', cl);
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.end(Buffer.from(await upstream.arrayBuffer()));
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
 // AI 群友列表仅供群成员/群设置使用, 不作为通讯录联系人
 app.get('/api/ai-contacts', (req, res) => {
   if (!requireUser(req, res)) return;
