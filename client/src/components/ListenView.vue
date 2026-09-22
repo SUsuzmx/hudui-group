@@ -122,6 +122,7 @@ async function submitCookie() {
     toast(r.message || '登录成功');
     showLogin.value = false;
     await refreshLoginStatus();
+    try { await loadLibrary(); toast('歌单已同步'); } catch (e) { console.warn('[library sync]', e); }
   } catch (e) {
     toast(e.message || 'Cookie 导入失败');
   } finally {
