@@ -416,6 +416,7 @@ function openChatInfo(payload) {
       pinned: Boolean(payload?.pinned),
       folded: Boolean(payload?.folded),
       remind: Boolean(payload?.remind) || localStorage.getItem(chatRemindKey(conv)) === '1',
+      bgKey: String(payload?.bgKey ?? localStorage.getItem(`wx_bg_${conv}`) ?? '0'),
       peerUserId: payload?.peerUserId ?? target.userId ?? null,
       target,
     });
@@ -435,22 +436,48 @@ function openChatInfo(payload) {
 
 async function onChatInfoAction(action) {
   const conv = subView.value?.conversationId || 'default';
+  if (action && typeof action === 'object') {
+    if (action.type === 'set-bg') {
+      try {
+        await api.chatPref({ conversationId: conv, bgKey: String(action.key) });
+        try { localStorage.setItem(`wx_bg_${conv}`, String(action.key)); } catch { /* ignore */ }
+        if (subView.value) subView.value = { ...subView.value, bgKey: String(action.key) };
+        toast('聊天背景已更新');
+      } catch (e) {
+        toast(e.message || '设置失败');
+      }
+      return;
+    }
+    if (action.type === 'report') {
+      const reason = String(action.reason || '其他');
+      try {
+        await api.addFavorite({
+          kind: 'text',
+          content: `[投诉] ${reason} — 会话 ${conv}`,
+          fromName: '系统',
+        });
+      } catch { /* ignore */ }
+      toast('已收到投诉，我们会尽快处理');
+      return;
+    }
+    return;
+  }
   if (action === 'clear') {
-    if (!confirm('确定清空该聊天记录？')) return;
+    if (!confirm('确定清空该聊天记录？（仅自己视角）')) return;
     try {
       await api.chatClear(conv);
       try { clearMsgCache(conv); } catch { /* ignore */ }
-      toast('已清空');
+      toast('已清空聊天记录');
       goBack();
     } catch (e) {
-      toast(e.message || '操作失败');
+      toast(e.message || '清空失败');
     }
     return;
   }
   if (action === 'search-history') {
-    pendingSearch.value = true;
-    // 返回上一层聊天
     goBack();
+    // 返回聊天后再打开搜索，避免被导航快照覆盖
+    pendingSearch.value = true;
     return;
   }
   if (action === 'create-group-from-chat') {
@@ -462,20 +489,12 @@ async function onChatInfoAction(action) {
     return;
   }
   if (action === 'remind' || action === 'toggle-remind') {
-    notifyMessage({ title: '聊天提醒已开启', body: '该会话来新消息时会系统提醒', tag: 'remind' });
-    toast('已开启提醒，来消息将系统通知');
+    const next = !subView.value?.remind;
+    await onChatInfoToggle({ key: 'remind', value: next });
     return;
   }
   if (action === 'report') {
-    const reason = prompt('请选择投诉原因：\n1 违法违规 2 欺诈 3 骚扰 4 其他（输入数字）', '3');
-    if (!reason) return;
-    const map = { '1': '违法违规', '2': '欺诈', '3': '骚扰', '4': '其他' };
-    try {
-      await api.addFavorite({ kind: 'text', content: `[投诉] ${map[reason.trim()] || '其他'} — 会话 ${conv}`, fromName: '系统' });
-      toast('已收到投诉，我们会尽快处理');
-    } catch {
-      toast('已收到投诉，我们会尽快处理');
-    }
+    // 投诉原因在 ChatInfoView sheet 中选择，走对象 action
     return;
   }
   if (action === 'appearance' || action === 'bg-settings') {
@@ -484,17 +503,29 @@ async function onChatInfoAction(action) {
     return;
   }
   if (action === 'bg') {
-    const presets = ['默认', '浅灰', '淡蓝', '淡绿', '米色', '深色'];
-    const pick = prompt('选择当前聊天背景：\n' + presets.map((s, i) => `${i + 1} ${s}`).join('\n') + '\n（输入数字）', '1');
-    if (!pick) return;
-    const idx = Number(pick.trim());
-    if (!(idx >= 1 && idx <= presets.length)) { toast('无效选择'); return; }
+    // 背景选择在 ChatInfoView 内用 sheet 完成，这里只接收 { action: 'set-bg', key }
+    return;
+  }
+  if (action?.type === 'set-bg' || (action && typeof action === 'object' && action.key != null && action.bg)) {
+    const key = String(action.key ?? action.bg);
     try {
-      await api.chatPref({ conversationId: conv, bgKey: String(idx - 1) });
+      await api.chatPref({ conversationId: conv, bgKey: key });
       toast('聊天背景已更新');
     } catch (e) {
       toast(e.message || '设置失败');
     }
+    return;
+  }
+  if (action?.type === 'report' || (action && typeof action === 'object' && action.report)) {
+    const reason = String(action.reason || action.report || '其他');
+    try {
+      await api.addFavorite({
+        kind: 'text',
+        content: `[投诉] ${reason} — 会话 ${conv}`,
+        fromName: '系统',
+      });
+    } catch { /* ignore */ }
+    toast('已收到投诉，我们会尽快处理');
     return;
   }
 }
@@ -505,6 +536,11 @@ async function onChatInfoToggle({ key, value }) {
   const conv = subView.value.conversationId || 'default';
   if (key === 'remind') {
     try { localStorage.setItem(chatRemindKey(conv), value ? '1' : '0'); } catch { /* ignore */ }
+    if (value) {
+      try { await notifyMessage({ title: '聊天提醒', body: '该会话来新消息时将系统提醒', tag: 'remind-perm' }); } catch { /* ignore */ }
+    }
+    toast(value ? '已开启提醒，来消息将系统通知' : '已关闭提醒');
+    return;
   }
   try {
     await api.chatPref({
@@ -513,7 +549,11 @@ async function onChatInfoToggle({ key, value }) {
       pinned: subView.value.pinned,
       folded: subView.value.folded,
     });
-  } catch { /* ignore */ }
+    if (key === 'muted') toast(value ? '已开启消息免打扰' : '已关闭消息免打扰');
+    if (key === 'pinned') toast(value ? '已置顶' : '已取消置顶');
+  } catch {
+    toast('设置失败');
+  }
 }
 </script>
 
@@ -653,6 +693,7 @@ async function onChatInfoToggle({ key, value }) {
         :pinned="Boolean(subView.pinned)"
         :folded="Boolean(subView.folded)"
         :remind="Boolean(subView.remind)"
+        :bg-key="String(subView.bgKey || '0')"
         :target="subView.target || null"
         @back="goBack"
         @action="onChatInfoAction"

@@ -26,7 +26,7 @@ const members = ref([]);
 const friends = ref([]);
 const aiList = ref([]);
 const picked = ref({});
-const prefs = ref({ muted: false, pinned: false, saved: false, folded: false, showNick: true, atRemind: true });
+const prefs = ref({ muted: false, pinned: false, saved: false, folded: false, showNick: true, atRemind: true, remind: false, bgKey: '0' });
 const groupRemark = ref('');
 const editingRemark = ref(false);
 const remarkDraft = ref('');
@@ -144,6 +144,8 @@ async function loadAll() {
         saved: Boolean(extra.saved),
         showNick: extra.showNick !== false,
         atRemind: extra.atRemind !== false,
+        remind: localStorage.getItem(`wx_remind_${props.conversationId || 'default'}`) === '1',
+        bgKey: String(p.bgKey ?? localStorage.getItem(`wx_bg_${props.conversationId || 'default'}`) ?? '0'),
       };
       groupRemark.value = extra.groupRemark || '';
     } catch { /* ignore */ }
@@ -242,6 +244,58 @@ async function clearChatHistory() {
   } catch (e) {
     toast(e.message || '清空失败');
   }
+}
+
+const showBg = ref(false);
+const showReport = ref(false);
+const bgOptions = [
+  { key: '0', name: '默认', color: '#ededed' },
+  { key: '1', name: '浅灰', color: '#e7e7e7' },
+  { key: '2', name: '淡蓝', color: '#dce9f7' },
+  { key: '3', name: '淡绿', color: '#e3f0e6' },
+  { key: '4', name: '米色', color: '#f3efe6' },
+  { key: '5', name: '深色', color: '#2a2a2a' },
+];
+const reportReasons = ['违法违规', '欺诈', '骚扰', '其他'];
+
+async function pickBg(key) {
+  showBg.value = false;
+  const conv = props.conversationId || 'default';
+  prefs.value = { ...prefs.value, bgKey: String(key) };
+  try {
+    await api.chatPref({ conversationId: conv, bgKey: String(key) });
+    try { localStorage.setItem(`wx_bg_${conv}`, String(key)); } catch { /* ignore */ }
+    toast('聊天背景已更新');
+  } catch (e) {
+    toast(e.message || '设置失败');
+  }
+}
+
+async function pickReport(reason) {
+  showReport.value = false;
+  const conv = props.conversationId || 'default';
+  try {
+    await api.addFavorite({
+      kind: 'text',
+      content: `[投诉] ${reason} — 群聊 ${props.groupName || conv}`,
+      fromName: '系统',
+    });
+  } catch { /* ignore */ }
+  toast('已收到投诉，我们会尽快处理');
+}
+
+async function toggleRemind() {
+  const next = !prefs.value.remind;
+  prefs.value = { ...prefs.value, remind: next };
+  const conv = props.conversationId || 'default';
+  try { localStorage.setItem(`wx_remind_${conv}`, next ? '1' : '0'); } catch { /* ignore */ }
+  if (next) {
+    try {
+      const { notifyMessage } = await import('../notify.js');
+      await notifyMessage({ title: '群聊提醒', body: '该群来新消息时将系统提醒', tag: 'remind-perm' });
+    } catch { /* ignore */ }
+  }
+  toast(next ? '已开启提醒，来消息将系统通知' : '已关闭提醒');
 }
 
 async function saveRemark() {
@@ -418,8 +472,17 @@ onMounted(loadAll);
           <span class="cell-label">查找聊天记录</span>
           <span class="arrow">›</span>
         </div>
+        <div class="cell-row" @click="showBg = true">
+          <span class="cell-label">设置当前聊天背景</span>
+          <span class="cell-value">{{ (bgOptions.find(b => b.key === String(prefs.bgKey || '0')) || bgOptions[0]).name }}</span>
+          <span class="arrow">›</span>
+        </div>
         <div class="cell-row" @click="clearChatHistory">
           <span class="cell-label">清空聊天记录</span>
+          <span class="arrow">›</span>
+        </div>
+        <div class="cell-row" @click="showReport = true">
+          <span class="cell-label">投诉</span>
           <span class="arrow">›</span>
         </div>
       </section>
@@ -432,6 +495,10 @@ onMounted(loadAll);
         <div class="cell-row indent" @click="togglePref('folded')">
           <span class="cell-label">折叠该聊天</span>
           <button class="switch" :class="{ on: prefs.folded }" type="button" aria-label="折叠该聊天"></button>
+        </div>
+        <div class="cell-row indent" @click="toggleRemind">
+          <span class="cell-label">提醒</span>
+          <button class="switch" :class="{ on: prefs.remind }" type="button" aria-label="提醒"></button>
         </div>
         <div class="cell-row indent" @click="toggleExtra('atRemind')">
           <span class="cell-label">@我、@所有人和群公告仍通知</span>
@@ -527,6 +594,40 @@ onMounted(loadAll);
           <button class="qr-close" type="button" @click="copyGroupId">复制群 ID</button>
           <button class="qr-close" type="button" @click="showQR = false">完成</button>
         </div>
+      </div>
+    </div>
+
+    <div v-if="showBg" class="mask" @click.self="showBg = false">
+      <div class="bg-sheet">
+        <div class="bg-title">设置当前聊天背景</div>
+        <div class="bg-grid">
+          <button
+            v-for="b in bgOptions"
+            :key="b.key"
+            type="button"
+            class="bg-item"
+            :class="{ on: String(prefs.bgKey || '0') === b.key }"
+            @click="pickBg(b.key)"
+          >
+            <span class="bg-swatch" :style="{ background: b.color }"></span>
+            <span class="bg-name">{{ b.name }}</span>
+          </button>
+        </div>
+        <button type="button" class="bg-cancel" @click="showBg = false">取消</button>
+      </div>
+    </div>
+
+    <div v-if="showReport" class="mask" @click.self="showReport = false">
+      <div class="bg-sheet">
+        <div class="bg-title">投诉原因</div>
+        <button
+          v-for="r in reportReasons"
+          :key="r"
+          type="button"
+          class="bg-row"
+          @click="pickReport(r)"
+        >{{ r }}</button>
+        <button type="button" class="bg-cancel" @click="showReport = false">取消</button>
       </div>
     </div>
   </div>
@@ -687,6 +788,68 @@ onMounted(loadAll);
   align-items: center;
   justify-content: center;
   z-index: 100;
+}
+.mask:has(.bg-sheet) {
+  align-items: flex-end;
+  background: rgba(0,0,0,0.45);
+}
+.bg-sheet {
+  width: 100%;
+  background: var(--white);
+  border-radius: 12px 12px 0 0;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  overflow: hidden;
+}
+.bg-title {
+  padding: 16px;
+  text-align: center;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  border-bottom: 0.5px solid var(--divider);
+}
+.bg-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  padding: 16px;
+}
+.bg-item {
+  border: 2px solid transparent;
+  border-radius: 10px;
+  background: var(--white);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.bg-item.on { border-color: #07c160; }
+.bg-swatch {
+  width: 100%;
+  height: 56px;
+  border-radius: 8px;
+  border: 0.5px solid var(--divider);
+}
+.bg-name { font-size: 13px; color: var(--text); }
+.bg-row {
+  width: 100%;
+  min-height: 54px;
+  border: 0;
+  border-bottom: 0.5px solid var(--divider);
+  background: var(--white);
+  color: var(--text);
+  font-size: 17px;
+  text-align: center;
+}
+.bg-cancel {
+  width: 100%;
+  min-height: 54px;
+  border: 0;
+  border-top: 8px solid var(--bg);
+  background: var(--white);
+  color: var(--text-2);
+  font-size: 16px;
 }
 .dialog {
   width: min(300px, 86%);

@@ -24,7 +24,7 @@ export function createMusicProviderRouter({ requireAuth, provider } = {}) {
       const level = String(req.query.level || 'exhigh');
       const result = name === 'netease'
         ? await netease.getSongUrl({ id: req.query.id, level })
-        : await qq.getSongUrl({ id: req.query.id, mid: req.query.mid || req.query.songmid, mediaMid: req.query.mediaMid, level, songMeta: { id: req.query.id, mid: req.query.mid, mediaMid: req.query.mediaMid, title: req.query.title, artist: req.query.artist, artists: String(req.query.artist || '').split(/[\\/\\,]/).filter(Boolean) } });
+        : await qq.getSongUrl({ id: req.query.id, mid: req.query.mid || req.query.songmid || req.query.id, mediaMid: req.query.mediaMid || req.query.media_mid, level, songMeta: { id: req.query.id, mid: req.query.mid, mediaMid: req.query.mediaMid, title: req.query.title, artist: req.query.artist, artists: String(req.query.artist || '').split(/[\\/\\,]/).filter(Boolean) } });
       res.json(result);
     } catch (e) { res.status(502).json({ provider: name, error: e.message, playable: false, url: '' }); }
   });
@@ -35,6 +35,7 @@ export function createMusicProviderRouter({ requireAuth, provider } = {}) {
     } catch (e) { res.status(502).json({ provider: name, error: e.message }); }
   });
 
+  router.get('/user/playlists', async (req, res) => { try { const r = name === 'netease' ? await handleNeteaseUserPlaylists() : await handleQQUserPlaylists(); res.json({ provider: name, ...r }); } catch (e) { res.status(502).json({ provider: name, error: e.message, playlists: [], loggedIn: false }); } });
   router.get('/playlists', async (req, res) => {
     try {
       const r = name === 'netease' ? await handleNeteaseUserPlaylists() : await handleQQUserPlaylists();

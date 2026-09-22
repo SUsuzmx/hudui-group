@@ -1,0 +1,13 @@
+import fs from 'node:fs';
+const chat = fs.readFileSync('C:/perry/server/chat.js', 'utf8');
+console.log('has private:read event', chat.includes('private:read'));
+const p = chat.indexOf("socket.on('private:join'");
+console.log('JOIN', chat.slice(p, p + 220));
+const friends = fs.readFileSync('C:/perry/server/friends.js', 'utf8');
+const r = friends.indexOf('privateRead(req');
+console.log('READ', friends.slice(r, r + 550));
+const pv = fs.readFileSync('C:/perry/client/src/components/PrivateChatView.vue', 'utf8');
+const t = pv.indexOf('function onTyping');
+console.log('TYPING', pv.slice(t, t + 350));
+const st = pv.indexOf('lastMineId');
+console.log('STATUS', pv.slice(st - 100, st + 300));

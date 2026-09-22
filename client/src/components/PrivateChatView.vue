@@ -88,9 +88,13 @@ const draftSync = createDraftSync({
 });
 
 function applyConvBgFromPref(d) {
-  const key = Number(d?.pref?.bgKey);
+  let key = Number(d?.pref?.bgKey);
+  if (!Number.isInteger(key)) {
+    try { key = Number(localStorage.getItem(`wx_bg_${conversationId}`)); } catch { key = NaN; }
+  }
   // 0/缺省跟随全局 --chat-bg；1-5 会话专属背景
   convBg.value = Number.isInteger(key) && key > 0 && key < CONV_BG.length ? CONV_BG[key] : '';
+  chatPrefs.value = { ...chatPrefs.value, bgKey: Number.isInteger(key) ? String(key) : '0' };
 }
 
 let socket = null;
@@ -435,13 +439,21 @@ function send() {
   draftSync.clearLocal();
   stopTyping();
   api.chatPref({ conversationId, draft: '' }).catch(() => {});
-  api.privateRead(conversationId).then((d) => {
-    peerReadId.value = d?.peerReadId ?? peerReadId.value;
-  }).catch(() => {});
+  markReadAndSync();
   nextTick(() => {
     autoSizeInput();
     scrollToBottom();
   });
+}
+
+function markReadAndSync() {
+  api.privateRead(conversationId).then((d) => {
+    if (typeof d?.peerReadId === 'number') peerReadId.value = d.peerReadId;
+  }).catch(() => {});
+  try {
+    const mid = messages.value.reduce((s, m) => Math.max(s, Number(m.id) || 0), 0);
+    if (socket && mid) socket.emit('private:read', { conversationId, lastReadId: mid });
+  } catch { /* ignore */ }
 }
 
 function retrySend() {
@@ -790,7 +802,8 @@ function openMore() {
     muted: chatPrefs.value.muted,
     pinned: chatPrefs.value.pinned,
     folded: chatPrefs.value.folded,
-    remind: Boolean(chatPrefs.value.remind),
+    remind: Boolean(chatPrefs.value.remind) || localStorage.getItem(`wx_remind_${conversationId}`) === '1',
+    bgKey: String(chatPrefs.value.bgKey ?? localStorage.getItem(`wx_bg_${conversationId}`) ?? '0'),
     peerUserId: peerUid > 0 ? peerUid : (props.target.userId ?? null),
     target: {
       nickname: props.target.nickname,
@@ -1326,6 +1339,7 @@ onMounted(() => {
       pinned: Boolean(d?.pref?.pinned),
       folded: Boolean(d?.pref?.folded),
       remind,
+      bgKey: String(d?.pref?.bgKey ?? localStorage.getItem(`wx_bg_${conversationId}`) ?? '0'),
     };
   }).catch(() => {});
 
@@ -1335,18 +1349,14 @@ onMounted(() => {
   if (socket.connected) {
     everConnected.value = true;
     socket.emit('private:join', conversationId);
-    api.privateRead(conversationId).then((d) => {
-      if (typeof d?.peerReadId === 'number') peerReadId.value = d.peerReadId;
-    }).catch(() => {});
+    markReadAndSync();
   }
 
   const onConnect = () => {
     connected.value = true;
     everConnected.value = true;
     socket.emit('private:join', conversationId);
-    api.privateRead(conversationId).then((d) => {
-      if (typeof d?.peerReadId === 'number') peerReadId.value = d.peerReadId;
-    }).catch(() => {});
+    markReadAndSync();
     // 连上后再补一次最新
     if (!messages.value.length) loadHistory();
   };
@@ -1366,16 +1376,20 @@ onMounted(() => {
     persistMessages();
     peerTyping.value = false;
     if (isMine(m)) {
-      api.privateRead(conversationId).catch(() => {});
+      markReadAndSync();
     } else if (m.senderType && m.senderType !== 'system') {
       const body = m.mediaType === 'image' ? '[图片]'
         : m.mediaType === 'voice' ? '[语音]'
         : (m.content || '').slice(0, 40);
-      notifyMessage({
-        title: `${props.target?.nickname || '微信'} · ${m.senderName || ''}`,
-        body,
-        tag: `pv-${conversationId}`,
-      });
+      const remindOn = Boolean(chatPrefs.value.remind)
+        || localStorage.getItem(`wx_remind_${conversationId}`) === '1';
+      if (!chatPrefs.value.muted || remindOn) {
+        notifyMessage({
+          title: `${props.target?.nickname || '微信'} · ${m.senderName || ''}`,
+          body,
+          tag: `pv-${conversationId}`,
+        });
+      }
       playMsgSound();
     }
     const el = listEl.value;
@@ -1385,6 +1399,13 @@ onMounted(() => {
   const onTyping = (p) => {
     if (p?.conversationId !== conversationId) return;
     peerTyping.value = p.typing !== false;
+  };
+  const onPeerRead = (p) => {
+    if (p?.conversationId !== conversationId) return;
+    const id = Number(p.lastReadId);
+    if (Number.isFinite(id) && (!peerReadId.value || id > peerReadId.value)) {
+      peerReadId.value = id;
+    }
   };
   const onCallIncoming = (payload) => {
     if (!payload?.from) return;
@@ -1413,6 +1434,7 @@ onMounted(() => {
     bindSocket('disconnect', onDisconnect),
     bindSocket('private:message', onPrivateMsg),
     bindSocket('private:typing', onTyping),
+    bindSocket('private:read', onPeerRead),
     bindSocket('call:incoming', onCallIncoming),
     bindSocket('chat:sync', onChatSync),
   ];

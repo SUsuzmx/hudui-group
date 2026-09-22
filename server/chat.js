@@ -46,6 +46,7 @@ export function initChat(io, { config, engine }) {
   const online = new Map();
   const sendTimestamps = new Map();
   const announcedAt = new Map();
+  const typingTimers = new Map();
   const recentCache = [];
   const convCaches = new Map();
   const activeCalls = new Map();
@@ -918,14 +919,60 @@ export function initChat(io, { config, engine }) {
     // 私聊正在输入
     socket.on('private:typing', ({ conversationId, typing } = {}) => {
       if (!canAccessPrivate(conversationId)) return;
+      const on = typing !== false;
       socket.to(conversationId).emit('private:typing', {
         conversationId,
         name: user.nickname,
-        typing: typing !== false,
+        typing: on,
+      });
+      // 对端异常断开/未发 typing:false 时自动熄灭
+      try {
+        const key = `${conversationId}:${user.id}`;
+        if (typingTimers.has(key)) clearTimeout(typingTimers.get(key));
+        if (on) {
+          typingTimers.set(key, setTimeout(() => {
+            typingTimers.delete(key);
+            io.to(conversationId).emit('private:typing', {
+              conversationId,
+              name: user.nickname,
+              typing: false,
+            });
+          }, 4000));
+        }
+      } catch { /* ignore */ }
+    });
+
+    // 私聊已读回执：对端实时更新 peerReadId
+    socket.on('private:read', ({ conversationId, lastReadId } = {}) => {
+      if (!canAccessPrivate(conversationId)) return;
+      const mid = Number(lastReadId) || 0;
+      try {
+        const cur = stmts.maxMessageId.get(conversationId)?.mid || 0;
+        const use = mid > 0 ? Math.min(mid, cur) : cur;
+        if (use) stmts.upsertChatRead.run(user.id, conversationId, use, 0, Date.now());
+      } catch { /* ignore */ }
+      socket.to(conversationId).emit('private:read', {
+        conversationId,
+        userId: user.id,
+        lastReadId: mid || (stmts.maxMessageId.get(conversationId)?.mid || 0),
       });
     });
 
     socket.on('disconnect', () => {
+      try {
+        for (const [key, t] of typingTimers) {
+          if (key.endsWith(`:${user.id}`)) {
+            clearTimeout(t);
+            typingTimers.delete(key);
+            const conv = key.slice(0, key.lastIndexOf(':'));
+            io.to(conv).emit('private:typing', {
+              conversationId: conv,
+              name: user.nickname,
+              typing: false,
+            });
+          }
+        }
+      } catch { /* ignore */ }
       const entry = online.get(user.id);
       if (entry) {
         entry.conns -= 1;

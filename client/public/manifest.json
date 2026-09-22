@@ -4,6 +4,7 @@
   "description": "连接你我，分享生活",
   "start_url": "/",
   "display": "standalone",
+  "categories": ["music", "entertainment"],
   "background_color": "#ededed",
   "theme_color": "#07C160",
   "icons": [

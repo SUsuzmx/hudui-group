@@ -17,7 +17,7 @@ export function createNavStack({ view, subView, activeChat, privateTarget, pendi
     subView.value = prev.subView;
     activeChat.value = prev.activeChat;
     privateTarget.value = prev.privateTarget;
-    pendingSearch.value = prev.pendingSearch;
+    // 不覆盖调用方刚设置的 pendingSearch（如聊天信息 → 查找聊天记录）
   }
 
   function push() {
