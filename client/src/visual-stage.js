@@ -422,13 +422,13 @@ export function setVisualPreset(index) {
   try {
     const apply = window.setPreset;
     if (typeof apply === 'function') {
-      apply(target, { silent: true, preserveCamera: true });
+      apply(target, { silent: true });
     } else {
       if (window.fx) window.fx.preset = target;
       if (window.uniforms?.uPreset) window.uniforms.uPreset.value = target;
       if (typeof window.syncFxUniforms === 'function') window.syncFxUniforms();
       if (typeof window.applyPresetOrbitBaseline === 'function') {
-        window.applyPresetOrbitBaseline(target, { syncCurrent: false });
+        window.applyPresetOrbitBaseline(target, { syncCurrent: true });
       }
     }
     const o = window.orbit;
