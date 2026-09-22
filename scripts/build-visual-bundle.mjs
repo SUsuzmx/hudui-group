@@ -69,6 +69,7 @@ for (const rel of modulePaths) {
   if (!fs.existsSync(full)) { console.error('missing', rel); process.exit(1); }
   parts.push('\n/* ==== ' + rel + ' ==== */\n' + fs.readFileSync(full, 'utf8'));
 }
-const out = '/* Mineradio visual bundle generated */\n' + parts.join('\n') + '\n//# sourceURL=mineradio-visual-bundle.js\n';
+const exportBridge = fs.readFileSync(path.join(root, 'js/visual-exports.js'), 'utf8');
+const out = '/* Mineradio visual bundle generated */\n' + parts.join('\n') + '\n' + exportBridge + '\n//# sourceURL=mineradio-visual-bundle.js\n';
 fs.writeFileSync(path.join(root, 'mineradio-bundle.js'), out);
 console.log('bundle bytes', out.length);

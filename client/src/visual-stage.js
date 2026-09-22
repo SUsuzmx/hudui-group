@@ -85,39 +85,49 @@ function particlesActive() {
 function bindStageGestures(root) {
   if (!root || root.__visualGestureBound) return;
   root.__visualGestureBound = true;
+  window.__visualGestureBound = true;
   const pointers = new Map();
   let lastDist = 0;
   const isUi = (e) => {
     const el = e.target;
-    return !!(el && el.closest && el.closest('.bar, .fx-dock, .queue-sheet, button, input'));
+    return !!(el && el.closest && el.closest('.bottom-bar, .fx-dock, .fx-fab, .mini-queue-popover, .top-chrome, .stage-status, button, input, select, textarea, a'));
   };
+  const getOrbit = () => window.orbit || window.getVisualOrbit?.();
+  const getGr = () => window.gestureRotation || window.getVisualGestureRotation?.() || { x: 0, y: 0 };
+  function unlockOrbit(orbit) {
+    if (!orbit) return;
+    orbit.rotating = true;
+    orbit.centerLocked = false;
+    orbit.recentering = false;
+    orbit.focus && (orbit.focus.active = false);
+  }
   const onDown = (e) => {
     if (isUi(e)) return;
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    const orbit = window.orbit;
+    const orbit = getOrbit();
     if (pointers.size === 1 && orbit) {
-      orbit.rotating = true;
-      orbit.centerLocked = false;
-      orbit.recentering = false;
+      unlockOrbit(orbit);
       orbit.last.x = e.clientX;
       orbit.last.y = e.clientY;
     }
     if (pointers.size === 2) {
       const pts = [...pointers.values()];
       lastDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      if (orbit) unlockOrbit(orbit);
     }
   };
   const onMove = (e) => {
     if (!pointers.has(e.pointerId)) return;
     const prev = pointers.get(e.pointerId);
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    const orbit = window.orbit;
+    const orbit = getOrbit();
     if (!orbit) return;
     if (pointers.size >= 2) {
       const pts = [...pointers.values()];
       const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
       if (lastDist > 0 && dist > 0) {
         const scale = lastDist / dist;
+        unlockOrbit(orbit);
         orbit.userRadius = Math.min(orbit.maxRadius || 14, Math.max(orbit.minRadius || 2.4, (orbit.userRadius || 6.6) * scale));
         orbit.radius = orbit.userRadius;
       }
@@ -126,18 +136,15 @@ function bindStageGestures(root) {
     }
     const dx = e.clientX - prev.x;
     const dy = e.clientY - prev.y;
-    orbit.rotating = true;
-    orbit.centerLocked = false;
-    orbit.recentering = false;
-    // 方向：手指/鼠标往左滑（dx<0）→ 视角向左（theta 增大）
+    unlockOrbit(orbit);
+    // 手指向左（dx<0）→ 场景同向转（theta 增大）
     orbit.userTheta = (orbit.userTheta || 0) + dx * 0.006;
     orbit.userPhi = Math.min(orbit.maxPhi ?? 1.4, Math.max(orbit.minPhi ?? -1.4, (orbit.userPhi || 0.08) + dy * 0.004));
     orbit.theta = orbit.userTheta;
     orbit.phi = orbit.userPhi;
     orbit.last.x = e.clientX;
     orbit.last.y = e.clientY;
-    // 粒子层：与相机同向，避免双重旋转
-    const gr = window.gestureRotation;
+    const gr = getGr();
     if (gr) {
       gr.y = (gr.y || 0) + dx * 0.006;
       gr.x = Math.max(-0.8, Math.min(0.8, (gr.x || 0) + dy * 0.004));
@@ -145,18 +152,18 @@ function bindStageGestures(root) {
   };
   const onUp = (e) => {
     pointers.delete(e.pointerId);
-    if (pointers.size === 0 && window.orbit) window.orbit.rotating = false;
+    const orbit = getOrbit();
+    if (pointers.size === 0 && orbit) orbit.rotating = false;
     lastDist = 0;
   };
   const onWheel = (e) => {
     if (isUi(e)) return;
     e.preventDefault();
-    const orbit = window.orbit;
+    const orbit = getOrbit();
     if (!orbit) return;
+    unlockOrbit(orbit);
     orbit.userRadius = Math.min(orbit.maxRadius || 14, Math.max(orbit.minRadius || 2.4, (orbit.userRadius || 6.6) * (e.deltaY > 0 ? 1.08 : 0.92)));
     orbit.radius = orbit.userRadius;
-    orbit.centerLocked = false;
-    orbit.recentering = false;
   };
   root.style.pointerEvents = 'auto';
   root.style.touchAction = 'none';
@@ -165,6 +172,18 @@ function bindStageGestures(root) {
   root.addEventListener('pointerup', onUp);
   root.addEventListener('pointercancel', onUp);
   root.addEventListener('wheel', onWheel, { passive: false });
+  // 同时绑到 stage 根，避免 canvas 被盖住后拖不动
+  const stageRoot = document.querySelector('.visual-stage-root') || document.querySelector('.player-stage');
+  if (stageRoot && stageRoot !== root && !stageRoot.__visualGestureBound) {
+    stageRoot.__visualGestureBound = true;
+    stageRoot.style.pointerEvents = 'auto';
+    stageRoot.style.touchAction = 'none';
+    stageRoot.addEventListener('pointerdown', onDown);
+    stageRoot.addEventListener('pointermove', onMove);
+    stageRoot.addEventListener('pointerup', onUp);
+    stageRoot.addEventListener('pointercancel', onUp);
+    stageRoot.addEventListener('wheel', onWheel, { passive: false });
+  }
 }
 
 export function initVisualStage() {
@@ -320,13 +339,19 @@ export function setVisualPreset(index) {
   const id = Number(index);
   const next = Number.isFinite(id) && id >= 0 && id <= 12 ? id : DEFAULT_PRESET_ID;
   try {
-    if (typeof window.setPreset === 'function') {
-      window.setPreset(next, { silent: true });
-    } else if (window.fx) {
-      window.fx.preset = next;
+    const apply = window.setPreset;
+    if (typeof apply === 'function') {
+      apply(next, { silent: true });
+    } else {
+      if (window.fx) window.fx.preset = next;
       if (window.uniforms?.uPreset) window.uniforms.uPreset.value = next;
       if (typeof window.syncFxUniforms === 'function') window.syncFxUniforms();
+      if (typeof window.applyPresetOrbitBaseline === 'function') {
+        window.applyPresetOrbitBaseline(next, { syncCurrent: true });
+      }
     }
+    const o = window.orbit;
+    if (o) { o.centerLocked = false; o.recentering = false; }
   } catch (e) { console.warn('[visual] setPreset', e); }
   forceParticleVisible();
   adoptRendererCanvas();
