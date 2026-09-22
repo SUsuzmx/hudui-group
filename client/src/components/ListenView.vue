@@ -403,4 +403,72 @@ onMounted(() => {
 
 .player-open .player-info { min-width: 0; overflow: hidden; }
 .player-row { display: flex !important; align-items: center; gap: 8px; min-height: 56px; }
+/* 听一听控制台：强制与 3D 舞台一致，避免列表 .cover img / 全局 img 撑爆 */
+.player { display: block !important; background: transparent !important; border: 0 !important; padding: 8px 0 calc(10px + var(--safe-b, 0px)) !important; }
+.player-console {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+  margin: 0 10px !important;
+  padding: 8px 14px 12px !important;
+  border-radius: 28px !important;
+  background: rgba(20, 22, 26, 0.72) !important;
+  backdrop-filter: blur(14px) saturate(1.6) !important;
+  box-shadow: inset 0 0 2px 1px rgba(255,255,255,.22), 0 8px 24px rgba(0,0,0,.25) !important;
+  color: #fff !important;
+  overflow: hidden;
+}
+.player-console .controls {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) max-content minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 10px !important;
+  width: 100% !important;
+}
+.player-console .control-cluster {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-width: 0 !important;
+}
+.player-console .control-track {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 10px !important;
+  min-width: 0 !important;
+  width: auto !important;
+  max-width: 100% !important;
+  border: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
+  color: inherit !important;
+}
+.player-console .control-cover {
+  width: 48px !important;
+  height: 48px !important;
+  min-width: 48px !important;
+  max-width: 48px !important;
+  min-height: 48px !important;
+  max-height: 48px !important;
+  flex: 0 0 48px !important;
+  border-radius: 10px !important;
+  overflow: hidden !important;
+  background: rgba(255,255,255,.08) !important;
+}
+.player-console .control-cover img {
+  width: 48px !important;
+  height: 48px !important;
+  max-width: 48px !important;
+  max-height: 48px !important;
+  object-fit: cover !important;
+  display: block !important;
+}
+.player-console .control-meta { min-width: 0 !important; max-width: 42vw !important; text-align: left !important; }
+.player-console .control-title { font-size: 13px !important; font-weight: 700 !important; text-align: left !important; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.player-console .control-artist { font-size: 11px !important; color: rgba(255,255,255,.55) !important; text-align: left !important; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.player-console .transport { justify-content: center !important; }
+.player-console .modes { justify-content: flex-end !important; }
+.player-console .time-display { min-width: 84px !important; text-align: right !important; font-size: 11px !important; color: rgba(255,255,255,.55) !important; font-variant-numeric: tabular-nums; }
 </style>
