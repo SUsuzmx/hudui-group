@@ -8,7 +8,9 @@ import {
   withTimeout, logProvider,
 } from './common.js';
 import { parseQqAuth, normalizeQQCookieInput } from './qq.js';
-import * as ncm from 'NeteaseCloudMusicApi';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const ncm = require('NeteaseCloudMusicApi');
 
 const NETEASE_PLAYLIST_SYNC_PAGE_SIZE = 200;
 const NETEASE_PLAYLIST_SYNC_MAX_PAGES = 80;
