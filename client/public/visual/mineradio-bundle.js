@@ -20,7 +20,12 @@ function readSavedVolume() { return 1; }
 function readBooleanPreference(k, fb) { return !!fb; }
 function readCloseBehaviorPreference() { return 'minimize'; }
 function readStartupResumeModePreference() { return 'fresh'; }
-function getRenderPixelRatio() { return Math.min(window.devicePixelRatio || 1, 1.5); }
+function getRenderPixelRatio() {
+  // 手机画质向电脑看齐：原先 cap 1.5 会比 DPR2/3 屏更糊
+  var dpr = window.devicePixelRatio || 1;
+  var coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+  return Math.min(dpr, coarse ? 2 : 2);
+}
 function readNow() { return Date.now(); }
 function cloneLyricLines(lines) { return (Array.isArray(lines) ? lines : []).map(function (l) { return Object.assign({}, l); }); }
 function currentLyricSong() { return null; }
