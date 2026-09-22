@@ -276,6 +276,33 @@ function absoluteCover(cover) {
   return cover;
 }
 
+
+function scheduleBeatForTrack(track, el) {
+  try {
+    if (typeof window.scheduleBeatAnalysis !== 'function') return;
+    const audioUrl = (el && (el.currentSrc || el.src)) || track.url || '';
+    if (!audioUrl) return;
+    const songObj = {
+      source: track.source,
+      id: track.id,
+      mid: track.mid,
+      songmid: track.mid,
+      name: track.title,
+      artist: track.artist,
+      duration: track.duration,
+    };
+    let songId = '';
+    try {
+      if (typeof window.beatMapSongKey === 'function') songId = window.beatMapSongKey(songObj) || '';
+    } catch { /* ignore */ }
+    if (!songId) songId = `${track.source}:${track.id}`;
+    let tok = 0;
+    if (typeof window.beginBeatAnalysisToken === 'function') tok = window.beginBeatAnalysisToken();
+    window.scheduleBeatAnalysis(songId, audioUrl, tok, songObj);
+  } catch (e) {
+    console.warn('[visual] beat schedule', e);
+  }
+}
 export function syncTrackToVisual(track) {
   if (!ready || !track) return;
   const key = `${track.source}:${track.id}`;
@@ -291,6 +318,7 @@ export function syncTrackToVisual(track) {
   if (key !== lastSongKey) {
     lastSongKey = key;
     loadLyricsForTrack(track);
+    scheduleBeatForTrack(track, el);
   }
   try {
     if (typeof window.initAudio === 'function' && (el.readyState >= 2 || !el.paused)) window.initAudio();

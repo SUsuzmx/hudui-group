@@ -34458,4 +34458,25 @@ requestMainLoopAnimationFrame();
   } catch (e) { console.warn('[visual-exports]', e); }
 })();
 
+(function exportBeatBridge() {
+  try {
+    window.scheduleBeatAnalysis = scheduleBeatAnalysis;
+    window.analyzeAudioBeats = analyzeAudioBeats;
+    window.beatMapSongKey = beatMapSongKey;
+    window.processRealtimeBeatEngine = processRealtimeBeatEngine;
+    window.scheduleBeatCamera = scheduleBeatCamera;
+    window.readBeatDiskCache = readBeatDiskCache;
+    window.applyBeatMapCacheForCurrent = applyBeatMapCacheForCurrent;
+    window.smoothBeatMapHandoff = smoothBeatMapHandoff;
+    window.initAudio = typeof initAudio === 'function' ? initAudio : window.initAudio;
+    window.beginBeatAnalysisToken = function () {
+      beatMapToken += 1;
+      return beatMapToken;
+    };
+    window.getBeatMapToken = function () { return beatMapToken; };
+    window.getCurrentBeatMap = function () { return currentBeatMap; };
+    window.getBeatCam = function () { return beatCam; };
+  } catch (e) { console.warn('[visual-exports] beat', e); }
+})();
+
 //# sourceURL=mineradio-visual-bundle.js
