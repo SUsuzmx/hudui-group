@@ -169,3 +169,39 @@ npm start              # 默认 PORT=3010
 
 听一听 → 播放 → 详情页查看舞台。  
 预览引擎：`/visual/preview.html`
+
+---
+
+## 4. 播放台 UI / 手势 / 预设（Mineradio 对齐）
+
+### 4.1 window 导出桥
+bundle 顶层 var（orbit / gestureRotation / setPreset）与 window 不同步时，外部手势和 setVisualPreset 会打到空壳对象。
+做法：visual-exports.js 在拼接末尾把同一对象挂到 window。
+
+### 4.2 centerLocked 吞掉拖拽
+主循环 targetRotY 在 centerLocked 时强制 0，updateCamera 也忽略 userTheta。
+做法：pointerdown/move 调 unlockOrbit（centerLocked=false, recentering=false）。
+
+### 4.3 双封面卡片
+UI 只保留底栏 control-cover + 曲名，不要 thumb-wrap 浮层。
+
+### 4.4 构建
+export 源必须是字符串文件拼进 bundle，不能写在 .mjs 里 IIFE（Node 无 window）。
+
+---
+
+## 4. 播放台 UI / 手势 / 预设（Mineradio 对齐）
+
+### 4.1 window 导出桥
+bundle 顶层 var（orbit / gestureRotation / setPreset）与 window 不同步时，外部手势和 setVisualPreset 会打到空壳对象。
+做法：visual-exports.js 在拼接末尾把同一对象挂到 window。
+
+### 4.2 centerLocked 吞掉拖拽
+主循环 targetRotY 在 centerLocked 时强制 0，updateCamera 也忽略 userTheta。
+做法：pointerdown/move 调 unlockOrbit（centerLocked=false, recentering=false）。
+
+### 4.3 双封面卡片
+UI 只保留底栏 control-cover + 曲名，不要 thumb-wrap 浮层。
+
+### 4.4 构建
+export 源必须是字符串文件拼进 bundle，不能写在 .mjs 里 IIFE（Node 无 window）。
