@@ -248,7 +248,7 @@ export function initVisualStage() {
       const t0 = Date.now();
       const poll = setInterval(() => {
         if (window.THREE && (window.particles || window.renderer)) { clearInterval(poll); resolve(true); return; }
-        if (Date.now() - t0 > 55000) { clearInterval(poll); reject(new Error('视觉引擎加载超时（60s）')); }
+        if (Date.now() - t0 > 120000) { clearInterval(poll); reject(new Error('视觉引擎加载超时（120s）')); }
       }, 400);
     });
     const work = (async () => {

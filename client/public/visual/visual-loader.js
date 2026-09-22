@@ -143,10 +143,10 @@
       };
     } catch (e) { console.warn('[visual-loader] patch', e); }
   }
-  window.__mineradioVisualLoading = loadScript(base + 'vendor/three.r128.min.js', 25000)
+  window.__mineradioVisualLoading = loadScript(base + 'vendor/three.r128.min.js', 60000)
     .then(function () { return loadScript(base + 'vendor/music-tempo.min.js', 15000); })
     .then(function () { return loadScript(base + 'vendor/gsap.min.js', 15000); })
-    .then(function () { return loadScript(base + 'mineradio-bundle.js', 45000); })
+    .then(function () { return loadScript(base + 'mineradio-bundle.js', 120000); })
     .then(function () {
       runtimePatch();
       window.__mineradioVisualLoaded = true;
