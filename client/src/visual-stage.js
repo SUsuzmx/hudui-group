@@ -431,8 +431,29 @@ export function setVisualPreset(index) {
         window.applyPresetOrbitBaseline(target, { syncCurrent: true });
       }
     }
+    // 切预设必须回到默认机位：相机 + 粒子姿态一起重置
+    try {
+      const gr = (typeof window.getVisualGestureRotation === 'function' && window.getVisualGestureRotation()) || window.gestureRotation;
+      if (gr) { gr.x = 0; gr.y = 0; }
+      const p = window.particles;
+      if (p && p.rotation) p.rotation.set(0, 0, 0);
+    } catch (e) { /* ignore */ }
+    if (typeof window.applyPresetOrbitBaseline === 'function') {
+      window.applyPresetOrbitBaseline(target, { syncCurrent: true });
+    }
     const o = window.orbit;
-    if (o) { o.centerLocked = false; o.recentering = false; }
+    if (o) {
+      o.centerLocked = false;
+      o.recentering = false;
+      if (Number.isFinite(o.baselineTheta)) {
+        o.userTheta = o.baselineTheta;
+        o.userPhi = o.baselinePhi;
+        o.userRadius = o.baselineRadius;
+        o.theta = o.userTheta;
+        o.phi = o.userPhi;
+        o.radius = o.userRadius;
+      }
+    }
   } catch (e) { console.warn('[visual] setPreset', e); }
   forceParticleVisible();
   adoptRendererCanvas();
