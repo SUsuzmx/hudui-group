@@ -221,3 +221,28 @@ export 源必须是字符串文件拼进 bundle，不能写在 .mjs 里 IIFE（N
 
 ### 6.4 音域回响 Topo/WE
 - 会关粒子；嵌入壳不完整时舞台要不透明底，避免透出聊天页。
+
+---
+
+## 7. 近期补充踩坑
+
+### 7.1 视觉 bundle 超时
+mineradio-bundle.js 约 1.6MB，弱网需 120s 超时。
+
+### 7.2 手势只在舞台内生效
+document 级手势会吃掉听一听列表滚动；须 stageVisible + inStage。
+
+### 7.3 切预设回默认机位
+applyPresetOrbitBaseline 外还要清 gestureRotation / particles.rotation。
+
+### 7.4 节拍分析 502
+勿用 track.url；用当前播放 currentSrc 再走 /api/audio。
+
+### 7.5 听一听控制台
+封面锁 48px；进度条 100% 并隐藏原生 range。
+
+### 7.6 歌单同步
+Cookie 登录后自动 loadLibrary；QQ 我喜欢 = musicu dirid=201。
+
+### 7.7 Git 推送
+Windows schannel 吊销检查失败时可用 GIT_SSL_NO_VERIFY=1 当次推送。
