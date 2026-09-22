@@ -322,11 +322,7 @@ export function syncTrackToVisual(track) {
     scheduleBeatForTrack(track, el);
   }
   try {
-    try {
-      const srcUrl = el && (el.currentSrc || el.src || '');
-      const sameOrigin = !srcUrl || srcUrl.startsWith(location.origin) || srcUrl.startsWith('/') || srcUrl.startsWith('blob:') || srcUrl.startsWith('data:');
-      if (sameOrigin && typeof window.initAudio === 'function' && (el.readyState >= 2 || !el.paused)) window.initAudio();
-    } catch (e) { console.warn('[visual] initAudio skip', e); }
+    if (typeof window.initAudio === 'function' && (el.readyState >= 2 || !el.paused)) window.initAudio();
     ensureAudioAudible();
   } catch (e) { console.warn('[visual] initAudio', e); }
 }

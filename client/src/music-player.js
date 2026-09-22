@@ -23,6 +23,7 @@ let lastPosUpdate = 0;
 // 下一首直链预取，减少 ended 后异步取流被系统挂起的概率
 let nextUrlCache = { key: '', url: '' };
 let preloadTimer = 0;
+let autoFailStreak = 0;
 
 const RESTRICTION_ACTION_LABEL = {
   login: '去登录音源',
@@ -213,11 +214,22 @@ function handleUnplayable(info, track, { auto = false } = {}) {
     }
   }
   if ((restriction.action === 'switch_source' || auto) && state.tracks.length > 1) {
-    const other = state.tracks.find((t) => (t.source === 'netease' || t.source === 'qq') && !(t.id === track.id && t.source === track.source));
-    if (other) {
-      if (auto) playTrack(other, { auto: true });
-      else setTimeout(() => playTrack(other), 400);
+    if (auto) {
+      autoFailStreak += 1;
+      if (autoFailStreak >= Math.min(5, state.tracks.length)) {
+        autoFailStreak = 0;
+        state.playing = false;
+        toast('多首歌曲无法播放，已停止连播');
+        return restriction;
+      }
+      const i = findIndex(track);
+      const idx = pickNextIndex(i, { auto: true });
+      const next = idx >= 0 ? state.tracks[idx] : null;
+      if (next && trackKey(next) !== trackKey(track)) playTrack(next, { auto: true });
+      return restriction;
     }
+    const other = state.tracks.find((t) => (t.source === 'netease' || t.source === 'qq') && !(t.id === track.id && t.source === track.source));
+    if (other) setTimeout(() => playTrack(other), 400);
   }
   return restriction;
 }
@@ -258,9 +270,10 @@ async function preloadNextUrl() {
   const key = trackKey(next);
   if (nextUrlCache.key === key && nextUrlCache.url) return;
   try {
-    const url = await resolveStreamUrl(next);
-    // resolveStreamUrl 会消费 cache，这里写回预取缓存
-    nextUrlCache = { key, url };
+    const streamSource = streamSourceOf(next);
+    const info = await api.musicStreamInfo(streamSource, next.id, trackExtra(next));
+    if (isPlayableInfo(info)) nextUrlCache = { key, url: info.url };
+    else nextUrlCache = { key: '', url: '' };
   } catch {
     nextUrlCache = { key: '', url: '' };
   }
@@ -292,10 +305,11 @@ async function playTrack(track, opts = {}) {
   try {
     const url = await resolveStreamUrl(track);
     if (token !== loadToken) return;
-    el.src = url;
+    el.src = (/^https?:/i.test(url) ? '/api/audio?url=' + encodeURIComponent(url) : url);
     await el.play();
     if (token === loadToken) {
       state.playing = true;
+      autoFailStreak = 0;
       suppressAudioError = false;
       maybeUpdatePositionState(true);
       schedulePreloadNext();
