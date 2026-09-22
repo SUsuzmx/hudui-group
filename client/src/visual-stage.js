@@ -280,8 +280,12 @@ function absoluteCover(cover) {
 function scheduleBeatForTrack(track, el) {
   try {
     if (typeof window.scheduleBeatAnalysis !== 'function') return;
-    const rawUrl = (el && (el.currentSrc || el.src)) || track.url || '';
+    let rawUrl = track.url || (el && (el.currentSrc || el.src)) || '';
     if (!rawUrl) return;
+    if (rawUrl.includes('/api/audio')) {
+      const m = rawUrl.match(/[?&]url=([^&]+)/);
+      if (m) { try { rawUrl = decodeURIComponent(m[1]); } catch { /* ignore */ } }
+    }
     const audioUrl = /^https?:/i.test(rawUrl) ? ('/api/audio?url=' + encodeURIComponent(rawUrl)) : rawUrl;
     const songObj = {
       source: track.source,

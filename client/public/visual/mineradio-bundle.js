@@ -19545,7 +19545,11 @@ async function analyzeAudioBeats(audioUrl, durationSec, token, options) {
     showBeatChip('正在分析节奏…');
     var resp = await fetch(audioUrl);
     if (token !== beatMapToken) { hideBeatChip(); return null; }
+    if (!resp.ok) { console.warn('beat audio fetch', resp.status); hideBeatChip(); return null; }
+    var ctype = (resp.headers.get('content-type') || '').toLowerCase();
+    if (ctype && /json|html|text\//.test(ctype)) { console.warn('beat audio not media', ctype); hideBeatChip(); return null; }
     var ab = await resp.arrayBuffer();
+    if (!ab || ab.byteLength < 1024) { console.warn('beat audio too small', ab && ab.byteLength); hideBeatChip(); return null; }
     if (token !== beatMapToken) { hideBeatChip(); return null; }
 
     // 用临时 AudioContext 解码 (我们不能复用 audioCtx 因为它可能 closed)
