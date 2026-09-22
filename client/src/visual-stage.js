@@ -297,7 +297,7 @@ function absoluteCover(cover) {
 function scheduleBeatForTrack(track, el) {
   try {
     if (typeof window.scheduleBeatAnalysis !== 'function') return;
-    let rawUrl = track.url || (el && (el.currentSrc || el.src)) || '';
+    let rawUrl = (el && (el.currentSrc || el.src)) || track.url || '';
     if (!rawUrl) return;
     if (rawUrl.includes('/api/audio')) {
       const m = rawUrl.match(/[?&]url=([^&]+)/);
