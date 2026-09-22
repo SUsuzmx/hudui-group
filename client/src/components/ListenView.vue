@@ -474,4 +474,51 @@ onMounted(() => {
 .player-console .progress-bar { width: 100% !important; align-self: stretch !important; margin-left: 0 !important; margin-right: 0 !important; }
 .player-console .progress-fill { min-width: 0; }
 .page main, .song-list { overflow-y: auto !important; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; flex: 1 1 auto; min-height: 0; max-height: none; }
+.player-console .progress-bar {
+  display: block !important;
+  position: relative !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  align-self: stretch !important;
+  flex: 1 1 100% !important;
+  margin: 2px 0 0 !important;
+  height: 4px !important;
+  border-radius: 999px !important;
+  background: rgba(255,255,255,.14) !important;
+  overflow: visible !important;
+}
+.player-console .progress-fill {
+  position: absolute !important;
+  left: 0 !important; top: 0 !important; bottom: 0 !important;
+  max-width: 100% !important;
+  height: 100% !important;
+  border-radius: 999px !important;
+  background: linear-gradient(90deg, rgba(255,255,255,.95), rgba(0,245,212,.8)) !important;
+  pointer-events: none !important;
+}
+.player-console .progress-thumb {
+  position: absolute !important;
+  top: 50% !important;
+  margin-left: -6px !important;
+  width: 12px !important; height: 12px !important;
+  border-radius: 50% !important;
+  background: #fff !important;
+  opacity: 1 !important;
+  transform: translateY(-50%) !important;
+  pointer-events: none !important;
+}
+.player-console .progress-input {
+  position: absolute !important;
+  inset: -8px 0 !important;
+  width: 100% !important;
+  max-width: none !important;
+  height: 20px !important;
+  margin: 0 !important;
+  opacity: 0 !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  background: transparent !important;
+  z-index: 2 !important;
+}
 </style>
