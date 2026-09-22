@@ -84,6 +84,16 @@ function particlesActive() {
 
 let gestureAbort = null;
 
+function stageVisible() {
+  try {
+    const root = document.querySelector('.player-stage');
+    return !!(root && root.offsetParent !== null);
+  } catch { return false; }
+}
+function inStage(el) {
+  try { return !!(el && el.closest && el.closest('.player-stage, .visual-stage-root, #canvas-container')); }
+  catch { return false; }
+}
 function isUiTarget(el) {
   if (!el || !el.closest) return false;
   return !!el.closest('.bottom-bar, .fx-dock, .fx-fab, .mini-queue-popover, .top-chrome, .stage-status, .chrome-btn');
@@ -130,7 +140,7 @@ export function ensureStageGestures() {
   window.__visualGestureBound = true;
 
   const onDown = (e) => {
-    if (isUiTarget(e.target)) return;
+    if (!stageVisible() || !inStage(e.target) || isUiTarget(e.target)) return;
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     const orbit = getLiveOrbit();
     if (pointers.size === 1 && orbit) {
@@ -167,16 +177,23 @@ export function ensureStageGestures() {
     if (!dx && !dy) return;
     if (orbit) {
       unlockOrbit(orbit);
-      orbit.userTheta = (orbit.userTheta || 0) - dx * 0.006;
-      orbit.userPhi = Math.min(orbit.maxPhi ?? 1.4, Math.max(orbit.minPhi ?? -1.4, (orbit.userPhi || 0.08) - dy * 0.004));
+      orbit.userTheta = (orbit.userTheta || 0) - dx * 0.01;
+      orbit.userPhi = Math.min(orbit.maxPhi ?? 1.4, Math.max(orbit.minPhi ?? -1.4, (orbit.userPhi || 0.08) - dy * 0.008));
       orbit.theta = orbit.userTheta;
       orbit.phi = orbit.userPhi;
       if (orbit.last) { orbit.last.x = e.clientX; orbit.last.y = e.clientY; }
     }
     const gr = getLiveGestureRotation();
     if (gr) {
-      gr.y = (gr.y || 0) - dx * 0.006;
-      gr.x = Math.max(-0.8, Math.min(0.8, (gr.x || 0) - dy * 0.004));
+      gr.y = (gr.y || 0) - dx * 0.01;
+      gr.x = Math.max(-0.8, Math.min(0.8, (gr.x || 0) - dy * 0.008));
+      try {
+        const p = window.particles;
+        if (p && p.rotation) {
+          p.rotation.y = gr.y;
+          p.rotation.x = gr.x;
+        }
+      } catch (e) { /* ignore */ }
     }
   };
   const onUp = (e) => {
@@ -188,7 +205,7 @@ export function ensureStageGestures() {
     }
   };
   const onWheel = (e) => {
-    if (isUiTarget(e.target)) return;
+    if (!stageVisible() || !inStage(e.target) || isUiTarget(e.target)) return;
     e.preventDefault();
     const orbit = getLiveOrbit();
     if (!orbit) return;

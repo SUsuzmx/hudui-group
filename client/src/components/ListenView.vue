@@ -471,4 +471,7 @@ onMounted(() => {
 .player-console .transport { justify-content: center !important; }
 .player-console .modes { justify-content: flex-end !important; }
 .player-console .time-display { min-width: 84px !important; text-align: right !important; font-size: 11px !important; color: rgba(255,255,255,.55) !important; font-variant-numeric: tabular-nums; }
+.player-console .progress-bar { width: 100% !important; align-self: stretch !important; margin-left: 0 !important; margin-right: 0 !important; }
+.player-console .progress-fill { min-width: 0; }
+.page main, .song-list { overflow-y: auto !important; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; flex: 1 1 auto; min-height: 0; max-height: none; }
 </style>
