@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { toast } from '../toast.js';
 import { musicPlayer, fmtAudioTime } from '../music-player.js';
 import SongDetailView from './SongDetailView.vue';
+import { preloadVisualStage } from '../visual-stage.js';
 
 const emit = defineEmits(['back']);
 
@@ -149,6 +150,8 @@ function switchLibTab(tab) {
 onMounted(() => {
   musicPlayer.ensureAudio();
   refreshLoginStatus();
+  // 预加载视觉引擎，进详情页不必再等预设/bundle
+  preloadVisualStage();
   if (!tracksList.value.length) load('');
   else tracks.value = musicPlayer.state.tracks.slice();
 });

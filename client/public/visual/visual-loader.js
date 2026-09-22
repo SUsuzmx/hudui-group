@@ -93,7 +93,26 @@
       if (window.uniforms && window.uniforms.uParticleDim) window.uniforms.uParticleDim.value = 1;
       if (window.fx) window.fx.particleLyrics = true;
       if (window.particles) window.particles.visible = true;
-      if (window.audio) window.playing = !window.audio.paused && !window.audio.ended;
+      if (window.audio) {
+        window.playing = !window.audio.paused && !window.audio.ended;
+        try {
+          if (window.audio.volume < 0.05) window.audio.volume = 1;
+          window.audio.muted = false;
+        } catch (e) {}
+      }
+      // Web Audio 绑定后若输出被静音支路吞掉，恢复可听
+      try {
+        if (window.audioCtx && window.audioCtx.state === 'suspended') {
+          window.audioCtx.resume().catch(function () {});
+        }
+        if (window.gainNode && window.gainNode.gain && window.gainNode.gain.value < 0.05) {
+          window.gainNode.gain.value = 1;
+        }
+        if (window.analysisSinkNode && window.analysisSinkNode.gain && !window.gainNode
+          && window.analysisSinkNode.gain.value < 0.01) {
+          window.analysisSinkNode.gain.value = 1;
+        }
+      } catch (e) {}
       // 3D 歌词时间轴：无拖动预览时必须用 audio.currentTime
       if (typeof window.getProgressDragPreviewSeconds !== 'function') {
         window.getProgressDragPreviewSeconds = function () { return null; };

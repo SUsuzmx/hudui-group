@@ -8,7 +8,7 @@
 | **GitHub** | https://github.com/SUsuzmx/hudui-group |
 | **技术栈** | Node.js + Express + Socket.IO + SQLite（`node:sqlite`）+ Vue 3 + Vite |
 | **AI** | 阿里云百炼 DashScope（聊天 / 生图 / 视频 / **Agent 任务**），多模型故障转移 |
-| **默认端口** | `3000`（`config/app.json` 或环境变量 `PORT`） |
+| **默认端口** | `3010`（`config/app.json` 或环境变量 `PORT`） |
 | **域名接入** | Cloudflare Tunnel（域名 `chat.supeiji.top`，隧道名 `werewolf`） |
 
 ### 近期功能要点
@@ -363,9 +363,6 @@ Get-Content C:\perry\data\service.log -Tail 50
 
 ---
 
-## /prototype/
-
-独立静态原型：https://chat.supeiji.top/prototype/
 
 ---
 

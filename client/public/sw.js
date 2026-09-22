@@ -1,4 +1,4 @@
-const CACHE = 'wx-shell-v8';
+const CACHE = 'wx-shell-v9';
 const SHELL = ['/manifest.json', '/icon-192.png', '/icon-512.png', '/icon.svg'];
 function isApi(p) { return p.startsWith('/api') || p.startsWith('/socket.io'); }
 function isNoCacheDoc(p) { return p === '/' || p === '/index.html' || p === '/sw.js'; }
@@ -29,14 +29,22 @@ self.addEventListener('fetch', (e) => {
         const hit = await c.match(req);
         if (hit) return hit;
         const res = await fetch(req);
-        if (res.ok) c.put(req, res.clone());
+        // 必须同步 clone，body 一旦被页面读取就不能再 clone
+        if (res.ok) {
+          const copy = res.clone();
+          c.put(req, copy).catch(() => {});
+        }
         return res;
       }).catch(() => fetch(req))
     );
     return;
   }
   e.respondWith(fetch(req).then((res) => {
-    if (res.ok) caches.open(CACHE).then((c) => c.put(req, res.clone())).catch(() => {});
+    // 必须同步 clone，否则 caches.open 之后 body 已被消费 → "Response body is already used"
+    if (res.ok) {
+      const copy = res.clone();
+      caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
+    }
     return res;
   }).catch(() => caches.match(req)));
 });

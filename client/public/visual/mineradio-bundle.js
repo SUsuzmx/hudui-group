@@ -63,9 +63,11 @@ function startGestureControl() {}
 function stopGestureControl() {}
 /** 11-main-loop.animate() 每帧裸调用，必须存在 */
 function applyParticleSpinDrag(dx, dy) {
+  // 仅在外部手势未处理时给轻微粒子转动；主路径由 visual-stage bindStageGestures 写 gestureRotation
   try {
+    if (window.__visualGestureBound) return;
     var gr = window.gestureRotation || { x: 0, y: 0 };
-    gr.y = (gr.y || 0) - (Number(dx) || 0) * 0.004;
+    gr.y = (gr.y || 0) + (Number(dx) || 0) * 0.004;
     gr.x = Math.max(-0.9, Math.min(0.9, (gr.x || 0) + (Number(dy) || 0) * 0.003));
     window.gestureRotation = gr;
   } catch (e) {}
@@ -2701,7 +2703,7 @@ renderer.domElement.style.display = 'block';
 renderer.domElement.style.width = '100%';
 renderer.domElement.style.height = '100%';
 renderer.domElement.tabIndex = 0;
-document.getElementById('canvas-container').appendChild(renderer.domElement);
+(function(){var cc=document.getElementById('canvas-container');if(!cc){cc=document.createElement('div');cc.id='canvas-container';cc.setAttribute('data-visual-staging','1');cc.style.cssText='position:fixed;left:-9999px;top:0;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none';(document.body||document.documentElement).appendChild(cc);}if(cc&&renderer&&renderer.domElement)cc.appendChild(renderer.domElement);})();
 
 // ============================================================
 //  相机系统 v7.1 — 分离 user offset / cinema offset

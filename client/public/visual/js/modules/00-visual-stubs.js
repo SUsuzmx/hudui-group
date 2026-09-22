@@ -60,9 +60,11 @@ function startGestureControl() {}
 function stopGestureControl() {}
 /** 11-main-loop.animate() 每帧裸调用，必须存在 */
 function applyParticleSpinDrag(dx, dy) {
+  // 仅在外部手势未处理时给轻微粒子转动；主路径由 visual-stage bindStageGestures 写 gestureRotation
   try {
+    if (window.__visualGestureBound) return;
     var gr = window.gestureRotation || { x: 0, y: 0 };
-    gr.y = (gr.y || 0) - (Number(dx) || 0) * 0.004;
+    gr.y = (gr.y || 0) + (Number(dx) || 0) * 0.004;
     gr.x = Math.max(-0.9, Math.min(0.9, (gr.x || 0) + (Number(dy) || 0) * 0.003));
     window.gestureRotation = gr;
   } catch (e) {}

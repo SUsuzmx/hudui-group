@@ -35,6 +35,12 @@ function adoptRendererCanvas() {
   const cc = document.getElementById('canvas-container');
   const el = window.renderer && window.renderer.domElement;
   if (!cc || !el) return false;
+  // 预加载时可能建过隐藏 staging 容器，进详情页后清掉，避免双 id
+  try {
+    document.querySelectorAll('#canvas-container[data-visual-staging]').forEach((node) => {
+      if (node !== cc) node.remove();
+    });
+  } catch { /* ignore */ }
   if (!cc.contains(el)) cc.appendChild(el);
   try {
     if (window.renderer?.setSize) {
@@ -46,6 +52,20 @@ function adoptRendererCanvas() {
   el.style.display = 'block';
   return true;
 }
+
+/** 预加载时保证视觉引擎有可挂载的 canvas 容器，避免 mineradio 启动空指针 */
+function ensureCanvasHost() {
+  let cc = document.getElementById('canvas-container');
+  if (cc) return cc;
+  cc = document.createElement('div');
+  cc.id = 'canvas-container';
+  cc.setAttribute('data-visual-staging', '1');
+  cc.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none';
+  (document.body || document.documentElement).appendChild(cc);
+  return cc;
+}
+
+export { adoptRendererCanvas };
 
 function forceParticleVisible() {
   try {
@@ -109,26 +129,19 @@ function bindStageGestures(root) {
     orbit.rotating = true;
     orbit.centerLocked = false;
     orbit.recentering = false;
-    // 相机轨道（updateFreeCamera / updateCinema 读 userTheta/userPhi/radius）
-    orbit.userTheta = (orbit.userTheta || 0) - dx * 0.006;
+    // 方向：手指/鼠标往左滑（dx<0）→ 视角向左（theta 增大）
+    orbit.userTheta = (orbit.userTheta || 0) + dx * 0.006;
     orbit.userPhi = Math.min(orbit.maxPhi ?? 1.4, Math.max(orbit.minPhi ?? -1.4, (orbit.userPhi || 0.08) + dy * 0.004));
     orbit.theta = orbit.userTheta;
     orbit.phi = orbit.userPhi;
     orbit.last.x = e.clientX;
     orbit.last.y = e.clientY;
-    // 粒子层旋转：主循环用 gestureRotation，不读 orbit.userTheta
+    // 粒子层：与相机同向，避免双重旋转
     const gr = window.gestureRotation;
     if (gr) {
-      gr.y = (gr.y || 0) - dx * 0.006;
+      gr.y = (gr.y || 0) + dx * 0.006;
       gr.x = Math.max(-0.8, Math.min(0.8, (gr.x || 0) + dy * 0.004));
     }
-    // 部分预设走 applyParticleSpinDrag（内部再写 orbit/particles）
-    try {
-      if (typeof window.applyParticleSpinDrag === 'function' && particlesActive()) {
-        const dt = 1 / 60;
-        window.applyParticleSpinDrag(dx, dy, dt);
-      }
-    } catch { /* ignore */ }
   };
   const onUp = (e) => {
     pointers.delete(e.pointerId);
@@ -174,6 +187,7 @@ export function initVisualStage() {
       }, 400);
     });
     const work = (async () => {
+      ensureCanvasHost();
       await loadScript('/visual/visual-loader.js');
       if (typeof window.loadMineradioVisual !== 'function') throw new Error('visual-loader 未导出 loadMineradioVisual');
       await window.loadMineradioVisual();
@@ -182,7 +196,10 @@ export function initVisualStage() {
       window.musicPlayerToggle = () => musicPlayer.togglePlay();
       window.musicPlayerNext = () => musicPlayer.nextTrack();
       window.musicPlayerPrev = () => musicPlayer.prevTrack();
-      const sync = () => { window.playing = musicPlayer.state.playing; };
+      const sync = () => {
+        window.playing = musicPlayer.state.playing;
+        if (window.playing) ensureAudioAudible();
+      };
       el.addEventListener('play', sync);
       el.addEventListener('pause', sync);
       sync();
@@ -349,18 +366,42 @@ export function startVisualWatch() {
     if (window.fx && Array.isArray(window.lyricsLines) && window.lyricsLines.length) {
       window.fx.particleLyrics = true;
     }
-    try {
-      if (window.playing && typeof window.tickLyricsParticles === 'function') window.tickLyricsParticles();
-      if (typeof window.updateStageLyrics3D === 'function') window.updateStageLyrics3D(0.016);
-    } catch (e) { /* ignore */ }
   };
-  lyricPollTimer = setInterval(sync, 80);
-  const raf = () => { if (!lyricPollTimer) return; sync(); requestAnimationFrame(raf); };
-  requestAnimationFrame(raf);
+  // 只同步 playing；tickLyricsParticles / updateStageLyrics3D 由 11-main-loop 驱动，双跑会卡顿
+  lyricPollTimer = setInterval(sync, 150);
 }
 
 export function stopVisualWatch() {
   if (lyricPollTimer) { clearInterval(lyricPollTimer); lyricPollTimer = 0; }
+}
+
+/** 进列表页预加载引擎，详情页秒开 */
+export function preloadVisualStage() {
+  try { ensureCanvasHost(); } catch { /* ignore */ }
+  return initVisualStage().then(() => true).catch((e) => {
+    console.warn('[visual] preload', e);
+    return false;
+  });
+}
+
+/** Web Audio 绑定后恢复可听（capture 支路 gain=0 会吞声） */
+export function ensureAudioAudible() {
+  try {
+    const el = musicPlayer.ensureAudio();
+    if (!(el.volume > 0)) el.volume = 1;
+    el.muted = false;
+    if (window.audioCtx && window.audioCtx.state === 'suspended') {
+      window.audioCtx.resume().catch(() => {});
+    }
+    if (window.gainNode?.gain && Number(window.gainNode.gain.value) < 0.05) {
+      window.gainNode.gain.value = 1;
+    }
+    // analysisSink 默认 gain=0 只做分析不发声；若没走 gainNode 则必须放行
+    if (!window.gainNode && window.analysisSinkNode?.gain
+      && Number(window.analysisSinkNode.gain.value) < 0.01) {
+      window.analysisSinkNode.gain.value = 1;
+    }
+  } catch (e) { /* ignore */ }
 }
 
 export const PRESET_LIST = [

@@ -183,7 +183,7 @@ renderer.domElement.style.display = 'block';
 renderer.domElement.style.width = '100%';
 renderer.domElement.style.height = '100%';
 renderer.domElement.tabIndex = 0;
-document.getElementById('canvas-container').appendChild(renderer.domElement);
+(function(){var cc=document.getElementById('canvas-container');if(!cc){cc=document.createElement('div');cc.id='canvas-container';cc.setAttribute('data-visual-staging','1');cc.style.cssText='position:fixed;left:-9999px;top:0;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none';(document.body||document.documentElement).appendChild(cc);}if(cc&&renderer&&renderer.domElement)cc.appendChild(renderer.domElement);})();
 
 // ============================================================
 //  相机系统 v7.1 — 分离 user offset / cinema offset
