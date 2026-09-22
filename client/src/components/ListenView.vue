@@ -266,25 +266,29 @@ onMounted(() => {
     </main>
 
     <footer v-if="current && !showDetail" class="player">
-      <button class="player-open" type="button" @click="openDetail">
-        <div class="player-top">
+      <div class="player-progress" @click.stop>
+        <input type="range" min="0" :max="duration || 0" step="0.1" :value="progress" @input="onSeek" />
+      </div>
+      <div class="player-row">
+        <button class="player-open" type="button" @click="openDetail">
+          <div class="player-cover">
+            <img v-if="current.cover" :src="current.cover" alt="" loading="lazy" />
+            <span v-else>♪</span>
+          </div>
           <div class="player-info">
             <div class="player-title">{{ current.title }}</div>
-            <div class="player-sub">{{ current.artist }} · 点击查看详情</div>
+            <div class="player-sub">{{ current.artist }} · {{ current.source === 'netease' ? '网易云' : 'QQ音乐' }}</div>
           </div>
-          <div class="player-ctrl" @click.stop>
-            <button type="button" :title="modeLabel" @click="musicPlayer.cyclePlayMode()">{{ modeIcon }}</button>
-            <button type="button" @click="musicPlayer.prevTrack()">‹‹</button>
-            <button type="button" class="main" @click="musicPlayer.togglePlay()">{{ playing ? '❚❚' : '▶' }}</button>
-            <button type="button" @click="musicPlayer.nextTrack()">››</button>
-          </div>
+        </button>
+        <div class="player-ctrl" @click.stop>
+          <span class="player-time">{{ fmtAudioTime(progress) }}</span>
+          <button type="button" :title="modeLabel" @click="musicPlayer.cyclePlayMode()">{{ modeIcon }}</button>
+          <button type="button" title="上一首" @click="musicPlayer.prevTrack()">‹‹</button>
+          <button type="button" class="main" :title="playing ? '暂停' : '播放'" @click="musicPlayer.togglePlay()">{{ playing ? '❚❚' : '▶' }}</button>
+          <button type="button" title="下一首" @click="musicPlayer.nextTrack()">››</button>
+          <button type="button" title="打开视觉舞台" @click="openDetail">✦</button>
         </div>
-        <div class="player-progress" @click.stop>
-          <span>{{ fmtAudioTime(progress) }}</span>
-          <input type="range" min="0" :max="duration || 0" step="0.1" :value="progress" @input="onSeek" />
-          <span>{{ fmtAudioTime(duration) }}</span>
-        </div>
-      </button>
+      </div>
     </footer>
 
     <SongDetailView v-if="showDetail" @close="showDetail = false" />

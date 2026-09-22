@@ -163,8 +163,11 @@ onBeforeUnmount(() => { stopVisualWatch(); if (lyricTimer) clearInterval(lyricTi
           :class="{ active: isActive(t) }"
           @click="playFromQueue(t)"
         >
-          <span class="q-title">{{ t.title }}</span>
-          <span class="q-sub">{{ t.artist }}</span>
+          <img v-if="t.cover" class="q-cover" :src="t.cover" alt="" loading="lazy" /><span v-else class="q-cover q-cover-empty">♪</span>
+          <span class="q-text">
+            <span class="q-title">{{ t.title }}</span>
+            <span class="q-sub">{{ t.artist }}</span>
+          </span>
         </button>
       </div>
     </div>
@@ -346,8 +349,9 @@ onBeforeUnmount(() => { stopVisualWatch(); if (lyricTimer) clearInterval(lyricTi
 
 .lyric-float {
   position: absolute;
-  left: 16px;
-  right: 72px;
+  left: 0;
+  right: 0;
+  padding: 0 56px;
   bottom: 118px;
   z-index: 26;
   text-align: center;
@@ -409,7 +413,11 @@ onBeforeUnmount(() => { stopVisualWatch(); if (lyricTimer) clearInterval(lyricTi
 }
 .queue-item:hover { background: rgba(255, 255, 255, 0.05); }
 .queue-item.active { background: rgba(var(--fc-accent-rgb), 0.14); }
-.q-title { font-size: 13px; font-weight: 600; }
+.q-cover { width: 40px; height: 40px; border-radius: 6px; object-fit: cover; flex-shrink: 0; background: rgba(255,255,255,.08); }
+.q-cover-empty { display: flex; align-items: center; justify-content: center; opacity: .5; }
+.queue-item { flex-direction: row !important; align-items: center; gap: 10px; }
+.q-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.q-title { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .q-sub { font-size: 11px; opacity: 0.5; }
 
 .bottom-bar {
