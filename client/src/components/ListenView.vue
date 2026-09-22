@@ -376,4 +376,8 @@ onMounted(() => {
 .login-actions { margin-top: 10px; display: flex; gap: 8px; justify-content: flex-end; }
 .login-actions button { min-height: 36px; padding: 0 14px; border-radius: 8px; border: 0; font-size: 13px; background: var(--divider-soft); color: var(--text); }
 .login-actions button:last-child { background: var(--green); color: #fff; }
+.player-open .player-cover { width: 48px !important; height: 48px !important; max-width: 48px; max-height: 48px; border-radius: 8px; overflow: hidden; flex-shrink: 0; background: var(--bg); }
+.player-open .player-cover img { width: 48px !important; height: 48px !important; max-width: 48px; max-height: 48px; object-fit: cover; display: block; }
+.player-open .player-info { min-width: 0; overflow: hidden; }
+.player-row { display: flex !important; align-items: center; gap: 8px; min-height: 56px; }
 </style>

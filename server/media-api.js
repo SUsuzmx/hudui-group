@@ -327,7 +327,7 @@ export function createMediaApi() {
       try {
         const result = source === 'netease'
           ? await netease.getSongUrl({ id, level: String(req.query.level || 'exhigh'), songMeta: meta })
-          : await qq.getSongUrl({ id, mid: req.query.mid, mediaMid: req.query.mediaMid, level: String(req.query.level || 'exhigh'), songMeta: meta });
+          : await qq.getSongUrl({ id, mid: req.query.mid || req.query.songmid || id, mediaMid: req.query.mediaMid || req.query.media_mid || id, level: String(req.query.level || 'exhigh'), songMeta: meta });
         res.json({ ...result, source, error: result.playable ? undefined : (result.restriction?.message || '暂无可用播放地址') });
       } catch (e) { res.status(502).json({ error: e.message, playable: false, url: '' }); }
     },
@@ -338,7 +338,7 @@ export function createMediaApi() {
       try {
         const result = source === 'netease'
           ? await netease.getSongUrl({ id, level: String(req.query.level || 'exhigh') })
-          : await qq.getSongUrl({ id, mid: req.query.mid, mediaMid: req.query.mediaMid, level: String(req.query.level || 'exhigh') });
+          : await qq.getSongUrl({ id, mid: req.query.mid || req.query.songmid || id, mediaMid: req.query.mediaMid || req.query.media_mid || id, level: String(req.query.level || 'exhigh') });
         if (!result.playable || !result.url) {
           return res.status(404).json({ error: result.restriction?.message || '暂无可用播放地址', restriction: result.restriction || null });
         }
