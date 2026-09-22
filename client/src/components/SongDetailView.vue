@@ -229,7 +229,7 @@ onBeforeUnmount(() => { stopVisualWatch(); if (lyricTimer) clearInterval(lyricTi
   position: absolute;
   inset: 0;
   z-index: 40;
-  background: #050608;
+  background: #050608; /* 不透明，避免 sonic 预设关粒子后透出聊天页 */
   overflow: hidden;
   color: rgba(255, 255, 255, 0.92);
   font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
@@ -239,6 +239,7 @@ onBeforeUnmount(() => { stopVisualWatch(); if (lyricTimer) clearInterval(lyricTi
   pointer-events: auto;
   touch-action: none;
   cursor: grab;
+  background: #050608;
 }
 .player-stage :deep(.visual-stage-root:active) { cursor: grabbing; }
 

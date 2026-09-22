@@ -401,8 +401,7 @@ function savePresetId(id) {
 export function setVisualPreset(index) {
   const id = Number(index);
   const next = Number.isFinite(id) && id >= 0 && id <= 12 ? id : DEFAULT_PRESET_ID;
-  const blocked = (next === 7 || next === 8) && !(window.MineradioSonicWorkshop && typeof window.MineradioSonicWorkshop.isActive === 'function' && window.MineradioSonicWorkshop.isActive(window.fx));
-  const target = blocked ? 0 : next;
+  const target = next;
   try {
     const apply = window.setPreset;
     if (typeof apply === 'function') {
