@@ -47,6 +47,7 @@ function songSourceTagHtml() { return ''; }
 function scheduleMainRendererViewportRefresh() {}
 function syncGestureControlHostVisibility() {}
 function hasAnyPlatformLogin() { return false; }
+function notifyDesktopLyricsBeatMapReady() {}
 function togglePlay() { try { window.musicPlayerToggle && window.musicPlayerToggle(); } catch (e) {} }
 function nextTrack() { try { window.musicPlayerNext && window.musicPlayerNext(); } catch (e) {} }
 function prevTrack() { try { window.musicPlayerPrev && window.musicPlayerPrev(); } catch (e) {} }
@@ -19246,7 +19247,7 @@ async function analyzeMusicTempoInWorker(buffer, token) {
       worker.postMessage({
         mono: mono.buffer,
         sampleRate: buffer.sampleRate,
-        scriptUrl: location.origin + '/vendor/music-tempo.min.js'
+        scriptUrl: location.origin + '/visual/vendor/music-tempo.min.js'
       }, [mono.buffer]);
     });
   } catch (err) {

@@ -44,6 +44,7 @@ function songSourceTagHtml() { return ''; }
 function scheduleMainRendererViewportRefresh() {}
 function syncGestureControlHostVisibility() {}
 function hasAnyPlatformLogin() { return false; }
+function notifyDesktopLyricsBeatMapReady() {}
 function togglePlay() { try { window.musicPlayerToggle && window.musicPlayerToggle(); } catch (e) {} }
 function nextTrack() { try { window.musicPlayerNext && window.musicPlayerNext(); } catch (e) {} }
 function prevTrack() { try { window.musicPlayerPrev && window.musicPlayerPrev(); } catch (e) {} }

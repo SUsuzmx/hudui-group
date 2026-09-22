@@ -183,7 +183,7 @@ async function analyzeMusicTempoInWorker(buffer, token) {
       worker.postMessage({
         mono: mono.buffer,
         sampleRate: buffer.sampleRate,
-        scriptUrl: location.origin + '/vendor/music-tempo.min.js'
+        scriptUrl: location.origin + '/visual/vendor/music-tempo.min.js'
       }, [mono.buffer]);
     });
   } catch (err) {

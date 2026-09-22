@@ -321,6 +321,7 @@ export function syncTrackToVisual(track) {
     scheduleBeatForTrack(track, el);
   }
   try {
+    try { if (el) el.__mineradioForceCaptureSource = true; } catch (e) {}
     if (typeof window.initAudio === 'function' && (el.readyState >= 2 || !el.paused)) window.initAudio();
     ensureAudioAudible();
   } catch (e) { console.warn('[visual] initAudio', e); }
@@ -471,18 +472,22 @@ export function preloadVisualStage() {
 export function ensureAudioAudible() {
   try {
     const el = musicPlayer.ensureAudio();
-    if (!(el.volume > 0)) el.volume = 1;
-    el.muted = false;
+    if (el) {
+      if (!(el.volume > 0)) el.volume = 1;
+      el.muted = false;
+    }
     if (window.audioCtx && window.audioCtx.state === 'suspended') {
       window.audioCtx.resume().catch(() => {});
     }
-    if (window.gainNode?.gain && Number(window.gainNode.gain.value) < 0.05) {
-      window.gainNode.gain.value = 1;
+    // MediaElementSource 支路必须经 gainNode 出声；capture 支路 analysisSink 默认 0 由元素自身外放
+    if (window.gainNode?.gain) {
+      if (Number(window.gainNode.gain.value) < 0.05) window.gainNode.gain.value = 1;
     }
-    // analysisSink 默认 gain=0 只做分析不发声；若没走 gainNode 则必须放行
-    if (!window.gainNode && window.analysisSinkNode?.gain
-      && Number(window.analysisSinkNode.gain.value) < 0.01) {
-      window.analysisSinkNode.gain.value = 1;
+    if (!window.gainNode && window.analysisSinkNode?.gain) {
+      const sinkNeed = !(el && !el.paused && el.captureStream);
+      if (sinkNeed && Number(window.analysisSinkNode.gain.value) < 0.01) {
+        window.analysisSinkNode.gain.value = 1;
+      }
     }
   } catch (e) { /* ignore */ }
 }
