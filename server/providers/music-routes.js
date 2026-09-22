@@ -24,7 +24,7 @@ export function createMusicProviderRouter({ requireAuth, provider } = {}) {
       const level = String(req.query.level || 'exhigh');
       const result = name === 'netease'
         ? await netease.getSongUrl({ id: req.query.id, level })
-        : await qq.getSongUrl({ id: req.query.id, mid: req.query.mid, mediaMid: req.query.mediaMid, level });
+        : await qq.getSongUrl({ id: req.query.id, mid: req.query.mid || req.query.songmid, mediaMid: req.query.mediaMid, level, songMeta: { id: req.query.id, mid: req.query.mid, mediaMid: req.query.mediaMid, title: req.query.title, artist: req.query.artist, artists: String(req.query.artist || '').split(/[\\/\\,]/).filter(Boolean) } });
       res.json(result);
     } catch (e) { res.status(502).json({ provider: name, error: e.message, playable: false, url: '' }); }
   });
@@ -37,19 +37,39 @@ export function createMusicProviderRouter({ requireAuth, provider } = {}) {
 
   router.get('/playlists', async (req, res) => {
     try {
-      res.json(await p.listPlaylists());
+      const r = name === 'netease' ? await handleNeteaseUserPlaylists() : await handleQQUserPlaylists();
+      res.json({ provider: name, ...r });
     } catch (e) { res.status(502).json({ provider: name, error: e.message, playlists: [], loggedIn: false }); }
   });
 
   router.get('/playlist/tracks', async (req, res) => {
     try {
-      res.json(await p.playlistTracks({ id: req.query.id, limit: Number(req.query.limit) || 100 }));
+      const r = name === 'netease'
+        ? await handleNeteasePlaylistTracks(req.query.id, { limit: Number(req.query.limit) || 100 })
+        : await handleQQPlaylistTracks(req.query.id, { limit: Number(req.query.limit) || 100 });
+      res.json({ provider: name, songs: r.tracks || [], tracks: r.tracks || [], ...r });
     } catch (e) { res.status(502).json({ provider: name, error: e.message, songs: [] }); }
   });
 
   router.get('/likes', async (req, res) => {
     try {
-      res.json(await p.listLikes());
+      if (name === 'netease') {
+        const list = await handleNeteaseUserPlaylists();
+        const liked = (list.playlists || []).find((pl) => Number(pl.specialType) === 5) || (list.playlists || [])[0];
+        const songs = liked && liked.id ? (await handleNeteasePlaylistTracks(liked.id, { limit: 200 })).tracks : [];
+        return res.json({ provider: name, loggedIn: !!list.loggedIn, songs, tracks: songs, playlists: list.playlists || [] });
+      }
+      const r = await handleQQPlaylistTracks(QQ_LIKED_PLAYLIST_ID, { limit: 200 });
+      const list = await handleQQUserPlaylists();
+      return res.json({
+        provider: name,
+        loggedIn: !!r.loggedIn,
+        songs: r.tracks || [],
+        tracks: r.tracks || [],
+        playlists: list.playlists || [],
+        message: r.message || '',
+        requiresPlaybackKey: !!r.requiresPlaybackKey,
+      });
     } catch (e) { res.status(502).json({ provider: name, error: e.message, songs: [], loggedIn: false }); }
   });
 
