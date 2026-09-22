@@ -322,6 +322,7 @@ export function syncTrackToVisual(track) {
   }
   try {
     if (typeof window.initAudio === 'function' && (el.readyState >= 2 || !el.paused)) window.initAudio();
+    ensureAudioAudible();
   } catch (e) { console.warn('[visual] initAudio', e); }
 }
 

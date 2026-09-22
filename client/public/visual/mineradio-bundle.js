@@ -21113,12 +21113,12 @@ function smoothPodcastDjIntroHandoff(songKey, map, token) {
 
 /* ==== js/modules/03-beat/03-local-beat-cache-modal.js ==== */
 function showBeatChip(text) {
-  document.getElementById('beat-text').textContent = text || '分析节奏…';
-  document.getElementById('beat-chip').classList.add('show');
+  var __bt = document.getElementById('beat-text'); if (__bt) __bt.textContent = text || '分析节奏…';
+  var __bc = document.getElementById('beat-chip'); if (__bc) __bc.classList.add('show');
   if (localBeatAnalysis && localBeatAnalysis.active) setLocalBeatStatus(text || '分析中...', 'warn');
 }
 function hideBeatChip() {
-  document.getElementById('beat-chip').classList.remove('show');
+  var __bc2 = document.getElementById('beat-chip'); if (__bc2) __bc2.classList.remove('show');
 }
 
 function localBeatRound(v, scale) {
