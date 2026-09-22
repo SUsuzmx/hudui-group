@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import { musicPlayer, fmtAudioTime } from '../music-player.js';
 import {
-  initVisualStage, syncTrackToVisual, setVisualPreset, setFxField,
+  initVisualStage, ensureStageGestures, syncTrackToVisual, setVisualPreset, setFxField,
   startVisualWatch, stopVisualWatch, getVisualStageError,
   ensureDefaultPreset, ensureAudioAudible, PRESET_LIST,
 } from '../visual-stage.js';
@@ -74,6 +74,7 @@ let lyricTimer = 0;
 async function bootStage() {
   try {
     await initVisualStage();
+    ensureStageGestures();
     stageReady.value = true;
     presetId.value = ensureDefaultPreset();
     if (current.value) syncTrackToVisual(current.value);

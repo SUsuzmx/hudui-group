@@ -82,69 +82,98 @@ function particlesActive() {
   } catch { return false; }
 }
 
-function bindStageGestures(root) {
-  if (!root || root.__visualGestureBound) return;
-  root.__visualGestureBound = true;
-  window.__visualGestureBound = true;
+let gestureAbort = null;
+
+function isUiTarget(el) {
+  if (!el || !el.closest) return false;
+  return !!el.closest('.bottom-bar, .fx-dock, .fx-fab, .mini-queue-popover, .top-chrome, .stage-status, .chrome-btn');
+}
+
+function getLiveOrbit() {
+  try {
+    if (typeof window.getVisualOrbit === 'function') {
+      const o = window.getVisualOrbit();
+      if (o) return o;
+    }
+  } catch { /* ignore */ }
+  return window.orbit || null;
+}
+
+function getLiveGestureRotation() {
+  try {
+    if (typeof window.getVisualGestureRotation === 'function') {
+      const g = window.getVisualGestureRotation();
+      if (g) return g;
+    }
+  } catch { /* ignore */ }
+  return window.gestureRotation || { x: 0, y: 0 };
+}
+
+function unlockOrbit(orbit) {
+  if (!orbit) return;
+  orbit.rotating = true;
+  orbit.centerLocked = false;
+  orbit.recentering = false;
+  try { if (orbit.focus) orbit.focus.active = false; } catch { /* ignore */ }
+}
+
+/** 可重复调用：每次进详情页绑到当前舞台 DOM（预加载隐藏节点会被换掉） */
+export function ensureStageGestures() {
+  if (gestureAbort) {
+    try { gestureAbort.abort(); } catch { /* ignore */ }
+    gestureAbort = null;
+  }
   const pointers = new Map();
   let lastDist = 0;
-  const isUi = (e) => {
-    const el = e.target;
-    return !!(el && el.closest && el.closest('.bottom-bar, .fx-dock, .fx-fab, .mini-queue-popover, .top-chrome, .stage-status, button, input, select, textarea, a'));
-  };
-  const getOrbit = () => window.orbit || window.getVisualOrbit?.();
-  const getGr = () => window.gestureRotation || window.getVisualGestureRotation?.() || { x: 0, y: 0 };
-  function unlockOrbit(orbit) {
-    if (!orbit) return;
-    orbit.rotating = true;
-    orbit.centerLocked = false;
-    orbit.recentering = false;
-    orbit.focus && (orbit.focus.active = false);
-  }
+  const ac = new AbortController();
+  gestureAbort = ac;
+  window.__visualGestureBound = true;
+
   const onDown = (e) => {
-    if (isUi(e)) return;
+    if (isUiTarget(e.target)) return;
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    const orbit = getOrbit();
+    const orbit = getLiveOrbit();
     if (pointers.size === 1 && orbit) {
       unlockOrbit(orbit);
-      orbit.last.x = e.clientX;
-      orbit.last.y = e.clientY;
+      if (orbit.last) { orbit.last.x = e.clientX; orbit.last.y = e.clientY; }
     }
     if (pointers.size === 2) {
       const pts = [...pointers.values()];
       lastDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
       if (orbit) unlockOrbit(orbit);
     }
+    try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
   };
   const onMove = (e) => {
     if (!pointers.has(e.pointerId)) return;
     const prev = pointers.get(e.pointerId);
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    const orbit = getOrbit();
-    if (!orbit) return;
+    const orbit = getLiveOrbit();
     if (pointers.size >= 2) {
       const pts = [...pointers.values()];
       const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      if (lastDist > 0 && dist > 0) {
+      if (orbit && lastDist > 0 && dist > 0) {
         const scale = lastDist / dist;
         unlockOrbit(orbit);
-        orbit.userRadius = Math.min(orbit.maxRadius || 14, Math.max(orbit.minRadius || 2.4, (orbit.userRadius || 6.6) * scale));
-        orbit.radius = orbit.userRadius;
+        const next = Math.min(orbit.maxRadius || 14, Math.max(orbit.minRadius || 2.4, (orbit.userRadius || 6.6) * scale));
+        orbit.userRadius = next;
+        orbit.radius = next;
       }
       lastDist = dist;
       return;
     }
     const dx = e.clientX - prev.x;
     const dy = e.clientY - prev.y;
-    unlockOrbit(orbit);
-    // 手指向左（dx<0）→ 场景同向转（theta 增大）
-    orbit.userTheta = (orbit.userTheta || 0) + dx * 0.006;
-    orbit.userPhi = Math.min(orbit.maxPhi ?? 1.4, Math.max(orbit.minPhi ?? -1.4, (orbit.userPhi || 0.08) + dy * 0.004));
-    orbit.theta = orbit.userTheta;
-    orbit.phi = orbit.userPhi;
-    orbit.last.x = e.clientX;
-    orbit.last.y = e.clientY;
-    const gr = getGr();
+    if (!dx && !dy) return;
+    if (orbit) {
+      unlockOrbit(orbit);
+      orbit.userTheta = (orbit.userTheta || 0) + dx * 0.006;
+      orbit.userPhi = Math.min(orbit.maxPhi ?? 1.4, Math.max(orbit.minPhi ?? -1.4, (orbit.userPhi || 0.08) + dy * 0.004));
+      orbit.theta = orbit.userTheta;
+      orbit.phi = orbit.userPhi;
+      if (orbit.last) { orbit.last.x = e.clientX; orbit.last.y = e.clientY; }
+    }
+    const gr = getLiveGestureRotation();
     if (gr) {
       gr.y = (gr.y || 0) + dx * 0.006;
       gr.x = Math.max(-0.8, Math.min(0.8, (gr.x || 0) + dy * 0.004));
@@ -152,40 +181,40 @@ function bindStageGestures(root) {
   };
   const onUp = (e) => {
     pointers.delete(e.pointerId);
-    const orbit = getOrbit();
-    if (pointers.size === 0 && orbit) orbit.rotating = false;
-    lastDist = 0;
+    if (pointers.size === 0) {
+      const orbit = getLiveOrbit();
+      if (orbit) orbit.rotating = false;
+      lastDist = 0;
+    }
   };
   const onWheel = (e) => {
-    if (isUi(e)) return;
+    if (isUiTarget(e.target)) return;
     e.preventDefault();
-    const orbit = getOrbit();
+    const orbit = getLiveOrbit();
     if (!orbit) return;
     unlockOrbit(orbit);
-    orbit.userRadius = Math.min(orbit.maxRadius || 14, Math.max(orbit.minRadius || 2.4, (orbit.userRadius || 6.6) * (e.deltaY > 0 ? 1.08 : 0.92)));
-    orbit.radius = orbit.userRadius;
+    const next = Math.min(orbit.maxRadius || 14, Math.max(orbit.minRadius || 2.4, (orbit.userRadius || 6.6) * (e.deltaY > 0 ? 1.08 : 0.92)));
+    orbit.userRadius = next;
+    orbit.radius = next;
   };
-  root.style.pointerEvents = 'auto';
-  root.style.touchAction = 'none';
-  root.addEventListener('pointerdown', onDown);
-  root.addEventListener('pointermove', onMove);
-  root.addEventListener('pointerup', onUp);
-  root.addEventListener('pointercancel', onUp);
-  root.addEventListener('wheel', onWheel, { passive: false });
-  // 同时绑到 stage 根，避免 canvas 被盖住后拖不动
-  const stageRoot = document.querySelector('.visual-stage-root') || document.querySelector('.player-stage');
-  if (stageRoot && stageRoot !== root && !stageRoot.__visualGestureBound) {
-    stageRoot.__visualGestureBound = true;
-    stageRoot.style.pointerEvents = 'auto';
+
+  const opts = { signal: ac.signal, passive: false };
+  document.addEventListener('pointerdown', onDown, opts);
+  document.addEventListener('pointermove', onMove, opts);
+  document.addEventListener('pointerup', onUp, opts);
+  document.addEventListener('pointercancel', onUp, opts);
+  document.addEventListener('wheel', onWheel, opts);
+
+  const stageRoot = document.querySelector('.player-stage') || document.querySelector('.visual-stage-root');
+  if (stageRoot) {
     stageRoot.style.touchAction = 'none';
-    stageRoot.addEventListener('pointerdown', onDown);
-    stageRoot.addEventListener('pointermove', onMove);
-    stageRoot.addEventListener('pointerup', onUp);
-    stageRoot.addEventListener('pointercancel', onUp);
-    stageRoot.addEventListener('wheel', onWheel, { passive: false });
   }
+  return true;
 }
 
+function bindStageGestures() {
+  return ensureStageGestures();
+}
 export function initVisualStage() {
   if (ready && window.THREE) return Promise.resolve(true);
   if (loadPromise && ready) return loadPromise;
@@ -224,7 +253,7 @@ export function initVisualStage() {
       sync();
       adoptRendererCanvas();
       forceParticleVisible();
-      bindStageGestures(document.getElementById('canvas-container') || document.querySelector('.visual-stage-root'));
+      ensureStageGestures();
       // 默认丝绸/封面粒子（或用户上次选择），无需手动点 FX
       ensureDefaultPreset();
       ready = true;
