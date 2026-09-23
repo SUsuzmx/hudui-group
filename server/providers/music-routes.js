@@ -1,8 +1,31 @@
 import express from 'express';
 import netease from './netease.js';
 import qq from './qq.js';
+import {
+  handleNeteaseUserPlaylists,
+  handleNeteasePlaylistTracks,
+  handleQQUserPlaylists,
+  handleQQPlaylistTracks,
+  QQ_LIKED_PLAYLIST_ID,
+} from './user-playlists.js';
 
 const PROVIDERS = { netease, qq };
+
+function formatProviderError(e) {
+  if (!e) return '未知错误';
+  const body = e.body;
+  const bodyCode = body && typeof body === 'object' ? (body.code ?? body.subcode) : undefined;
+  const bodyMsg = body && typeof body === 'object'
+    ? (body.message || body.msg || body.msgs)
+    : (typeof body === 'string' ? body : '');
+  const detail = [
+    e.message,
+    e.code,
+    bodyCode != null ? `code=${bodyCode}` : '',
+    bodyMsg || (body && typeof body === 'object' ? JSON.stringify(body).slice(0, 300) : ''),
+  ].filter(Boolean).join(' | ');
+  return detail || '未知错误';
+}
 
 export function createMusicProviderRouter({ requireAuth, provider } = {}) {
   const name = String(provider || '').toLowerCase();
@@ -35,21 +58,46 @@ export function createMusicProviderRouter({ requireAuth, provider } = {}) {
     } catch (e) { res.status(502).json({ provider: name, error: e.message }); }
   });
 
-  router.get('/user/playlists', async (req, res) => { try { const r = name === 'netease' ? await handleNeteaseUserPlaylists() : await handleQQUserPlaylists(); res.json({ provider: name, ...r }); } catch (e) { res.status(502).json({ provider: name, error: e.message, playlists: [], loggedIn: false }); } });
+  router.get('/user/playlists', async (req, res) => {
+    try {
+      const opts = {
+        limit: Number(req.query.limit) || 0,
+        offset: Number(req.query.offset) || 0,
+        maxItems: Number(req.query.maxItems) || 0,
+      };
+      const r = name === 'netease' ? await handleNeteaseUserPlaylists(opts) : await handleQQUserPlaylists();
+      res.json({ provider: name, ...r });
+    } catch (e) {
+      res.status(502).json({ provider: name, error: formatProviderError(e), playlists: [], loggedIn: false });
+    }
+  });
   router.get('/playlists', async (req, res) => {
     try {
-      const r = name === 'netease' ? await handleNeteaseUserPlaylists() : await handleQQUserPlaylists();
+      const opts = {
+        limit: Number(req.query.limit) || 0,
+        offset: Number(req.query.offset) || 0,
+        maxItems: Number(req.query.maxItems) || 0,
+      };
+      const r = name === 'netease' ? await handleNeteaseUserPlaylists(opts) : await handleQQUserPlaylists();
       res.json({ provider: name, ...r });
-    } catch (e) { res.status(502).json({ provider: name, error: e.message, playlists: [], loggedIn: false }); }
+    } catch (e) {
+      res.status(502).json({ provider: name, error: formatProviderError(e), playlists: [], loggedIn: false });
+    }
   });
 
   router.get('/playlist/tracks', async (req, res) => {
     try {
+      const opts = {
+        limit: Number(req.query.limit) || 100,
+        offset: Number(req.query.offset) || 0,
+      };
       const r = name === 'netease'
-        ? await handleNeteasePlaylistTracks(req.query.id, { limit: Number(req.query.limit) || 100 })
-        : await handleQQPlaylistTracks(req.query.id, { limit: Number(req.query.limit) || 100 });
+        ? await handleNeteasePlaylistTracks(req.query.id, opts)
+        : await handleQQPlaylistTracks(req.query.id, opts);
       res.json({ provider: name, songs: r.tracks || [], tracks: r.tracks || [], ...r });
-    } catch (e) { res.status(502).json({ provider: name, error: e.message, songs: [] }); }
+    } catch (e) {
+      res.status(502).json({ provider: name, error: formatProviderError(e), songs: [] });
+    }
   });
 
   router.get('/likes', async (req, res) => {
@@ -58,7 +106,14 @@ export function createMusicProviderRouter({ requireAuth, provider } = {}) {
         const list = await handleNeteaseUserPlaylists();
         const liked = (list.playlists || []).find((pl) => Number(pl.specialType) === 5) || (list.playlists || [])[0];
         const songs = liked && liked.id ? (await handleNeteasePlaylistTracks(liked.id, { limit: 200 })).tracks : [];
-        return res.json({ provider: name, loggedIn: !!list.loggedIn, songs, tracks: songs, playlists: list.playlists || [] });
+        return res.json({
+          provider: name,
+          loggedIn: !!list.loggedIn,
+          songs,
+          tracks: songs,
+          playlists: list.playlists || [],
+          message: list.message || '',
+        });
       }
       const r = await handleQQPlaylistTracks(QQ_LIKED_PLAYLIST_ID, { limit: 200 });
       const list = await handleQQUserPlaylists();
@@ -71,7 +126,9 @@ export function createMusicProviderRouter({ requireAuth, provider } = {}) {
         message: r.message || '',
         requiresPlaybackKey: !!r.requiresPlaybackKey,
       });
-    } catch (e) { res.status(502).json({ provider: name, error: e.message, songs: [], loggedIn: false }); }
+    } catch (e) {
+      res.status(502).json({ provider: name, error: formatProviderError(e), songs: [], loggedIn: false });
+    }
   });
 
   router.post('/login/cookie', async (req, res) => {

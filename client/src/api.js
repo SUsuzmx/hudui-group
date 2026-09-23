@@ -78,7 +78,12 @@ async function request(path, { method = 'POST', body, query } = {}) {
       }
     } catch { /* ignore */ }
   }
-  if (!res.ok) throw new Error(data.error || '网络异常, 请稍后再试');
+  if (!res.ok) {
+    const msg = data?.error || data?.message
+      || (res.status === 401 ? '未登录，请先登录' : '')
+      || `请求失败 HTTP ${res.status}`;
+    throw new Error(msg);
+  }
   return data;
 }
 

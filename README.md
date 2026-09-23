@@ -14,8 +14,9 @@
 ### 近期功能要点
 
 - **听一听音源**：网易云 + QQ 音乐；Cookie 服务端持久化；播放地址探测与 restriction 引导；详见 [docs/MUSIC-VISUAL.md](docs/MUSIC-VISUAL.md)
+- **Perry 歌单**：入口卡随音源切换标题；「我喜欢 / 自建收藏」可下钻曲目并播放；底部播放台进度条渐变填充
 - **视觉舞台**：粒子/预设/手势/3D 歌词；默认预设「丝绸/封面粒子」
-- **歌单同步**：网易云「我喜欢 + 用户歌单」；QQ 视 Cookie 权限同步歌单/喜欢
+- **歌单同步**：网易云「我喜欢 + 用户歌单」；QQ 创建/收藏 +「我喜欢」(musicu dirid=201)；详见 [docs/MIGRATION.md](docs/MIGRATION.md)（换机必读）
 - **单端登录**：同一账号仅允许一处在线；新登录挤掉旧会话（Socket 下线 + 本地回登录页）；设置页可「下线其它设备」
 - **消息体验**：发送中/失败状态、已读/送达、语音上滑取消、粘贴传图、收发音效
 - **输入草稿**：`draft-sync.js` 防抖保存；聚焦/中文组字时忽略 Socket 回写，避免「打字被吞 / 删除后恢复」
@@ -210,12 +211,15 @@ Python 侧常用库（Agent 文件生成）：`openpyxl`、`python-docx`、`pyth
 
 ---
 
-## 从零部署（新服务器，继续用 https://chat.supeiji.top/）
+## 从零部署 / 换服务器
+
+**完整迁移步骤（打包清单、Cookie、Tunnel 端口、回归清单）见 [docs/MIGRATION.md](docs/MIGRATION.md)。**  
+下面为摘要；新机迁移请以该文档为准。
 
 ### 获取代码与数据
 
-- **方案 A 整机拷贝**（推荐）：旧机打包排除 `node_modules`，新机解压到相同路径  
-- **方案 B 源码+数据**：拷贝 `server/ client/ client-dist/ config/ data/ img/ package.json` 等  
+- **方案 A 整机拷贝**（推荐）：旧机**先停服**，打包排除 `node_modules` 与日志，新机解压  
+- **方案 B 源码+数据**：`git clone` 后单独拷贝 `data/chat.db*`、`data/media/`、`config/ai.json`、`.netease-cookie`、`.qq-cookie`  
 - **方案 C 空库**：仅源码 + 模板，启动自动建库并播种群  
 
 拷贝数据库前先停服（含 `chat.db` / `-wal` / `-shm` 与 `data/media/`）。
@@ -252,8 +256,8 @@ npm run check:ai
 
 ```bash
 npm start
-# http://localhost:3000
-npm run dev   # 开发：前端 5173，代理到 3000（注意：/games 由 Express 提供，请用 3000 访问游戏）
+# http://localhost:3010
+npm run dev   # 开发：前端 5173 代理到后端；游戏请用 Node 端口访问
 ```
 
 ### Windows 常驻
@@ -265,16 +269,16 @@ schtasks /run /tn "HuduiGroup"
 
 `run-app.cmd` 路径若与安装目录不一致，请先改脚本。
 
-Linux systemd：`ExecStart=/usr/bin/node server/index.js`，`Restart=always`，WorkingDirectory 指向项目根。
+Linux systemd：`ExecStart=/usr/bin/node server/index.js`，`Restart=always`，WorkingDirectory 指向项目根，`Environment=PORT=3010`。
 
 ### 绑定 https://chat.supeiji.top/
 
-Cloudflare Tunnel → `http://localhost:3000`（隧道名如 `werewolf`）。
+Cloudflare Tunnel → **`http://localhost:3010`**（隧道名如 `werewolf`）。
 
-1. 新机安装 `cloudflared`，登录并 `cloudflared tunnel create werewolf`（或复用旧 credentials）  
-2. 配置 ingress：`hostname: chat.supeiji.top` → `service: http://localhost:3000`  
+1. **先停旧机隧道**；新机安装 `cloudflared`，登录并复用旧 credentials（或 `cloudflared tunnel create werewolf`）  
+2. 配置 ingress：`hostname: chat.supeiji.top` → `service: http://localhost:3010`  
 3. DNS：`chat` CNAME → `<TunnelID>.cfargotunnel.com`（Proxied）  
-4. **同一时间仅一台机器**提供该域名；换机前先停旧隧道  
+4. **同一时间仅一台机器**提供该域名  
 5. 验收：
 
 ```bash
@@ -350,13 +354,15 @@ Get-Content C:\perry\data\service.log -Tail 50
 
 | 现象 | 排查 |
 |------|------|
-| 线上 502/522 | Node 是否运行；Tunnel 是否指向 3000；旧隧道是否未停 |
+| 线上 502/522 | Node 是否运行；Tunnel 是否指向 **3010**；旧隧道是否未停 |
 | 旧前端 | `npm run build` 后重启；浏览器强刷（SW 已对 `/games/**` 强制走网络） |
 | 登录失败 | `data/app.log`；`chat.db` 可写性 |
+| 歌单 502 / 网络异常 | 重启 Node 加载最新 `music-routes`；网易云 Cookie 含 `MUSIC_U` 且 uid 有效 |
 | AI 不回复 | `npm run check:ai`；密钥与额度 |
 | AI 不在通讯录 | **预期行为**：AI 仅群聊；请在群内 @TA |
 | Agent 生成文件失败 | 检查 `MIMO_PYTHON`/`python` 与 openpyxl 等依赖；看 `data/app.log` |
 | 游戏打不开 | `curl /api/games`；确认 `games/<id>/index.html` 存在且已在 `GAME_APPS` 注册 |
+| 换服务器 | 严格按 [docs/MIGRATION.md](docs/MIGRATION.md) 执行 |
 | 私聊红包不能发 | 确认对方有有效 `userId`；「+」面板按钮；余额 |
 | 通话无画面 | 双方在线、HTTPS、摄像头权限；网络/STUN |
 | 通讯录乱 | 清理测试账号脚本见 `scripts/archive/cleanup-test-users.mjs` |

@@ -19,27 +19,35 @@ const loginProvider = ref('qq');
 const cookieInput = ref('');
 const loginBusy = ref(false);
 const loginStatuses = ref({ netease: null, qq: null });
+
+// 音乐库：root 列表 → 歌单详情
 const showLibrary = ref(false);
 const libTab = ref('likes'); // likes | playlists
+const libView = ref('root'); // root | detail
 const libLoading = ref(false);
-const libNote = ref('');
+const libError = ref('');
 const libPlaylists = ref([]);
 const libTracks = ref([]);
+const activePlaylist = ref(null);
+const libProviderLabel = computed(() => (source.value === 'netease' ? '网易云' : 'QQ音乐'));
+const libEntryTitle = computed(() => `Perry的${libProviderLabel.value}歌单，一起品味`);
+const recommendTitle = computed(() => `${libProviderLabel.value}推荐歌曲`);
+let libSeq = 0;
 
 const current = computed(() => musicPlayer.state.current);
 const playing = computed(() => musicPlayer.state.playing);
 const progress = computed(() => musicPlayer.state.progress);
 const duration = computed(() => musicPlayer.state.duration);
 const tracksList = computed(() => (tracks.value.length ? tracks.value : musicPlayer.state.tracks));
-const modeIcon = computed(() => ({ order: '→', one: '①', shuffle: '🔀' }[musicPlayer.state.playMode] || '→'));
-const modeLabel = computed(() => ({ order: '顺序播放', one: '单曲循环', shuffle: '随机播放' }[musicPlayer.state.playMode] || '顺序播放'));
+
+const likedCard = computed(() => libPlaylists.value.find((p) => p.isFavorite || Number(p.specialType) === 5) || null);
+const normalPlaylists = computed(() => libPlaylists.value.filter((p) => !(p.isFavorite || Number(p.specialType) === 5)));
 
 let loadSeq = 0;
 
 async function fetchList(q, src) {
   let data = await api.musicList({ q, source: src, limit: 30 });
   let list = data.tracks || [];
-  // QQ 首查偶发只回几首，换关键词再试一次
   if (src === 'qq' && list.length > 0 && list.length < 8) {
     const alt = q === '热歌' ? '热门' : (q ? q + ' 歌曲' : '新歌');
     try {
@@ -62,7 +70,7 @@ async function load(resetQuery) {
     const { data, list } = await fetchList(q, source.value);
     if (seq !== loadSeq) return;
     tracks.value = list;
-    listNote.value = (data.notes || []).join('；') || (source.value === 'qq' ? 'QQ音乐 · 默认音源' : '网易云音乐');
+    listNote.value = (data.notes || []).join('；') || `${libProviderLabel.value} · 推荐`;
     musicPlayer.setTracks(tracks.value);
     if (!tracks.value.length) toast(listNote.value || '暂无歌曲');
   } catch (e) {
@@ -95,8 +103,20 @@ function onSeekDone(e) {
   if (d) musicPlayer.seek((Number(e.target.value) / 100) * d);
   seeking.value = false;
 }
-function setSource(s) { source.value = s; load(query.value || ''); }
-function isActive(t) { return current.value && current.value.id === t.id && current.value.source === t.source; }
+function setSource(s) {
+  if (source.value === s) return;
+  source.value = s;
+  load(query.value || '');
+  if (showLibrary.value) {
+    libView.value = 'root';
+    activePlaylist.value = null;
+    libTracks.value = [];
+    loadLibraryRoot();
+  }
+}
+function isActive(t) {
+  return current.value && current.value.id === t.id && (current.value.source || source.value) === (t.source || source.value);
+}
 function openDetail() { if (current.value) showDetail.value = true; }
 
 function openLogin(provider) {
@@ -122,7 +142,12 @@ async function submitCookie() {
     toast(r.message || '登录成功');
     showLogin.value = false;
     await refreshLoginStatus();
-    try { await loadLibrary(); toast('歌单已同步'); } catch (e) { console.warn('[library sync]', e); }
+    try {
+      libView.value = 'root';
+      activePlaylist.value = null;
+      await loadLibraryRoot();
+      toast('歌单已同步');
+    } catch (e) { console.warn('[library sync]', e); }
   } catch (e) {
     toast(e.message || 'Cookie 导入失败');
   } finally {
@@ -131,67 +156,163 @@ async function submitCookie() {
 }
 
 async function doLogout(p) {
-  try { await api.musicProviderLogout(p); toast('已退出'); await refreshLoginStatus(); }
-  catch (e) { toast(e.message || '退出失败'); }
+  try {
+    await api.musicProviderLogout(p);
+    toast('已退出');
+    await refreshLoginStatus();
+    if (showLibrary.value) {
+      libView.value = 'root';
+      activePlaylist.value = null;
+      libTracks.value = [];
+      loadLibraryRoot();
+    }
+  } catch (e) { toast(e.message || '退出失败'); }
 }
 
-async function loadLibrary() {
+function extractSongs(r) {
+  return (r && (r.songs || r.tracks)) || [];
+}
+
+async function loadLibraryRoot() {
+  const seq = ++libSeq;
+  const provider = source.value === 'netease' ? 'netease' : 'qq';
   libLoading.value = true;
-  libNote.value = '';
+  libError.value = '';
+  libView.value = 'root';
+  activePlaylist.value = null;
+  libTracks.value = [];
   try {
-    const provider = source.value === 'netease' ? 'netease' : 'qq';
     if (libTab.value === 'likes') {
       const r = await api.musicProviderLikes(provider);
-      libTracks.value = r.songs || [];
-      libPlaylists.value = [];
-      libNote.value = r.message || `${provider === 'qq' ? 'QQ' : '网易云'} · 我喜欢 ${libTracks.value.length} 首`;
-      if (!libTracks.value.length && r.playlists) libPlaylists.value = r.playlists;
+      if (seq !== libSeq) return;
+      libTracks.value = extractSongs(r).map((t) => ({ ...t, source: t.source || provider }));
+      libPlaylists.value = r.playlists || [];
+      activePlaylist.value = {
+        id: 'likes',
+        name: '我喜欢',
+        cover: libTracks.value[0]?.cover || likedCard.value?.cover || '',
+        trackCount: libTracks.value.length,
+        isFavorite: true,
+        virtual: true,
+        creator: '',
+      };
+      if (!libTracks.value.length && r.message) libError.value = r.message;
     } else {
       const r = await api.musicProviderPlaylists(provider);
+      if (seq !== libSeq) return;
       libPlaylists.value = r.playlists || [];
       libTracks.value = [];
-      libNote.value = r.message || `${provider === 'qq' ? 'QQ' : '网易云'} · 歌单 ${libPlaylists.value.length}`;
+      if (!libPlaylists.value.length && r.message) libError.value = r.message;
     }
   } catch (e) {
-    libNote.value = e.message || '加载失败';
+    if (seq !== libSeq) return;
+    libError.value = e.message || '加载失败';
     toast(e.message || '加载失败');
   } finally {
-    libLoading.value = false;
+    if (seq === libSeq) libLoading.value = false;
   }
 }
 
-async function openPlaylist(pl) {
+async function openPlaylist(pl, { playAll = false } = {}) {
   if (!pl?.id) return;
+  const seq = ++libSeq;
+  const provider = source.value === 'netease' ? 'netease' : 'qq';
   libLoading.value = true;
+  libError.value = '';
+  activePlaylist.value = pl;
+  libView.value = 'detail';
+  libTracks.value = [];
   try {
-    const provider = source.value === 'netease' ? 'netease' : 'qq';
-    const r = await api.musicProviderPlaylistTracks(provider, pl.id, 100);
-    libTracks.value = r.songs || [];
-    libNote.value = `${pl.name} · ${libTracks.value.length} 首`;
-    if (!libTracks.value.length) toast(r.message || '歌单为空或无权限');
+    let songs = [];
+    if (pl.virtual || pl.isFavorite || pl.id === 'likes') {
+      // 「我喜欢」走 likes，兼容 QQ 虚拟歌单
+      const r = await api.musicProviderLikes(provider);
+      songs = extractSongs(r).map((t) => ({ ...t, source: t.source || provider }));
+    } else {
+      const r = await api.musicProviderPlaylistTracks(provider, pl.id, 200);
+      songs = extractSongs(r).map((t) => ({ ...t, source: t.source || provider }));
+    }
+    if (seq !== libSeq) return;
+    libTracks.value = songs;
+    activePlaylist.value = {
+      ...pl,
+      trackCount: songs.length || pl.trackCount || 0,
+      cover: pl.cover || songs[0]?.cover || '',
+    };
+    if (!songs.length) {
+      libError.value = '歌单为空或无权限查看曲目';
+    } else if (playAll) {
+      playLibraryTrack(songs[0]);
+    }
   } catch (e) {
+    if (seq !== libSeq) return;
+    libError.value = e.message || '歌单加载失败';
     toast(e.message || '歌单加载失败');
   } finally {
-    libLoading.value = false;
+    if (seq === libSeq) libLoading.value = false;
   }
 }
 
 function playLibraryTrack(t) {
   if (!t) return;
-  const list = libTracks.value.map((x) => ({ ...x, source: x.source || source.value }));
+  const list = (libTracks.value.length ? libTracks.value : [t]).map((x) => ({
+    ...x,
+    title: x.title || x.name,
+    source: x.source || source.value,
+  }));
   musicPlayer.setTracks(list);
-  musicPlayer.playTrack({ ...t, source: t.source || source.value });
+  musicPlayer.playTrack({ ...t, title: t.title || t.name, source: t.source || source.value });
+}
+
+function playAllLibrary() {
+  if (!libTracks.value.length) return;
+  playLibraryTrack(libTracks.value[0]);
 }
 
 function switchLibTab(tab) {
+  if (libTab.value === tab && libView.value === 'root' && !libLoading.value) {
+    loadLibraryRoot();
+    return;
+  }
   libTab.value = tab;
-  loadLibrary();
+  loadLibraryRoot();
+}
+
+function openLibrary(tab = libTab.value) {
+  showLibrary.value = true;
+  libTab.value = tab;
+  loadLibraryRoot();
+}
+
+function closeLibrary() {
+  showLibrary.value = false;
+  libView.value = 'root';
+  activePlaylist.value = null;
+}
+
+function backLib() {
+  if (libView.value === 'detail') {
+    libView.value = 'root';
+    activePlaylist.value = null;
+    libTracks.value = [];
+    libError.value = '';
+    // 回列表时刷新，但不再自动进详情
+    loadLibraryRoot();
+    return;
+  }
+  closeLibrary();
+}
+
+function playlistBadge(pl) {
+  if (pl.isFavorite || Number(pl.specialType) === 5) return '我喜欢';
+  if (pl.subscribed) return '收藏';
+  if (pl.virtual) return '我喜欢';
+  return '歌单';
 }
 
 onMounted(() => {
   musicPlayer.ensureAudio();
   refreshLoginStatus();
-  // 预加载视觉引擎，进详情页不必再等预设/bundle
   preloadVisualStage();
   if (!tracksList.value.length) load('');
   else tracks.value = musicPlayer.state.tracks.slice();
@@ -203,64 +324,53 @@ onMounted(() => {
     <header class="nav">
       <button class="nav-back" type="button" @click="emit('back')">‹</button>
       <div class="nav-title">听一听</div>
-      <button class="nav-right link" type="button" @click="openLogin()">音源</button>
-      <button class="nav-right lib" type="button" @click="showLibrary = !showLibrary; if (showLibrary) loadLibrary()">歌单</button>
+      <div class="nav-actions">
+        <button class="nav-chip" type="button" @click="openLogin()">音源</button>
+      </div>
     </header>
 
     <div class="search-bar">
-      <input v-model="query" type="search" placeholder="搜索歌曲 / 音乐人" @keydown.enter="runSearch()" />
-      <button type="button" @click="runSearch()">搜索</button>
-    </div>
-
-    <div class="source-tabs">
-      <button type="button" :class="{ on: source === 'qq' }" @click="setSource('qq')">QQ音乐</button>
-      <button type="button" :class="{ on: source === 'netease' }" @click="setSource('netease')">网易云</button>
-    </div>
-    <div v-if="listNote" class="list-note">{{ listNote }}</div>
-
-    <div v-if="showLibrary" class="library-panel">
-      <div class="library-tabs">
-        <button type="button" :class="{ on: libTab === 'likes' }" @click="switchLibTab('likes')">我喜欢</button>
-        <button type="button" :class="{ on: libTab === 'playlists' }" @click="switchLibTab('playlists')">歌单</button>
-        <button type="button" class="close" @click="showLibrary = false">×</button>
+      <div class="search-input">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+          <path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <input v-model="query" type="search" placeholder="搜索歌曲 / 音乐人" @keydown.enter="runSearch()" />
       </div>
-      <div v-if="libNote" class="list-note">{{ libNote }}</div>
-      <div v-if="libLoading" class="empty">加载中…</div>
-      <template v-else>
-        <div v-if="libTab === 'playlists' && libPlaylists.length" class="lib-list">
-          <button v-for="p in libPlaylists" :key="p.id" type="button" class="song" @click="openPlaylist(p)">
-            <div class="cover"><img v-if="p.cover" :src="p.cover" alt="" /><span v-else>☰</span></div>
-            <div class="meta">
-              <div class="title">{{ p.name }}</div>
-              <div class="sub">{{ p.trackCount || 0 }} 首<span v-if="p.isFavorite"> · 我喜欢</span></div>
-            </div>
-          </button>
-        </div>
-        <div v-else-if="libTracks.length" class="lib-list">
-          <button v-for="t in libTracks" :key="t.source + '-' + t.id" type="button" class="song" @click="playLibraryTrack(t)">
-            <div class="cover"><img v-if="t.cover" :src="t.cover" alt="" /><span v-else>♪</span></div>
-            <div class="meta">
-              <div class="title">{{ t.title }}</div>
-              <div class="sub">{{ t.artist }} · {{ source === 'netease' ? '网易云' : 'QQ音乐' }}</div>
-            </div>
-            <div class="play-ico">▶</div>
-          </button>
-        </div>
-        <div v-else class="empty">{{ libNote || '暂无数据' }}</div>
-      </template>
+      <button class="search-btn" type="button" @click="runSearch()">搜索</button>
     </div>
+
+    <div class="source-tabs" role="tablist">
+      <button type="button" role="tab" :aria-selected="source === 'qq'" :class="{ on: source === 'qq' }" @click="setSource('qq')">QQ音乐</button>
+      <button type="button" role="tab" :aria-selected="source === 'netease'" :class="{ on: source === 'netease' }" @click="setSource('netease')">网易云</button>
+      <div class="source-hint">{{ listNote }}</div>
+    </div>
+
+    <!-- 歌单主入口：完整可点卡片，引导打开音乐库 -->
+    <button class="lib-entry" type="button" @click="openLibrary()">
+      <div class="lib-entry-art" aria-hidden="true">
+        <span>♫</span>
+      </div>
+      <div class="lib-entry-text">
+        <div class="lib-entry-title">{{ libEntryTitle }}</div>
+        <div class="lib-entry-sub">我喜欢 · 自建 / 收藏 · 点开听歌</div>
+      </div>
+      <div class="lib-entry-go" aria-hidden="true">›</div>
+    </button>
 
     <main class="list scroll-y" :class="{ 'has-player': !!current }">
+      <div class="section-label recommend-label">{{ recommendTitle }}</div>
       <div v-if="loading" class="empty">加载中…</div>
       <div v-else-if="!tracksList.length" class="empty">暂无歌曲</div>
       <button
-        v-for="t in tracksList"
+        v-for="(t, idx) in tracksList"
         :key="t.source + '-' + t.id"
         class="song"
         type="button"
         :class="{ active: isActive(t) }"
         @click="playTrack(t)"
       >
+        <div class="song-index">{{ idx + 1 }}</div>
         <div class="cover">
           <img v-if="t.cover" :src="t.cover" :alt="t.title" loading="lazy" />
           <span v-else>♪</span>
@@ -270,18 +380,185 @@ onMounted(() => {
           <div class="sub">
             {{ t.artist }}
             <template v-if="t.duration"> · {{ fmtAudioTime(t.duration) }}</template>
-            · {{ t.source === 'netease' ? '网易云' : 'QQ音乐' }}
           </div>
         </div>
         <div class="play-ico">{{ isActive(t) && playing ? '❚❚' : '▶' }}</div>
       </button>
     </main>
 
+    <!-- 音乐库全屏层 -->
+    <div v-if="showLibrary" class="lib-layer">
+      <header class="lib-nav">
+        <button class="nav-back" type="button" @click="backLib()">‹</button>
+        <div class="lib-nav-title">
+          <template v-if="libView === 'detail'">
+            <div class="lib-nav-name">{{ activePlaylist?.name || '歌单' }}</div>
+            <div class="lib-nav-sub">{{ libProviderLabel }} · {{ libTracks.length || activePlaylist?.trackCount || 0 }} 首</div>
+          </template>
+          <template v-else>
+            <div class="lib-nav-name">{{ libEntryTitle }}</div>
+            <div class="lib-nav-sub">{{ libProviderLabel }}</div>
+          </template>
+        </div>
+        <button class="nav-chip" type="button" @click="closeLibrary()">关闭</button>
+      </header>
+
+      <div v-if="libView === 'root'" class="lib-tabs">
+        <button type="button" :class="{ on: libTab === 'likes' }" @click="switchLibTab('likes')">我喜欢</button>
+        <button type="button" :class="{ on: libTab === 'playlists' }" @click="switchLibTab('playlists')">歌单</button>
+      </div>
+
+      <div class="lib-body scroll-y" :class="{ 'has-player': !!current }">
+        <div v-if="libLoading" class="lib-state">
+          <div class="lib-spinner" />
+          <div>正在同步歌单…</div>
+        </div>
+
+        <!-- 歌单详情 -->
+        <template v-else-if="libView === 'detail'">
+          <div class="detail-hero">
+            <div class="detail-cover" :class="{ liked: activePlaylist?.isFavorite || activePlaylist?.virtual }">
+              <img v-if="activePlaylist?.cover" :src="activePlaylist.cover" alt="" />
+              <span v-else-if="activePlaylist?.isFavorite || activePlaylist?.virtual" class="heart">♥</span>
+              <span v-else>♫</span>
+            </div>
+            <div class="detail-info">
+              <div class="detail-badge">{{ playlistBadge(activePlaylist || {}) }}</div>
+              <h2 class="detail-title">{{ activePlaylist?.name || '歌单' }}</h2>
+              <div class="detail-meta">
+                {{ libTracks.length || activePlaylist?.trackCount || 0 }} 首
+                <template v-if="activePlaylist?.creator"> · {{ activePlaylist.creator }}</template>
+              </div>
+              <button class="play-all" type="button" :disabled="!libTracks.length" @click="playAllLibrary()">
+                <span class="play-all-ico">▶</span> 播放全部
+              </button>
+            </div>
+          </div>
+
+          <div v-if="libError && !libTracks.length" class="lib-state">{{ libError }}</div>
+          <div v-else-if="!libTracks.length" class="lib-state">暂无歌曲</div>
+
+          <div v-else class="track-list">
+            <button
+              v-for="(t, idx) in libTracks"
+              :key="'det-' + t.source + '-' + t.id + '-' + idx"
+              class="song"
+              type="button"
+              :class="{ active: isActive(t) }"
+              @click="playLibraryTrack(t)"
+            >
+              <div class="song-index" :class="{ playing: isActive(t) && playing }">{{ isActive(t) && playing ? '♪' : idx + 1 }}</div>
+              <div class="cover">
+                <img v-if="t.cover" :src="t.cover" :alt="t.title || t.name" loading="lazy" />
+                <span v-else>♪</span>
+              </div>
+              <div class="meta">
+                <div class="title">{{ t.title || t.name }}</div>
+                <div class="sub">
+                  {{ t.artist || '未知歌手' }}
+                  <template v-if="t.album"> · {{ t.album }}</template>
+                  <template v-if="t.duration"> · {{ fmtAudioTime(t.duration) }}</template>
+                </div>
+              </div>
+              <div class="play-ico">{{ isActive(t) && playing ? '❚❚' : '▶' }}</div>
+            </button>
+          </div>
+        </template>
+
+        <!-- 音乐库首页 -->
+        <template v-else>
+          <div v-if="libError && !libPlaylists.length && !libTracks.length" class="lib-state">{{ libError }}</div>
+
+          <!-- 我喜欢入口：两个 tab 都露出，点进详情看曲目 -->
+          <button
+            v-if="likedCard || (libTab === 'likes' && activePlaylist)"
+            class="hero-liked"
+            type="button"
+            @click="openPlaylist(likedCard || activePlaylist)"
+          >
+            <div class="hero-liked-art">
+              <img v-if="likedCard?.cover || activePlaylist?.cover || libTracks[0]?.cover" :src="likedCard?.cover || activePlaylist?.cover || libTracks[0]?.cover" alt="" />
+              <span v-else>♥</span>
+            </div>
+            <div class="hero-liked-text">
+              <div class="hero-liked-title">我喜欢</div>
+              <div class="hero-liked-sub">
+                {{ likedCard?.trackCount || activePlaylist?.trackCount || libTracks.length || 0 }} 首 · {{ libProviderLabel }}
+              </div>
+            </div>
+            <div class="hero-liked-go">›</div>
+          </button>
+          <div v-if="libTab === 'likes' && !likedCard && !libTracks.length && !libLoading" class="lib-state">
+            暂无「我喜欢」，去音源里点亮几首吧
+          </div>
+
+          <!-- 我喜欢 tab：根视图直接铺曲目，点歌即播 -->
+          <template v-if="libTab === 'likes' && libTracks.length">
+            <div class="section-label">曲目 · {{ libTracks.length }}</div>
+            <div class="track-list">
+              <button
+                v-for="(t, idx) in libTracks"
+                :key="'like-' + t.source + '-' + t.id + '-' + idx"
+                class="song"
+                type="button"
+                :class="{ active: isActive(t) }"
+                @click="playLibraryTrack(t)"
+              >
+                <div class="song-index" :class="{ playing: isActive(t) && playing }">{{ isActive(t) && playing ? '♪' : idx + 1 }}</div>
+                <div class="cover">
+                  <img v-if="t.cover" :src="t.cover" :alt="t.title || t.name" loading="lazy" />
+                  <span v-else>♪</span>
+                </div>
+                <div class="meta">
+                  <div class="title">{{ t.title || t.name }}</div>
+                  <div class="sub">
+                    {{ t.artist || '未知歌手' }}
+                    <template v-if="t.duration"> · {{ fmtAudioTime(t.duration) }}</template>
+                  </div>
+                </div>
+                <div class="play-ico">{{ isActive(t) && playing ? '❚❚' : '▶' }}</div>
+              </button>
+            </div>
+          </template>
+
+          <template v-if="libTab === 'playlists'">
+            <div class="section-label">全部歌单</div>
+            <div v-if="normalPlaylists.length" class="pl-list">
+              <button
+                v-for="p in normalPlaylists"
+                :key="p.id"
+                class="pl-card"
+                type="button"
+                @click="openPlaylist(p)"
+              >
+                <div class="pl-cover">
+                  <img v-if="p.cover" :src="p.cover" alt="" loading="lazy" />
+                  <span v-else>♫</span>
+                </div>
+                <div class="pl-meta">
+                  <div class="pl-title">{{ p.name }}</div>
+                  <div class="pl-sub">
+                    <span class="pl-tag">{{ playlistBadge(p) }}</span>
+                    {{ p.trackCount || 0 }} 首
+                    <template v-if="p.creator"> · {{ p.creator }}</template>
+                  </div>
+                </div>
+                <div class="pl-arrow">›</div>
+              </button>
+            </div>
+            <div v-else-if="libTab === 'playlists' && !libLoading" class="lib-state">暂无自建 / 收藏歌单</div>
+          </template>
+        </template>
+      </div>
+    </div>
+
     <footer v-if="current && !showDetail" class="player">
       <div class="player-console" @click.stop>
-        <div class="progress-bar" :class="{ 'is-dragging': seeking }">
-          <div class="progress-fill" :style="{ width: displayPct + '%' }"></div>
-          <div class="progress-thumb" :style="{ left: displayPct + '%' }"></div>
+        <div
+          class="progress-bar"
+          :class="{ 'is-dragging': seeking }"
+          :style="{ '--pct': displayPct + '%' }"
+        >
           <input class="progress-input" type="range" min="0" max="100" step="0.1" :value="displayPct" @input="onSeekInput" @change="onSeekDone" />
         </div>
         <div class="controls">
@@ -341,70 +618,301 @@ onMounted(() => {
 
 <style scoped>
 .page { flex: 1; display: flex; flex-direction: column; min-height: 0; background: var(--bg); width: 100%; position: relative; }
-.nav { height: var(--nav-h); flex-shrink: 0; position: relative; display: flex; align-items: center; background: var(--bg); border-bottom: 0.5px solid var(--divider); }
-.nav-back { width: 44px; height: 44px; border: 0; background: transparent; color: var(--text); font-size: 28px; }
+.nav { height: var(--nav-h); flex-shrink: 0; position: relative; display: flex; align-items: center; padding: 0 8px; background: var(--bg); border-bottom: 0.5px solid var(--divider); }
+.nav-back { width: 40px; height: 44px; border: 0; background: transparent; color: var(--text); font-size: 28px; line-height: 1; }
 .nav-title { position: absolute; left: 50%; transform: translateX(-50%); font-size: 17px; font-weight: 600; color: var(--text); }
-.nav-right { width: 48px; margin-left: auto; height: 44px; border: 0; background: transparent; color: var(--green); font-size: 14px; }
-.nav-right.lib { width: 48px; margin-left: 0; }
-.library-panel {
-  background: var(--white);
-  border-bottom: 0.5px solid var(--divider);
-  max-height: 42vh;
-  overflow: auto;
+.nav-actions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.nav-chip {
+  height: 30px; padding: 0 14px; border-radius: 15px; border: 0;
+  background: var(--white); color: var(--green); font-size: 13px; font-weight: 500;
+  white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(0,0,0,.04);
+  cursor: pointer;
 }
-.library-tabs { display: flex; gap: 8px; padding: 8px 12px; align-items: center; }
-.library-tabs button {
-  min-height: 30px; padding: 0 12px; border-radius: 15px;
-  border: 1px solid var(--divider); background: var(--bg); color: var(--text-2); font-size: 13px;
+.nav-chip:active { transform: scale(0.96); background: var(--divider-soft); }
+
+/* 歌单主入口卡片 */
+.lib-entry {
+  display: flex; align-items: center; gap: 12px;
+  width: calc(100% - 24px); margin: 2px 12px 10px;
+  padding: 12px 14px;
+  border: 0; border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(7,193,96,.16), rgba(7,193,96,.06) 48%, rgba(255,156,110,.10));
+  color: var(--text); text-align: left;
+  box-shadow: 0 6px 18px rgba(7, 193, 96, 0.10), inset 0 0 0 1px rgba(7,193,96,.12);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
-.library-tabs button.on { border-color: var(--green); color: var(--green); }
-.library-tabs button.close { margin-left: auto; border: 0; font-size: 18px; color: var(--text-3); }
-.lib-list { padding-bottom: 4px; }
-.search-bar { display: flex; gap: 8px; padding: 10px 12px; background: var(--bg); }
-.search-bar input { flex: 1; min-height: 36px; border: 0; border-radius: 8px; padding: 0 12px; background: var(--white); color: var(--text); outline: none; font-size: 14px; }
-.search-bar button { min-width: 64px; border: 0; border-radius: 8px; background: var(--green); color: #fff; font-size: 14px; }
-.source-tabs { display: flex; gap: 8px; padding: 0 12px 8px; background: var(--bg); }
-.source-tabs button { min-height: 32px; padding: 0 14px; border-radius: 16px; border: 1px solid var(--divider); background: var(--white); color: var(--text-2); font-size: 13px; }
-.source-tabs button.on { background: rgba(7,193,96,.12); border-color: var(--green); color: var(--green); }
-.list-note { padding: 0 16px 8px; font-size: 12px; color: var(--text-3); }
+.lib-entry:hover {
+  box-shadow: 0 8px 22px rgba(7, 193, 96, 0.16), inset 0 0 0 1px rgba(7,193,96,.2);
+}
+.lib-entry:active {
+  transform: scale(0.98);
+  box-shadow: 0 2px 8px rgba(7, 193, 96, 0.12), inset 0 0 0 1px rgba(7,193,96,.22);
+}
+.lib-entry-art {
+  width: 44px; height: 44px; border-radius: 12px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(145deg, #07c160, #05a34f);
+  color: #fff; font-size: 20px;
+  box-shadow: 0 4px 12px rgba(7,193,96,.28);
+}
+.lib-entry-text { flex: 1; min-width: 0; }
+.lib-entry-title {
+  font-size: 15px; font-weight: 700; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lib-entry-sub {
+  margin-top: 3px; font-size: 12px; color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lib-entry-go {
+  width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(7,193,96,.14); color: var(--green);
+  font-size: 22px; line-height: 1; font-weight: 600;
+}
+
+.search-bar { display: flex; gap: 8px; padding: 10px 12px 8px; background: var(--bg); }
+.search-input {
+  flex: 1; display: flex; align-items: center; gap: 8px;
+  min-height: 38px; border-radius: 12px; padding: 0 12px;
+  background: var(--white); color: var(--text-3);
+}
+.search-input input {
+  flex: 1; min-width: 0; border: 0; background: transparent; color: var(--text);
+  outline: none; font-size: 14px;
+}
+.search-input input::placeholder { color: var(--text-3); }
+.search-btn {
+  min-width: 64px; border: 0; border-radius: 12px; background: var(--green); color: #fff;
+  font-size: 14px; font-weight: 500;
+}
+
+.source-tabs { display: flex; gap: 8px; padding: 0 12px 10px; background: var(--bg); align-items: center; }
+.source-tabs button {
+  min-height: 32px; padding: 0 14px; border-radius: 16px; border: 1px solid var(--divider);
+  background: var(--white); color: var(--text-2); font-size: 13px;
+}
+.source-tabs button.on {
+  background: rgba(7,193,96,.12); border-color: transparent; color: var(--green); font-weight: 600;
+}
+.source-hint {
+  margin-left: auto; font-size: 11px; color: var(--text-3);
+  max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 .list { flex: 1; min-height: 0; overflow-y: auto; background: var(--white); padding-bottom: 16px; }
 .list.has-player { padding-bottom: 120px; }
-.empty { padding: 40px; text-align: center; color: var(--text-3); }
-.song { width: 100%; display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 0; border-bottom: 0.5px solid var(--divider-soft); background: var(--white); text-align: left; }
-.song.active { background: rgba(7,193,96,.06); }
-.cover { width: 48px; height: 48px; border-radius: 6px; overflow: hidden; background: var(--divider-soft); display: flex; align-items: center; justify-content: center; color: var(--text-3); font-size: 20px; flex-shrink: 0; }
-.cover img { width: 100%; height: 100%; object-fit: cover; }
+.empty { padding: 48px 20px; text-align: center; color: var(--text-3); font-size: 14px; }
+
+.song {
+  width: 100%; display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border: 0; border-bottom: 0.5px solid var(--divider-soft);
+  background: var(--white); text-align: left;
+}
+.song.active { background: rgba(7,193,96,.07); }
+.song-index {
+  width: 22px; flex-shrink: 0; text-align: center;
+  font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums;
+}
+.song-index.playing { color: var(--green); font-weight: 700; }
+.cover {
+  width: 48px; height: 48px; border-radius: 8px; overflow: hidden;
+  background: var(--divider-soft); display: flex; align-items: center; justify-content: center;
+  color: var(--text-3); font-size: 18px; flex-shrink: 0;
+}
+.cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .meta { flex: 1; min-width: 0; }
-.title { font-size: 15px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sub { margin-top: 4px; font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.play-ico { color: var(--text-2); font-size: 14px; }
-.player { position: absolute; left: 0; right: 0; bottom: 0; background: var(--white); border-top: 0.5px solid var(--divider); z-index: 20; }
-.player-open { width: 100%; border: 0; background: transparent; padding: 10px 14px calc(10px + var(--safe-b)); text-align: left; color: var(--text); }
-.player-top { display: flex; align-items: center; gap: 12px; }
-.player-info { flex: 1; min-width: 0; }
-.player-title { font-size: 14px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.player-sub { margin-top: 2px; font-size: 12px; color: var(--text-2); }
-.player-ctrl { display: flex; gap: 6px; }
-.player-ctrl button { width: 36px; height: 36px; border-radius: 50%; border: 0; background: var(--divider-soft); color: var(--text); }
-.player-ctrl button.main { background: var(--green); color: #fff; }
-.player-progress { margin-top: 8px; display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-3); }
-.player-progress input { flex: 1; accent-color: var(--green); }
-.login-mask { position: absolute; inset: 0; z-index: 50; background: rgba(0,0,0,.35); display: flex; align-items: flex-end; }
-.login-panel { width: 100%; background: var(--white); border-radius: 16px 16px 0 0; padding: 16px 16px calc(16px + var(--safe-b)); color: var(--text); }
-.login-title { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
-.login-status { font-size: 12px; color: var(--text-2); line-height: 1.6; margin-bottom: 8px; }
-.login-tabs { display: flex; gap: 8px; margin-bottom: 8px; }
-.login-tabs button { min-height: 32px; padding: 0 14px; border-radius: 16px; border: 1px solid var(--divider); background: var(--bg); color: var(--text-2); font-size: 13px; }
-.login-tabs button.on { border-color: var(--green); color: var(--green); }
-.login-panel textarea { width: 100%; border: 1px solid var(--divider); border-radius: 8px; padding: 10px; font-size: 12px; box-sizing: border-box; background: var(--bg); color: var(--text); }
-.login-actions { margin-top: 10px; display: flex; gap: 8px; justify-content: flex-end; }
-.login-actions button { min-height: 36px; padding: 0 14px; border-radius: 8px; border: 0; font-size: 13px; background: var(--divider-soft); color: var(--text); }
-.login-actions button:last-child { background: var(--green); color: #fff; }
+.title {
+  font-size: 15px; color: var(--text); font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sub {
+  margin-top: 3px; font-size: 12px; color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.play-ico { color: var(--text-3); font-size: 13px; flex-shrink: 0; }
 
+/* ===== 音乐库层 ===== */
+.lib-layer {
+  position: absolute; inset: 0; z-index: 40;
+  display: flex; flex-direction: column;
+  background: var(--bg);
+  /* 底部给播放控制台留位，控制台 z-index 更高会浮在音乐库上 */
+  pointer-events: auto;
+}
+.lib-nav {
+  height: var(--nav-h); flex-shrink: 0; position: relative;
+  display: flex; align-items: center; padding: 0 8px;
+  background: var(--bg); border-bottom: 0.5px solid var(--divider);
+}
+.lib-nav-title { flex: 1; min-width: 0; text-align: center; padding: 0 4px; }
+.lib-nav-name {
+  font-size: 15px; font-weight: 650; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lib-nav-sub { margin-top: 1px; font-size: 11px; color: var(--text-3); }
 
-.player-open .player-info { min-width: 0; overflow: hidden; }
-.player-row { display: flex !important; align-items: center; gap: 8px; min-height: 56px; }
-/* 听一听控制台：强制与 3D 舞台一致，避免列表 .cover img / 全局 img 撑爆 */
+.lib-tabs {
+  display: flex; gap: 8px; padding: 12px 14px 8px;
+  background: var(--bg);
+}
+.lib-tabs button {
+  min-height: 34px; padding: 0 16px; border-radius: 17px;
+  border: 0; background: var(--white); color: var(--text-2); font-size: 13px;
+}
+.lib-tabs button.on {
+  background: var(--green); color: #fff; font-weight: 600;
+}
+
+.lib-body {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 4px 12px calc(16px + var(--safe-b, 0px));
+}
+.lib-body.has-player {
+  padding-bottom: calc(118px + var(--safe-b, 0px)) !important;
+}
+
+.lib-state {
+  padding: 36px 16px; text-align: center; color: var(--text-3); font-size: 13px; line-height: 1.6;
+}
+.lib-spinner {
+  width: 22px; height: 22px; margin: 0 auto 12px;
+  border: 2px solid var(--divider); border-top-color: var(--green); border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.section-label {
+  margin: 14px 4px 8px;
+  font-size: 12px; font-weight: 600; color: var(--text-3);
+  letter-spacing: 0.04em;
+}
+.recommend-label {
+  margin: 12px 14px 6px;
+  color: var(--text-2);
+}
+
+/* 我喜欢 hero */
+.hero-liked {
+  width: 100%; display: flex; align-items: center; gap: 14px;
+  border: 0; border-radius: 18px; padding: 14px;
+  background:
+    linear-gradient(135deg, rgba(255, 92, 120, 0.16), rgba(255, 156, 110, 0.12) 55%, rgba(7, 193, 96, 0.10));
+  color: var(--text); text-align: left;
+  box-shadow: 0 8px 24px rgba(0,0,0,.04);
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+.hero-liked:active { transform: scale(0.98); }
+.hero-liked-art {
+  width: 64px; height: 64px; border-radius: 14px; overflow: hidden; flex-shrink: 0;
+  background: linear-gradient(145deg, #ff6b7a, #ff8f6b);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 28px;
+  box-shadow: 0 6px 16px rgba(255, 92, 120, 0.28);
+}
+.hero-liked-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.hero-liked-text { flex: 1; min-width: 0; }
+.hero-liked-title { font-size: 17px; font-weight: 700; color: var(--text); }
+.hero-liked-sub { margin-top: 4px; font-size: 12px; color: var(--text-2); }
+.hero-liked-go {
+  width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(7,193,96,.12); color: var(--green); font-size: 22px; line-height: 1;
+}
+
+/* 歌单卡片 */
+.pl-list { display: flex; flex-direction: column; gap: 8px; }
+.pl-card {
+  width: 100%; display: flex; align-items: center; gap: 12px;
+  border: 0; border-radius: 16px; padding: 10px 12px;
+  background: var(--white); color: var(--text); text-align: left;
+  box-shadow: 0 2px 10px rgba(0,0,0,.03);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.pl-card:hover { box-shadow: 0 4px 14px rgba(0,0,0,.06); }
+.pl-card:active { transform: scale(0.985); }
+.pl-cover {
+  width: 56px; height: 56px; border-radius: 12px; overflow: hidden; flex-shrink: 0;
+  background: linear-gradient(145deg, rgba(7,193,96,.18), rgba(7,193,96,.05));
+  display: flex; align-items: center; justify-content: center;
+  color: var(--green); font-size: 20px;
+}
+.pl-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pl-meta { flex: 1; min-width: 0; }
+.pl-title {
+  font-size: 15px; font-weight: 600; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pl-sub {
+  margin-top: 5px; font-size: 12px; color: var(--text-2);
+  display: flex; align-items: center; gap: 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pl-tag {
+  display: inline-flex; align-items: center; height: 18px; padding: 0 7px;
+  border-radius: 9px; background: rgba(7,193,96,.12); color: var(--green);
+  font-size: 10px; font-weight: 600; flex-shrink: 0;
+}
+.pl-arrow { color: var(--text-3); font-size: 22px; flex-shrink: 0; }
+
+/* 歌单详情 */
+.detail-hero {
+  display: flex; gap: 14px; align-items: stretch;
+  padding: 8px 4px 16px;
+}
+.detail-cover {
+  width: 108px; height: 108px; border-radius: 16px; overflow: hidden; flex-shrink: 0;
+  background: linear-gradient(145deg, rgba(7,193,96,.2), rgba(7,193,96,.05));
+  display: flex; align-items: center; justify-content: center;
+  color: var(--green); font-size: 36px;
+  box-shadow: 0 10px 28px rgba(0,0,0,.08);
+}
+.detail-cover.liked {
+  background: linear-gradient(145deg, #ff6b7a, #ff8f6b);
+  color: #fff;
+  box-shadow: 0 10px 28px rgba(255, 92, 120, 0.28);
+}
+.detail-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.detail-cover .heart { font-size: 40px; line-height: 1; }
+.detail-info {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 6px;
+}
+.detail-badge {
+  align-self: flex-start; height: 20px; padding: 0 8px; border-radius: 10px;
+  background: rgba(7,193,96,.12); color: var(--green);
+  font-size: 11px; font-weight: 600; line-height: 20px;
+}
+.detail-title {
+  margin: 0; font-size: 20px; font-weight: 750; color: var(--text); line-height: 1.25;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.detail-meta { font-size: 12px; color: var(--text-2); }
+.play-all {
+  align-self: flex-start; margin-top: 4px;
+  height: 34px; padding: 0 14px; border: 0; border-radius: 17px;
+  background: var(--green); color: #fff; font-size: 13px; font-weight: 600;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.play-all:disabled { opacity: 0.4; }
+.play-all-ico { font-size: 11px; }
+
+.track-list {
+  border-radius: 16px; overflow: hidden;
+  background: var(--white);
+  box-shadow: 0 2px 10px rgba(0,0,0,.03);
+}
+.track-list .song:last-child { border-bottom: 0; }
+
+/* 播放器控制台：始终浮在音乐库层之上 */
+.player {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  z-index: 45 !important;
+}
 .player { display: block !important; background: transparent !important; border: 0 !important; padding: 8px 0 calc(10px + var(--safe-b, 0px)) !important; }
 .player-console {
   display: flex !important;
@@ -417,7 +925,7 @@ onMounted(() => {
   backdrop-filter: blur(14px) saturate(1.6) !important;
   box-shadow: inset 0 0 2px 1px rgba(255,255,255,.22), 0 8px 24px rgba(0,0,0,.25) !important;
   color: #fff !important;
-  overflow: hidden;
+  overflow: visible !important;
 }
 .player-console .controls {
   display: grid !important;
@@ -472,54 +980,55 @@ onMounted(() => {
 .player-console .transport { justify-content: center !important; }
 .player-console .modes { justify-content: flex-end !important; }
 .player-console .time-display { min-width: 84px !important; text-align: right !important; font-size: 11px !important; color: rgba(255,255,255,.55) !important; font-variant-numeric: tabular-nums; }
-.player-console .progress-bar { width: 100% !important; align-self: stretch !important; margin-left: 0 !important; margin-right: 0 !important; }
-.player-console .progress-fill { min-width: 0; }
-.page main, .song-list { overflow-y: auto !important; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; flex: 1 1 auto; min-height: 0; max-height: none; }
 .player-console .progress-bar {
   display: block !important;
   position: relative !important;
   width: 100% !important;
   max-width: 100% !important;
   min-width: 0 !important;
-  align-self: stretch !important;
-  flex: 1 1 100% !important;
-  margin: 2px 0 0 !important;
-  height: 4px !important;
+  flex: 0 0 8px !important;
+  height: 8px !important;
+  min-height: 8px !important;
+  max-height: 8px !important;
+  margin: 6px 0 4px !important;
   border-radius: 999px !important;
-  background: rgba(255,255,255,.14) !important;
   overflow: visible !important;
-}
-.player-console .progress-fill {
-  position: absolute !important;
-  left: 0 !important; top: 0 !important; bottom: 0 !important;
-  max-width: 100% !important;
-  height: 100% !important;
-  border-radius: 999px !important;
-  background: linear-gradient(90deg, rgba(255,255,255,.95), rgba(0,245,212,.8)) !important;
-  pointer-events: none !important;
-}
-.player-console .progress-thumb {
-  position: absolute !important;
-  top: 50% !important;
-  margin-left: -6px !important;
-  width: 12px !important; height: 12px !important;
-  border-radius: 50% !important;
-  background: #fff !important;
-  opacity: 1 !important;
-  transform: translateY(-50%) !important;
-  pointer-events: none !important;
+  /* 已播进度直接画在轨道背景上，避免子元素被压扁看不见 */
+  background: linear-gradient(
+    to right,
+    #7cf5c8 0%,
+    #00f5d4 var(--pct, 0%),
+    rgba(255, 255, 255, 0.28) var(--pct, 0%),
+    rgba(255, 255, 255, 0.28) 100%
+  ) !important;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.06) !important;
 }
 .player-console .progress-input {
   position: absolute !important;
-  inset: -8px 0 !important;
+  inset: -10px 0 !important;
   width: 100% !important;
   max-width: none !important;
-  height: 20px !important;
+  height: 28px !important;
   margin: 0 !important;
   opacity: 0 !important;
   appearance: none !important;
   -webkit-appearance: none !important;
   background: transparent !important;
-  z-index: 2 !important;
+  z-index: 3 !important;
+  cursor: pointer !important;
 }
+.page main { overflow-y: auto !important; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; flex: 1 1 auto; min-height: 0; max-height: none; }
+
+/* 登录 */
+.login-mask { position: absolute; inset: 0; z-index: 50; background: rgba(0,0,0,.35); display: flex; align-items: flex-end; }
+.login-panel { width: 100%; background: var(--white); border-radius: 16px 16px 0 0; padding: 16px 16px calc(16px + var(--safe-b)); color: var(--text); }
+.login-title { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+.login-status { font-size: 12px; color: var(--text-2); line-height: 1.6; margin-bottom: 8px; }
+.login-tabs { display: flex; gap: 8px; margin-bottom: 8px; }
+.login-tabs button { min-height: 32px; padding: 0 14px; border-radius: 16px; border: 1px solid var(--divider); background: var(--bg); color: var(--text-2); font-size: 13px; }
+.login-tabs button.on { border-color: var(--green); color: var(--green); }
+.login-panel textarea { width: 100%; border: 1px solid var(--divider); border-radius: 8px; padding: 10px; font-size: 12px; box-sizing: border-box; background: var(--bg); color: var(--text); }
+.login-actions { margin-top: 10px; display: flex; gap: 8px; justify-content: flex-end; }
+.login-actions button { min-height: 36px; padding: 0 14px; border-radius: 8px; border: 0; font-size: 13px; background: var(--divider-soft); color: var(--text); }
+.login-actions button:last-child { background: var(--green); color: #fff; }
 </style>

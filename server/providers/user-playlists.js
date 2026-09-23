@@ -49,13 +49,30 @@ export function getQQLoginInfo() {
 function getNeteaseLoginInfo() {
   const raw = neteaseCookie() || '';
   const map = parseCookieString(raw);
-  const uid = String(map.__csrf && map.MUSIC_U ? '' : '') || extractNcmUid(map);
+  const uid = extractNcmUid(map);
   const loggedIn = !!map.MUSIC_U;
-  return { loggedIn, userId: uid || map.userId || map.uid || '' };
+  return { loggedIn, userId: uid };
 }
 function extractNcmUid(map) {
-  // MUSIC_U 解码后常含用户 id 片段；无则用 cookie 里的 uid 字段
-  return String(map.uid || map.userId || map.userid || '');
+  // Cookie 常只有 MUSIC_U/__csrf，uid 可能不在字段里；优先显式 uid
+  return String(map.uid || map.userId || map.userid || '').trim();
+}
+
+/** 网易云 SDK 异常完整信息（含 e.body，便于区分「网络异常」业务错误） */
+function formatNcmError(e) {
+  const body = e && e.body;
+  const bodyText = body == null ? '' : (typeof body === 'string' ? body : JSON.stringify(body));
+  const code = body && typeof body === 'object' ? (body.code ?? body.subcode) : undefined;
+  return [e && e.message, code != null ? `code=${code}` : '', bodyText.slice(0, 400)].filter(Boolean).join(' | ');
+}
+
+async function ncmCall(label, fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    logProvider(`netease ${label}: ${formatNcmError(e)}`);
+    throw e;
+  }
 }
 
 function mapArtists(raw) {
@@ -82,16 +99,20 @@ function mapNeteaseSongRecord(s) {
 
 function mapNeteasePlaylistMeta(pl, fallbackId) {
   pl = pl || {};
+  const specialType = pl.specialType || 0;
+  const name = pl.name || '';
+  const isFavorite = specialType === 5 || /我喜欢|喜欢的音乐/.test(name);
   return {
     provider: 'netease', source: 'netease',
     id: pl.id || fallbackId,
-    name: pl.name || '',
+    name,
     cover: pl.coverImgUrl || pl.cover || '',
     trackCount: pl.trackCount || pl.track_count || 0,
     playCount: pl.playCount || pl.play_count || 0,
     creator: (pl.creator && pl.creator.nickname) || pl.creatorNickname || '',
     subscribed: !!pl.subscribed,
-    specialType: pl.specialType || 0,
+    specialType,
+    isFavorite,
   };
 }
 
@@ -157,6 +178,7 @@ function mapQQPlaylist(pl, kind) {
     creator: pl.hostname || pl.nick || pl.creator || 'QQ 音乐',
     subscribed: kind === 'collect',
     specialType: liked ? 5 : 0,
+    isFavorite: liked,
   };
 }
 
@@ -234,15 +256,23 @@ function mergeUniqueNeteasePlaylists(target, incoming, seen) {
 }
 
 async function fetchAllNeteaseUserPlaylists(uid, maxItems) {
+  // 「网络异常」常是 uid=undefined 被当业务错误打回；调用前断言
+  const safeUid = String(uid || '').trim();
+  if (!safeUid || safeUid === 'undefined' || safeUid === 'null') {
+    const err = new Error('网易云 uid 缺失，跳过 user_playlist');
+    err.code = 'NETEASE_UID_MISSING';
+    throw err;
+  }
+  logProvider(`netease user_playlist uid=${safeUid}`);
   const playlists = [];
   const seen = new Set();
   let offset = 0;
   let total = 0;
   for (let page = 0; page < NETEASE_PLAYLIST_SYNC_MAX_PAGES; page += 1) {
-    const r = await ncm.user_playlist({
-      uid, limit: NETEASE_PLAYLIST_SYNC_PAGE_SIZE, offset,
+    const r = await ncmCall(`user_playlist page=${page} uid=${safeUid}`, () => ncm.user_playlist({
+      uid: safeUid, limit: NETEASE_PLAYLIST_SYNC_PAGE_SIZE, offset,
       cookie: neteaseCookie(), timestamp: Date.now(),
-    });
+    }));
     const body = r.body || r || {};
     const raw = Array.isArray(body.playlist) ? body.playlist : [];
     total = Number(body.total || body.count || total) || total;
@@ -258,15 +288,31 @@ async function fetchAllNeteaseUserPlaylists(uid, maxItems) {
 export async function handleNeteaseUserPlaylists(opts = {}) {
   const info = getNeteaseLoginInfo();
   if (!info.loggedIn) return { loggedIn: false, provider: 'netease', playlists: [] };
-  // uid 可能只在 cookie 里缺失，尝试从 user_account 拉
-  let uid = info.userId;
+  // uid 缺失时从 user_account / login_status 取；仍拿不到则直接空返回，绝不带 undefined 调接口
+  let uid = String(info.userId || '').trim();
   if (!uid) {
     try {
-      const acc = await ncm.user_account({ cookie: neteaseCookie(), timestamp: Date.now() });
-      uid = String(acc?.body?.account?.id || acc?.body?.profile?.userId || '');
-    } catch (e) { logProvider(`netease uid: ${e.message}`); }
+      const acc = await ncmCall('user_account', () => ncm.user_account({ cookie: neteaseCookie(), timestamp: Date.now() }));
+      uid = String(acc?.body?.account?.id || acc?.body?.profile?.userId || '').trim();
+      logProvider(`netease uid from user_account: ${uid || '(empty)'}`);
+    } catch (e) {
+      logProvider(`netease uid user_account failed: ${formatNcmError(e)}`);
+    }
   }
-  if (!uid) return { loggedIn: true, provider: 'netease', playlists: [], message: '缺少网易云 uid' };
+  if (!uid) {
+    try {
+      const st = await ncmCall('login_status', () => ncm.login_status({ cookie: neteaseCookie(), timestamp: Date.now() }));
+      const data = st?.body?.data || st?.body || {};
+      uid = String(data?.profile?.userId || data?.account?.id || '').trim();
+      logProvider(`netease uid from login_status: ${uid || '(empty)'}`);
+    } catch (e) {
+      logProvider(`netease uid login_status failed: ${formatNcmError(e)}`);
+    }
+  }
+  if (!uid || uid === 'undefined' || uid === 'null') {
+    // 与参考实现一致：uid 取不到时不调 user_playlist
+    return { loggedIn: false, provider: 'netease', playlists: [], message: '缺少网易云 uid，请重新导入 Cookie' };
+  }
   const rawPlaylists = await fetchAllNeteaseUserPlaylists(uid, opts.maxItems || 0);
   return {
     loggedIn: true, provider: 'netease', userId: uid,
@@ -304,8 +350,15 @@ function pruneNeteasePlaylistTrackIndexCache() {
 }
 
 async function fetchNeteasePlaylistDetailMeta(id) {
-  const detail = await ncm.playlist_detail({ id, s: 0, cookie: neteaseCookie(), timestamp: Date.now() });
-  const pl = (detail.body && detail.body.playlist) || {};
+  const detail = await ncmCall(`playlist_detail id=${id}`, () => ncm.playlist_detail({ id, s: 0, cookie: neteaseCookie(), timestamp: Date.now() }));
+  const body = detail.body || detail || {};
+  if (body.code != null && Number(body.code) !== 200) {
+    const err = new Error(body.message || body.msg || '网易云歌单详情失败');
+    err.body = body;
+    err.code = 'NETEASE_PLAYLIST_DETAIL_FAILED';
+    throw err;
+  }
+  const pl = body.playlist || {};
   return { playlistMeta: mapNeteasePlaylistMeta(pl, id), tracks: Array.isArray(pl.tracks) ? pl.tracks : [] };
 }
 
@@ -321,7 +374,7 @@ async function fetchNeteasePlaylistTrackIndex(id) {
   }
   if (neteasePlaylistTrackIndexInflight.has(key)) return neteasePlaylistTrackIndexInflight.get(key);
   const pending = (async () => {
-    const detail = await ncm.playlist_detail({ id, s: 0, cookie: neteaseCookie(), timestamp: Date.now() });
+    const detail = await ncmCall(`playlist_detail index id=${id}`, () => ncm.playlist_detail({ id, s: 0, cookie: neteaseCookie(), timestamp: Date.now() }));
     const pl = (detail.body && detail.body.playlist) || {};
     const rawIds = (Array.isArray(pl.trackIds) && pl.trackIds.length ? pl.trackIds : (pl.tracks || []));
     const trackIds = rawIds.map((item) => item && (item.id || item.songId || item.trackId)).filter(Boolean);
@@ -351,10 +404,10 @@ async function fetchAllNeteasePlaylistTracks(id) {
   let offset = 0;
   for (let page = 0; page < NETEASE_TRACK_SYNC_MAX_PAGES; page += 1) {
     try {
-      const all = await ncm.playlist_track_all({
+      const all = await ncmCall(`playlist_track_all id=${id} offset=${offset}`, () => ncm.playlist_track_all({
         id, limit: NETEASE_TRACK_SYNC_PAGE_SIZE, offset,
         cookie: neteaseCookie(), timestamp: Date.now(),
-      });
+      }));
       const body = all.body || all || {};
       const rows = body.songs || body.tracks || [];
       const added = mergeUniqueNeteaseTracks(rawTracks, rows, seen);
@@ -404,6 +457,7 @@ function buildQQLikedPlaylistCard(info, likedPage, warning) {
     creator: (info && (info.nickname || info.userId)) || 'QQ 音乐',
     subscribed: false,
     specialType: 5,
+    isFavorite: true,
     requiresPlaybackKey: warning === 'QQ_LIKED_REQUIRES_PLAYBACK_LOGIN',
     warning: warning || '',
   };
