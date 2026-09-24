@@ -13,10 +13,10 @@
 
 ### 近期功能要点
 
-- **听一听音源**：网易云 + QQ 音乐；Cookie 服务端持久化；播放地址探测与 restriction 引导；详见 [docs/MUSIC-VISUAL.md](docs/MUSIC-VISUAL.md)
+- **听一听音源**：网易云 + QQ 音乐 + **酷狗**；Cookie 服务端持久化；播放地址探测与 restriction 引导；酷狗音频同源代理防盗链；详见 [docs/MUSIC-VISUAL.md](docs/MUSIC-VISUAL.md)
 - **Perry 歌单**：入口卡随音源切换标题；「我喜欢 / 自建收藏」可下钻曲目并播放；底部播放台进度条渐变填充
 - **视觉舞台**：粒子/预设/手势/3D 歌词；默认预设「丝绸/封面粒子」
-- **歌单同步**：网易云「我喜欢 + 用户歌单」；QQ 创建/收藏 +「我喜欢」(musicu dirid=201)；详见 [docs/MIGRATION.md](docs/MIGRATION.md)（换机必读）
+- **歌单同步**：网易云「我喜欢 + 用户歌单」；QQ 创建/收藏 +「我喜欢」(musicu dirid=201)；酷狗收藏/自建歌单；详见 [docs/MIGRATION.md](docs/MIGRATION.md)（换机必读）
 - **单端登录**：同一账号仅允许一处在线；新登录挤掉旧会话（Socket 下线 + 本地回登录页）；设置页可「下线其它设备」
 - **消息体验**：发送中/失败状态、已读/送达、语音上滑取消、粘贴传图、收发音效
 - **输入草稿**：`draft-sync.js` 防抖保存；聚焦/中文组字时忽略 Socket 回写，避免「打字被吞 / 删除后恢复」
@@ -39,6 +39,9 @@
 | GET | `/api/redpacket/:id` | 红包领取明细 |
 | POST | `/api/chat/pref` | 会话偏好（含 `extra`：备注/@提醒等） |
 | GET | `/api/games` | 发现页可用小游戏列表 |
+| GET | `/api/kugou/search` `/api/kugou/song/url` | 酷狗搜索 / 取流 |
+| GET | `/api/kugou/audio?u=` | 酷狗音频代理（**免鉴权**，仅 kugou CDN） |
+| GET | `/api/music/list?source=` | 听一听：`qq` / `netease` / `kugou` |
 
 ---
 
@@ -55,6 +58,7 @@
 │       ├── draft-sync.js    # 聊天输入草稿防抖与防覆盖
 │       ├── status-bg.js     # 状态渐变/图标/剩余时长
 │       ├── api.js           # HTTP 封装
+│       ├── music-player.js  # 听一听播放器（三音源）
 │       ├── socket-store.js  # 共享 Socket.IO
 │       └── ...
 ├── client-dist/             # 构建产物（npm run build，不入库）
@@ -78,6 +82,7 @@
 │   ├── db.js                # SQLite schema
 │   ├── auth.js              # 注册/登录/资料/限流
 │   ├── chat.js              # 群/私聊消息、红包转账、通话信令
+│   ├── providers/           # 音源：netease / qq / kugou（kugou-api.cjs 完整协议）
 │   ├── groups.js            # 群种子 + 成员表
 │   ├── rp.js                # 红包拆分/领取/超时退回
 │   ├── wallet.js            # 演示钱包
@@ -219,7 +224,7 @@ Python 侧常用库（Agent 文件生成）：`openpyxl`、`python-docx`、`pyth
 ### 获取代码与数据
 
 - **方案 A 整机拷贝**（推荐）：旧机**先停服**，打包排除 `node_modules` 与日志，新机解压  
-- **方案 B 源码+数据**：`git clone` 后单独拷贝 `data/chat.db*`、`data/media/`、`config/ai.json`、`.netease-cookie`、`.qq-cookie`  
+- **方案 B 源码+数据**：`git clone` 后单独拷贝 `data/chat.db*`、`data/media/`、`config/ai.json`、`.netease-cookie`、`.qq-cookie`、`.kugou-cookie`  
 - **方案 C 空库**：仅源码 + 模板，启动自动建库并播种群  
 
 拷贝数据库前先停服（含 `chat.db` / `-wal` / `-shm` 与 `data/media/`）。

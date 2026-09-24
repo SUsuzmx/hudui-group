@@ -36,13 +36,15 @@ const meId = reg.data.user?.id;
 
 const login = await http('/api/login', { body: { nickname: nick, password: 'test1234' } });
 check('登录', login.status === 200 && login.data.token);
+// 单端登录会挤掉注册会话，后续统一用最新 token
+const authToken = login.data.token || token;
 
-const me1 = await http('/api/me', { method: 'GET', token });
+const me1 = await http('/api/me', { method: 'GET', token: authToken });
 check('获取我', me1.status === 200 && me1.data.user?.nickname === nick);
 
 const upd = await http('/api/me', {
   method: 'PUT',
-  token,
+  token: authToken,
   body: { signature: '回归签名', region: '上海', wxid: 'wx' + meId + 'rg' },
 });
 check('更新资料', upd.status === 200 && upd.data.user?.signature === '回归签名');
@@ -52,18 +54,18 @@ const friendSeed = await http('/api/register', {
   body: { nickname: '好友乙' + meId, password: 'test1234' },
 });
 const friendId = friendSeed.data?.user?.id;
-const addF = await http('/api/friends', { token, body: { friendId } });
+const addF = await http('/api/friends', { token: authToken, body: { friendId } });
 check('添加好友', addF.status === 200);
-const listF = await http('/api/friends', { method: 'GET', token });
+const listF = await http('/api/friends', { method: 'GET', token: authToken });
 check('好友列表', listF.status === 200 && listF.data.friends?.some((f) => f.id === friendId));
-const delF = await http(`/api/friends/${friendId}`, { method: 'DELETE', token });
+const delF = await http(`/api/friends/${friendId}`, { method: 'DELETE', token: authToken });
 check('删除好友', delF.status === 200);
 
-const aiC = await http('/api/ai-contacts', { method: 'GET', token });
+const aiC = await http('/api/ai-contacts', { method: 'GET', token: authToken });
 check('AI联系人', aiC.status === 200 && (aiC.data.contacts?.length || 0) >= 10, `n=${aiC.data.contacts?.length}`);
 
 // ── 3. 会话列表多群 ──
-const chats = await http('/api/chats', { method: 'GET', token });
+const chats = await http('/api/chats', { method: 'GET', token: authToken });
 const groups = (chats.data.chats || []).filter((c) => c.type === 'group');
 check('多群会话', groups.length >= 5, groups.map((g) => g.name).join('/'));
 
@@ -76,7 +78,7 @@ function connect(token) {
   });
 }
 
-const sock = await connect(token);
+const sock = await connect(authToken);
 
 async function emit(ev, payload) {
   return new Promise((resolve) => sock.emit(ev, payload, resolve));
@@ -96,7 +98,7 @@ const s2 = await emit('message:send', {
 });
 check('引用发送', s2?.ok === true);
 
-const upImg = await http('/api/chat/upload', { token, body: { data: png, kind: 'image' } });
+const upImg = await http('/api/chat/upload', { token: authToken, body: { data: png, kind: 'image' } });
 check('上传图片', upImg.status === 200 && upImg.data.url, upImg.data.url || '');
 const s3 = await emit('message:send', {
   mediaType: 'image',
@@ -105,7 +107,7 @@ const s3 = await emit('message:send', {
 });
 check('发送图片', s3?.ok === true);
 
-const upV = await http('/api/chat/upload', { token, body: { data: wav, kind: 'voice' } });
+const upV = await http('/api/chat/upload', { token: authToken, body: { data: wav, kind: 'voice' } });
 check('上传语音', upV.status === 200 && upV.data.url, upV.data.url || '');
 const s4 = await emit('message:send', {
   content: '[语音] 1"',
@@ -142,7 +144,7 @@ check('多群不串消息', !famHist.some((m) => m.content === '这是引用'));
 // 搜索: 用未撤回消息里的词
 const search = await http('/api/chat/search?q=%E5%BC%95%E7%94%A8&conversationId=' + conv, {
   method: 'GET',
-  token,
+  token: authToken,
 });
 check('搜索聊天记录', search.status === 200 && (search.data.messages?.length || 0) > 0, `n=${search.data.messages?.length}`);
 
@@ -151,24 +153,24 @@ sock.emit('typing:start', { conversationId: conv });
 check('typing事件可发', true);
 
 // ── 5. 朋友圈 ──
-const upM = await http('/api/moments/upload', { token, body: { data: png } });
+const upM = await http('/api/moments/upload', { token: authToken, body: { data: png } });
 check('朋友圈传图', upM.status === 200 && upM.data.url, upM.data.url || '');
 const cm = await http('/api/moments', {
-  token,
+  token: authToken,
   body: { content: '回归朋友圈', images: [upM.data.url] },
 });
 check('发朋友圈', cm.status === 200 && cm.data.moment?.id, String(cm.data.moment?.id));
 const mid = cm.data.moment?.id;
-const like = await http('/api/moments/like', { token, body: { id: mid } });
+const like = await http('/api/moments/like', { token: authToken, body: { id: mid } });
 check('点赞', like.status === 200 && like.data.likes?.length === 1);
-const cmt = await http('/api/moments/comment', { token, body: { id: mid, content: '好看' } });
+const cmt = await http('/api/moments/comment', { token: authToken, body: { id: mid, content: '好看' } });
 check('评论', cmt.status === 200 && cmt.data.comments?.length === 1);
-const mList = await http('/api/moments', { method: 'GET', token });
+const mList = await http('/api/moments', { method: 'GET', token: authToken });
 const found = mList.data.moments?.find((m) => m.id === mid);
 check('列表含图与互动', found?.images?.length === 1 && found?.likes?.length === 1 && found?.comments?.length === 1);
-const unlike = await http('/api/moments/unlike', { token, body: { id: mid } });
+const unlike = await http('/api/moments/unlike', { token: authToken, body: { id: mid } });
 check('取消赞', unlike.status === 200 && unlike.data.likes?.length === 0);
-const delM = await http(`/api/moments/${mid}`, { method: 'DELETE', token });
+const delM = await http(`/api/moments/${mid}`, { method: 'DELETE', token: authToken });
 check('删朋友圈', delM.status === 200);
 
 // ── 6. 私聊 AI ──
@@ -190,7 +192,7 @@ check('私聊AI回复', pvMsgs.length > 0, pvMsgs[0]?.content?.slice(0, 24));
 const avatars = await http('/api/avatars', { method: 'GET' });
 check('头像列表', avatars.status === 200 && avatars.data.avatars?.length > 10, `n=${avatars.data.avatars?.length}`);
 
-const userPage = await http(`/api/users/${friendId}`, { method: 'GET', token });
+const userPage = await http(`/api/users/${friendId}`, { method: 'GET', token: authToken });
 check('用户资料', userPage.status === 200 && userPage.data.user?.id === friendId);
 
 // ── 8. 群AI接话(非默认群) ──

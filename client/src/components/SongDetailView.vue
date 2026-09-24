@@ -26,7 +26,10 @@ const playing = computed(() => musicPlayer.state.playing);
 const progress = computed(() => musicPlayer.state.progress);
 const duration = computed(() => musicPlayer.state.duration);
 const tracks = computed(() => musicPlayer.state.tracks);
-const sourceLabel = computed(() => (current.value?.source === 'netease' ? '网易云' : 'QQ'));
+const sourceLabel = computed(() => {
+  const s = current.value?.source;
+  return s === 'netease' ? '网易云' : s === 'kugou' ? '酷狗' : 'QQ';
+});
 const displayPct = computed(() => {
   if (seeking.value) return seekPct.value;
   return duration.value ? Math.min(100, Math.max(0, (progress.value / duration.value) * 100)) : 0;

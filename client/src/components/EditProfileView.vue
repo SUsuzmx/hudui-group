@@ -172,13 +172,16 @@ async function onUploadAvatar(e) {
   cropSrc.value = dataUrl;
 }
 
-async function onCropConfirm(dataUrl) {
+async function onCropConfirm(dataUrlOrObj) {
+  const payload = dataUrlOrObj && typeof dataUrlOrObj === 'object' && dataUrlOrObj.blob
+    ? dataUrlOrObj.blob
+    : dataUrlOrObj;
   cropSrc.value = '';
   uploading.value = true;
   uploadPct.value = 0;
   uploadLabel.value = '上传头像';
   try {
-    const { url } = await api.uploadMomentImageWithProgress(dataUrl, (p) => { uploadPct.value = p; });
+    const { url } = await api.uploadMomentImageWithProgress(payload, (p) => { uploadPct.value = p; }, 'avatar');
     if (!url) throw new Error('上传失败');
     await persistMe({ avatar: url });
     toast('头像已更新');

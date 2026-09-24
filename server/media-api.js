@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { stmts } from './db.js';
 import netease from './providers/netease.js';
 import qq from './providers/qq.js';
+import kugou from './providers/kugou.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.dirname(__dirname);
@@ -292,9 +293,38 @@ function searchLocalTracks(q = '') {
 }
 
 export function createMediaApi() {
-  const ALLOWED = new Set(['netease', 'qq']);
+  const ALLOWED = new Set(['netease', 'qq', 'kugou']);
+  const SOURCES = ['netease', 'qq', 'kugou'];
+  async function resolveSongUrl(source, req) {
+    const id = String(req.params.id || req.query.id || '');
+    const level = String(req.query.level || req.query.quality || 'exhigh');
+    if (source === 'kugou') {
+      return kugou.getSongUrl({
+        id,
+        hash: req.query.hash || id,
+        albumId: req.query.albumId || req.query.album_id,
+        albumAudioId: req.query.albumAudioId || req.query.album_audio_id || req.query.mixSongId,
+        mixSongId: req.query.mixSongId || req.query.mixsongid,
+        quality: req.query.quality || level,
+        privilege: req.query.privilege,
+        vipRequired: req.query.vipRequired,
+        hqHash: req.query.hqHash,
+        sqHash: req.query.sqHash,
+        resHash: req.query.resHash,
+      });
+    }
+    const meta = req.query.title ? { title: String(req.query.title), artists: String(req.query.artist || '').split(/[\/,]/).filter(Boolean), mid: req.query.mid, mediaMid: req.query.mediaMid } : null;
+    if (source === 'netease') return netease.getSongUrl({ id, level, songMeta: meta });
+    return qq.getSongUrl({
+      id,
+      mid: req.query.mid || req.query.songmid || id,
+      mediaMid: req.query.mediaMid || req.query.media_mid || id,
+      level,
+      songMeta: meta,
+    });
+  }
   return {
-    /** 听一听：仅网易云 / QQ，默认 QQ */
+    /** 听一听：网易云 / QQ / 酷狗，默认 QQ */
     async musicList(req, res) {
       const q = String(req.query.q || '').trim() || '热歌';
       const source = ALLOWED.has(String(req.query.source)) ? String(req.query.source) : 'qq';
@@ -302,51 +332,60 @@ export function createMediaApi() {
       const notes = [];
       let tracks = [];
       try {
-        tracks = source === 'netease'
-          ? await netease.search({ q, limit })
-          : await qq.search({ q, limit });
+        tracks = source === 'kugou'
+          ? await kugou.search({ q, limit })
+          : source === 'netease'
+            ? await netease.search({ q, limit })
+            : await qq.search({ q, limit });
       } catch (e) {
         notes.push(e.message);
         try {
-          const other = source === 'netease' ? 'qq' : 'netease';
-          tracks = other === 'netease' ? await netease.search({ q, limit }) : await qq.search({ q, limit });
-          notes.push(`已切换到${other}`);
-          return res.json({ tracks, source: other, notes, sources: ['netease', 'qq'], defaultSource: 'qq' });
+          const fallbackOrder = SOURCES.filter((s) => s !== source);
+          for (const other of fallbackOrder) {
+            try {
+              tracks = other === 'kugou'
+                ? await kugou.search({ q, limit })
+                : other === 'netease'
+                  ? await netease.search({ q, limit })
+                  : await qq.search({ q, limit });
+              notes.push(`已切换到${other}`);
+              return res.json({ tracks, source: other, notes, sources: SOURCES, defaultSource: 'qq' });
+            } catch (e2) { notes.push(e2.message); }
+          }
         } catch (e2) { notes.push(e2.message); }
       }
-      res.json({ tracks, source, notes, sources: ['netease', 'qq'], defaultSource: 'qq' });
+      res.json({ tracks, source, notes, sources: SOURCES, defaultSource: 'qq' });
     },
     async musicStreamInfo(req, res) {
       const source = String(req.params.source || '');
       const id = String(req.params.id || '');
-      if (!id) return res.status(400).json({ error: '缺少歌曲 ID' });
+      if (!id && source !== 'kugou') return res.status(400).json({ error: '缺少歌曲 ID' });
       if (!ALLOWED.has(source)) {
-        return res.status(400).json({ error: '仅支持网易云与 QQ 音乐', playable: false, restriction: { category: 'url_unavailable', message: '仅支持网易云与 QQ 音乐', action: 'switch_source' } });
+        return res.status(400).json({ error: '仅支持网易云、QQ 与酷狗音乐', playable: false, restriction: { category: 'url_unavailable', message: '仅支持网易云、QQ 与酷狗音乐', action: 'switch_source' } });
       }
-      const meta = req.query.title ? { title: String(req.query.title), artists: String(req.query.artist || '').split(/[\/,]/).filter(Boolean), mid: req.query.mid, mediaMid: req.query.mediaMid } : null;
       try {
-        const result = source === 'netease'
-          ? await netease.getSongUrl({ id, level: String(req.query.level || 'exhigh'), songMeta: meta })
-          : await qq.getSongUrl({ id, mid: req.query.mid || req.query.songmid || id, mediaMid: req.query.mediaMid || req.query.media_mid || id, level: String(req.query.level || 'exhigh'), songMeta: meta });
+        const result = await resolveSongUrl(source, req);
         res.json({ ...result, source, error: result.playable ? undefined : (result.restriction?.message || '暂无可用播放地址') });
-      } catch (e) { res.status(502).json({ error: e.message, playable: false, url: '' }); }
+      } catch (e) {
+        res.status(502).json({ error: e.message, playable: false, url: '', restriction: { category: 'url_unavailable', message: e.message, action: 'switch_source' } });
+      }
     },
     async musicProxy(req, res) {
       const source = String(req.query.source || '');
       const id = String(req.query.id || '');
-      if (!ALLOWED.has(source)) return res.status(400).json({ error: '仅支持网易云与 QQ 音乐' });
+      if (!ALLOWED.has(source)) return res.status(400).json({ error: '仅支持网易云、QQ 与酷狗音乐' });
       try {
-        const result = source === 'netease'
-          ? await netease.getSongUrl({ id, level: String(req.query.level || 'exhigh') })
-          : await qq.getSongUrl({ id, mid: req.query.mid || req.query.songmid || id, mediaMid: req.query.mediaMid || req.query.media_mid || id, level: String(req.query.level || 'exhigh') });
-        if (!result.playable || !result.url) {
+        const result = await resolveSongUrl(source, { params: { id }, query: req.query });
+        const fetchUrl = result.cdnUrl || result.url;
+        if (!result.playable || !fetchUrl || String(fetchUrl).startsWith('/')) {
           return res.status(404).json({ error: result.restriction?.message || '暂无可用播放地址', restriction: result.restriction || null });
         }
         const headers = { 'User-Agent': 'Mozilla/5.0', Accept: '*/*' };
         if (req.headers.range) headers.Range = req.headers.range;
-        if (source === 'netease') headers.Referer = 'https://music.163.com/';
+        if (source === 'kugou') headers.Referer = 'https://www.kugou.com/';
+        else if (source === 'netease') headers.Referer = 'https://music.163.com/';
         else headers.Referer = 'https://y.qq.com/';
-        const upstream = await fetch(result.url, { headers, redirect: 'follow', signal: AbortSignal.timeout(15000) });
+        const upstream = await fetch(fetchUrl, { headers, redirect: 'follow', signal: AbortSignal.timeout(15000) });
         if (!upstream.ok && upstream.status !== 206) return res.status(502).json({ error: '媒体拉取失败' });
         res.status(upstream.status === 206 ? 206 : 200);
         res.setHeader('Content-Type', upstream.headers.get('content-type') || 'audio/mpeg');

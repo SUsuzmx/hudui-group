@@ -1,6 +1,43 @@
-# 网易云 / QQ 音乐接入与视觉舞台（踩坑记录）
+# 网易云 / QQ / 酷狗音乐接入与视觉舞台（踩坑记录）
 
 本文记录 `hudui-group` 中「听一听」音源与 Mineradio 视觉舞台的实现要点与常见坑。
+
+## 酷狗接入说明
+
+### 文件分层
+
+| 文件 | 职责 |
+|------|------|
+| `server/providers/kugou-api.cjs` | **完整协议实现（勿精简）**。会员判定约 500 行（VIP/SVIP/音乐包三权益 + 多探针 + 陈旧宽限）是实测踩坑的防御逻辑，删减会出现「VIP 被判无权限」 |
+| `server/providers/kugou-routes.cjs` | 原始 HTTP 形态参考；CLI 自测：`node server/providers/kugou-routes.cjs search/status/playlists/cookie` |
+| `server/providers/kugou.js` | 项目适配层：Express `/api/kugou/*` + 与网易云/QQ 对齐的 provider 接口 |
+
+因仓库 `package.json` 为 `"type": "module"`，协议层用 **`.cjs`** 扩展名保持 CommonJS 原样加载，逻辑零改动。
+
+### Cookie 与鉴权
+
+- Cookie 落盘：项目根目录 `.kugou-cookie`（与 `.netease-cookie` / `.qq-cookie` 同级；**gitignore，永不入库**）
+- 必须含 `KuGoo` 复合字段（内有 `userid` / `token`）；从 www.kugou.com 浏览器完整复制
+- 听一听 →「音源」→ 酷狗 粘贴 Cookie 导入
+
+### 播放验收（重要）
+
+- **必须使用真实会员 Cookie** 验收播放。
+- 匿名/无 Cookie 时 `handleKugouSongUrl` 返回 `verification_required` 是**预期行为，不是 bug**。
+- 适配层会给 restriction 补 `action: 'login'`，前端引导重新登录。
+
+### 音频代理（必走）
+
+酷狗 CDN 校验 `Referer`，前端直连必 403：
+
+1. `getSongUrl` 返回 `url` / `proxyUrl` = `/api/kugou/audio?u=<encoded CDN>`
+2. **`/api/kugou/audio` 免鉴权**：`<audio src>` 不会带 `Authorization`，若挂 mediaAuth 会 401，整份歌单播不了（已踩坑）
+3. 仅允许 `*.kugou.com` URL，不做开放代理；按需透传 `Range`（拖进度条要 206）
+4. 兜底：`/api/audio?url=` 已对 kugou 域名补 `Referer: https://www.kugou.com/`
+
+### 曲目字段
+
+协议层 `mapKugouSearchItem` 的 `duration` 为**毫秒**、歌名在 `name`；`kugou.js` 的 `normalizeTrack` 对齐播放器：`title` + `duration`（秒）+ `durationMs`，并保留 `hash` / `albumId` / `albumAudioId`（取流必传）。
 
 ---
 

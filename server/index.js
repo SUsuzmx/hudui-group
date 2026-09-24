@@ -15,6 +15,7 @@ import { createFriendsRouter } from './friends.js';
 import { createMomentsRouter } from './moments.js';
 import { createMediaApi } from './media-api.js';
 import { createMusicProviderRouter } from './providers/music-routes.js';
+import { createKugouRouter } from './providers/kugou.js';
 import { createLookApi } from './look-api.js';
 import { createMetaRouter, getUserSettings, setUserSettings } from './meta.js';
 import { seedGroups, listGroups, getGroup, groupConvId, DEFAULT_GROUP_KIND, setGroupNotice, createGroup, listGroupMembers, addGroupMembers, leaveGroup, removeGroupMember, renameGroup } from './groups.js';
@@ -60,7 +61,7 @@ app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.setHeader('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()');
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=(self)');
   next();
 });
 app.use(express.json({ limit: '8mb' }));
@@ -98,7 +99,7 @@ app.post('/api/chat/upload', express.raw({ type: () => true, limit: '9mb' }), (r
 });
 
 // 朋友圈配图上传
-app.post('/api/moments/upload', express.raw({ type: () => true, limit: '4mb' }), (req, res) => {
+app.post('/api/moments/upload', express.raw({ type: () => true, limit: '8mb' }), (req, res) => {
   if (!requireUser(req, res)) return;
   const ct = String(req.get('Content-Type') || '');
   let result;
@@ -140,7 +141,11 @@ app.get('/api/cover', async (req, res) => {
     const upstream = await fetch(raw, {
       headers: {
         'User-Agent': 'Mozilla/5.0',
-        Referer: raw.includes('qq.com') ? 'https://y.qq.com/' : 'https://music.163.com/',
+        Referer: raw.includes('qq.com')
+          ? 'https://y.qq.com/'
+          : raw.includes('kugou.com')
+            ? 'https://www.kugou.com/'
+            : 'https://music.163.com/',
       },
       redirect: 'follow',
       signal: AbortSignal.timeout(8000),
@@ -163,7 +168,11 @@ app.get('/api/audio', async (req, res) => {
     const upstream = await fetch(raw, {
       headers: {
         'User-Agent': 'Mozilla/5.0',
-        Referer: raw.includes('qq.com') ? 'https://y.qq.com/' : 'https://music.163.com/',
+        Referer: raw.includes('qq.com')
+          ? 'https://y.qq.com/'
+          : raw.includes('kugou.com')
+            ? 'https://www.kugou.com/'
+            : 'https://music.163.com/',
         Range: req.headers.range || '',
       },
       redirect: 'follow',
@@ -535,6 +544,53 @@ app.post('/api/friends/request', metaApi.requireAuth, metaApi.sendFriendRequest)
 app.get('/api/friends/requests', metaApi.requireAuth, metaApi.friendRequests);
 app.post('/api/friends/request/handle', metaApi.requireAuth, metaApi.handleFriendRequest);
 
+// 状态墙：好友状态
+app.get('/api/status/friends', (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+  try {
+    const friends = stmts.listFriends.all(user.id) || [];
+    const statuses = [];
+    const seen = new Set([user.id]);
+    for (const f of friends) {
+      const uid = f.friend_id ?? f.id;
+      if (!uid || seen.has(uid)) continue;
+      seen.add(uid);
+      const row = stmts.userById.get(uid);
+      if (!row) continue;
+      const st = parseUserStatus(row.status_json);
+      if (!st) continue;
+      statuses.push({
+        userId: uid,
+        nickname: f.remark || row.nickname,
+        avatar: row.avatar,
+        avatarColor: row.avatar_color,
+        status: st,
+        statusText: st?.text || st?.label || '在状态中',
+        at: st?.at || null,
+      });
+    }
+    // 自己状态置顶
+    const meRow = stmts.userById.get(user.id);
+    const meSt = parseUserStatus(meRow?.status_json);
+    if (meSt) {
+      statuses.unshift({
+        userId: user.id,
+        nickname: user.nickname,
+        avatar: user.avatar,
+        avatarColor: user.avatarColor,
+        status: meSt,
+        statusText: meSt?.text || meSt?.label || '我的状态',
+        at: meSt?.at || null,
+        isMe: true,
+      });
+    }
+    res.json({ statuses });
+  } catch (e) {
+    res.status(500).json({ error: e.message || '获取状态失败' });
+  }
+});
+
 // 会话偏好/未读/清空
 app.get('/api/chats', metaApi.requireAuth, metaApi.chats);
 app.get('/api/chat/pref', metaApi.requireAuth, metaApi.getPref);
@@ -580,6 +636,7 @@ function mediaAuth(req, res, next) {
 }
 app.use('/api/netease', createMusicProviderRouter({ requireAuth: mediaAuth, provider: 'netease' }));
 app.use('/api/qq', createMusicProviderRouter({ requireAuth: mediaAuth, provider: 'qq' }));
+app.use('/api/kugou', createKugouRouter({ requireAuth: mediaAuth }));
 app.get('/api/music/list', mediaAuth, (req, res) => mediaApi.musicList(req, res));
 app.get('/api/music/stream/:source/:id', mediaAuth, (req, res) => mediaApi.musicStreamInfo(req, res));
 app.get('/api/music/proxy', mediaAuth, (req, res) => mediaApi.musicProxy(req, res));
@@ -615,6 +672,7 @@ app.post('/api/look/posts/delete', mediaAuth, (req, res) => lookApi.remove(req, 
 app.delete('/api/look/posts/:id', mediaAuth, (req, res) => lookApi.remove(req, res));
 app.post('/api/moments', momentsApi.requireAuth, momentsApi.create);
 app.delete('/api/moments/:id', momentsApi.requireAuth, momentsApi.remove);
+app.post('/api/moments/visibility', momentsApi.requireAuth, momentsApi.updateVisibility);
 app.post('/api/moments/like', momentsApi.requireAuth, momentsApi.like);
 app.post('/api/moments/unlike', momentsApi.requireAuth, momentsApi.unlike);
 app.post('/api/moments/comment', momentsApi.requireAuth, momentsApi.comment);
@@ -870,12 +928,15 @@ if (fs.existsSync(DIST)) {
   app.use(express.static(DIST, {
     setHeaders(res, filePath) {
       if (filePath.endsWith('index.html') || filePath.endsWith('sw.js')) {
-        res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+        // 重建会换 hash 文件名；HTML/SW 必须回源，否则旧 HTML 引用已删除资源 → 空屏
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       }
     },
   }));
   app.get(/^\/(?!api\/|avatars|media|prototype|games\/).*/, (req, res) => {
-    res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.sendFile(path.join(DIST, 'index.html'));
   });
 } else {

@@ -1,4 +1,4 @@
-const CACHE = 'wx-shell-v10';
+const CACHE = 'wx-shell-v11';
 const SHELL = ['/manifest.json', '/icon-192.png', '/icon-512.png', '/icon.svg'];
 function isApi(p) { return p.startsWith('/api') || p.startsWith('/socket.io'); }
 function isNoCacheDoc(p) { return p === '/' || p === '/index.html' || p === '/sw.js'; }

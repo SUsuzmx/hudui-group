@@ -1,5 +1,5 @@
 // 朋友圈 API: 发布/删除/点赞/评论(回复/删除)/可见范围
-import { stmts } from './db.js';
+import { stmts, db } from './db.js';
 import { scheduleAiMomentReact, personaByDbId, personaByKey } from './moments-ai.js';
 import { aiAvatarFile } from './ai/avatars.js';
 import { isBlockedEither } from './friends.js';
@@ -98,6 +98,13 @@ function canView(moment, userId) {
   const vis = moment.visibility || 'public';
   if (moment.user_id === userId) return true;
   if (isBlockedEither(moment.user_id, userId)) return false;
+  // 不给谁看
+  if (vis === 'except') {
+    const blocked = parseVisibleTo(moment.visible_to);
+    if (blocked.includes(userId)) return false;
+    // 其余按公开处理
+    return true;
+  }
   if (vis === 'public') return true;
   if (vis === 'private') return false;
   // friends / partial
@@ -189,7 +196,7 @@ export function createMomentsRouter({ verifyToken, notify } = {}) {
       images = images
         .filter((x) => typeof x === 'string' && (x.startsWith('/media/') || x.startsWith('/avatars/')))
         .slice(0, 9);
-      const visibility = ['public', 'private', 'friends', 'partial'].includes(req.body?.visibility)
+      const visibility = ['public', 'private', 'friends', 'partial', 'except'].includes(req.body?.visibility)
         ? req.body.visibility : 'public';
       const visibleTo = Array.isArray(req.body?.visibleTo)
         ? req.body.visibleTo.map(Number).filter(Boolean).slice(0, 50) : [];
@@ -206,7 +213,7 @@ export function createMomentsRouter({ verifyToken, notify } = {}) {
         JSON.stringify(images),
         Date.now(),
         visibility,
-        visibility === 'partial' ? JSON.stringify(visibleTo) : null,
+        visibility === 'partial' || visibility === 'except' ? JSON.stringify(visibleTo) : null,
       );
       const row = stmts.momentById.get(Number(r.lastInsertRowid));
       const user = stmts.userById.get(req.user.id);
@@ -229,6 +236,46 @@ export function createMomentsRouter({ verifyToken, notify } = {}) {
       stmts.deleteMoment.run(id, req.user.id);
       emitMoment({ type: 'deleted', momentId: id, userId: req.user.id });
       res.json({ ok: true });
+    },
+    /** 修改可见范围（仅作者） */
+    updateVisibility(req, res) {
+      const id = Number(req.body?.id ?? req.params.id);
+      const visibility = ['public', 'private', 'friends', 'partial', 'except'].includes(req.body?.visibility)
+        ? req.body.visibility : null;
+      const visibleTo = Array.isArray(req.body?.visibleTo)
+        ? req.body.visibleTo.map(Number).filter(Boolean).slice(0, 50)
+        : [];
+      if (!Number.isInteger(id) || id <= 0 || !visibility) {
+        return res.status(400).json({ error: '参数不合法' });
+      }
+      if (visibility === 'partial' && !visibleTo.length) {
+        return res.status(400).json({ error: '部分可见请选择至少一位好友' });
+      }
+      const row = stmts.momentById.get(id);
+      if (!row) return res.status(404).json({ error: '动态不存在' });
+      if (row.user_id !== req.user.id) return res.status(403).json({ error: '只能修改自己的动态' });
+      try {
+        db.prepare('UPDATE moments SET visibility = ?, visible_to = ? WHERE id = ? AND user_id = ?')
+          .run(
+            visibility,
+            visibility === 'partial' || visibility === 'except' ? JSON.stringify(visibleTo) : null,
+            id,
+            req.user.id,
+          );
+      } catch (e) {
+        return res.status(500).json({ error: e.message || '更新失败' });
+      }
+      const next = stmts.momentById.get(id);
+      const user = stmts.userById.get(req.user.id);
+      emitMoment({ type: 'updated', momentId: id, userId: req.user.id });
+      res.json({
+        moment: rowToMoment({
+          ...next,
+          nickname: user.nickname,
+          avatar_color: user.avatar_color,
+          avatar: user.avatar,
+        }, req.user.id),
+      });
     },
     like(req, res) {
       const id = Number(req.body?.id);

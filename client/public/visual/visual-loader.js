@@ -10,16 +10,25 @@
     }
     return '/visual/';
   })();
-  function loadScript(src, timeoutMs) {
+  function loadScriptOnce(src, timeoutMs) {
     return new Promise(function (resolve, reject) {
       var s = document.createElement('script');
       var done = false;
       var timer = setTimeout(function () { if (!done) { done = true; reject(new Error('script timeout: ' + src)); } }, timeoutMs || 30000);
-      s.src = src + (src.indexOf('?') >= 0 ? '&' : '?') + 'v=' + Date.now();
+      // vendor 资源内容稳定，避免 Date.now() 每次绕过缓存；失败重试时再换戳
+      s.src = src + (src.indexOf('?') >= 0 ? '&' : '?') + 'v=1';
       s.async = false;
       s.onload = function () { if (!done) { done = true; clearTimeout(timer); resolve(src); } };
       s.onerror = function () { if (!done) { done = true; clearTimeout(timer); reject(new Error('script failed: ' + src)); } };
       document.head.appendChild(s);
+    });
+  }
+  function loadScript(src, timeoutMs) {
+    return loadScriptOnce(src, timeoutMs).catch(function (err) {
+      // 隧道/弱网下 gsap 等脚本可能瞬时超时，换 cache-bust 再试一次
+      return new Promise(function (resolve) { setTimeout(resolve, 400); }).then(function () {
+        return loadScriptOnce(src + (src.indexOf('?') >= 0 ? '&' : '?') + 'retry=' + Date.now(), Math.max(timeoutMs || 0, 30000));
+      }).catch(function () { throw err; });
     });
   }
   function runtimePatch() {
@@ -144,8 +153,8 @@
     } catch (e) { console.warn('[visual-loader] patch', e); }
   }
   window.__mineradioVisualLoading = loadScript(base + 'vendor/three.r128.min.js', 60000)
-    .then(function () { return loadScript(base + 'vendor/music-tempo.min.js', 15000); })
-    .then(function () { return loadScript(base + 'vendor/gsap.min.js', 15000); })
+    .then(function () { return loadScript(base + 'vendor/music-tempo.min.js', 25000); })
+    .then(function () { return loadScript(base + 'vendor/gsap.min.js', 30000); })
     .then(function () { return loadScript(base + 'mineradio-bundle.js', 120000); })
     .then(function () {
       runtimePatch();

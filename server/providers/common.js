@@ -60,9 +60,12 @@ export function makePlayResult(p = {}) {
 export function classifyRestriction({
   playable = false, url = '', trial = false, loggedIn = false,
   vipRequired = false, paidRequired = false, copyrightOk = true,
-  needsLogin = false, level = null,
+  needsLogin = false, level = null, category = null,
 } = {}) {
   if (playable && url) return null;
+  if (category === 'verification_required') {
+    return { category: 'verification_required', message: '酷狗需要官方安全验证，请打开酷狗官方登录窗口完成验证', action: 'login' };
+  }
   if (!copyrightOk) return { category: 'copyright_unavailable', message: '该歌曲暂无版权，无法播放', action: 'switch_source' };
   if (needsLogin || (!loggedIn && (vipRequired || trial))) {
     return { category: 'login_required', message: '需要登录音乐平台后才能播放', action: 'login' };
@@ -132,7 +135,9 @@ export async function withTimeout(promise, ms, label = 'timeout') {
 }
 
 export function cookieFilePath(provider) {
-  return path.join(ROOT, provider === 'qq' ? '.qq-cookie' : '.netease-cookie');
+  if (provider === 'qq') return path.join(ROOT, '.qq-cookie');
+  if (provider === 'kugou') return path.join(ROOT, '.kugou-cookie');
+  return path.join(ROOT, '.netease-cookie');
 }
 export function readCookieFile(provider) {
   try { const p = cookieFilePath(provider); return fs.existsSync(p) ? fs.readFileSync(p, 'utf8').trim() : ''; } catch { return ''; }

@@ -41,10 +41,20 @@ export function setUserSettings(userId, patch) {
     'allowFriendReq', 'searchMobile', 'searchWxid', 'addByGroup', 'addByQr', 'addByCard',
     'strangerSee10', 'momentsPublic', 'multiLogin', 'autoDownload', 'voiceInput', 'haptic',
     'voiceLock', 'msgPreview',
+    'momentsRange', 'momentsHideFrom', 'momentsHideThem',
   ]);
   const clean = {};
   for (const [k, v] of Object.entries(next)) {
-    if (ALLOW.has(k)) clean[k] = Boolean(v);
+    if (!ALLOW.has(k)) continue;
+    if (k === 'momentsRange') {
+      clean[k] = String(v || 'all');
+      continue;
+    }
+    if (k === 'momentsHideFrom' || k === 'momentsHideThem') {
+      clean[k] = Array.isArray(v) ? v.map(Number).filter(Boolean).slice(0, 200) : [];
+      continue;
+    }
+    clean[k] = Boolean(v);
   }
   stmts.setUserSettings.run(JSON.stringify(clean), userId);
   return clean;

@@ -3,7 +3,15 @@ import { ref, nextTick, onMounted, onBeforeUnmount, computed } from 'vue';
 import { api, compressImage } from '../api.js';
 import { EMOJI_LIST, EMOJI_PACKS, loadRecentEmojis, pushRecentEmoji, renderContent } from '../chat-shared.js';
 import FilePreview from './FilePreview.vue';
-import { useVoicePlayer } from '../voice-player.js';
+import {
+  useVoicePlayer,
+  toggleVoiceOutput,
+  setVoiceOutput,
+  setAutoPlayNext,
+  transcribeVoice,
+  getTranscript,
+  parseVoiceSeconds as parseVoiceSec,
+} from '../voice-player.js';
 import { ensureNotifyPermission, notifyMessage, playMsgSound, playSendSound } from '../notify.js';
 import { makeLocalMsg, patchLocalMsg, dropLocalEcho } from '../chat-send-status.js';
 import { toast } from '../toast.js';
@@ -109,7 +117,29 @@ const collectAmount = ref('');
 const collectNote = ref('');
 const collectingIds = ref({});
 const noticeShown = ref(false);
-const { playingKey, voiceProgress, playVoice, stopVoice, disposeVoice, parseVoiceSeconds } = useVoicePlayer();
+const noticeDismissed = ref(false);
+const showNoticeFull = ref(false);
+const showGroupTools = ref(false);
+const showFavPicker = ref(false);
+const favList = ref([]);
+const showTodoSheet = ref(false);
+const todoTitle = ref('');
+const todos = ref([]);
+const translatePanel = ref(null); // { source, result, loading }
+const remindPanel = ref(null); // { msg, minutes }
+const {
+  playingKey,
+  voiceProgress,
+  playVoice,
+  stopVoice,
+  disposeVoice,
+  parseVoiceSeconds,
+  setQueue: setVoiceQueue,
+  outputMode: voiceOutputMode,
+  autoPlayNext: voiceAutoNext,
+  transcribingKey,
+} = useVoicePlayer();
+const hasVoiceMsgs = computed(() => messages.value.some((m) => m.mediaType === 'voice'));
 const previewImages = ref([]);
 const previewIndex = ref(0);
 const showImagePreview = ref(false);
@@ -118,6 +148,7 @@ const groupReadCount = ref(0);
 const groupMemberCount = ref(0);
 
 let socket = null;
+let persistTimer = null;
 let longPressTimer = null;
 let groupReadTimer = null;
 let composing = false;
@@ -127,7 +158,11 @@ const showConnHint = computed(() => everConnected.value && !connected.value);
 const cacheKey = computed(() => conversationId.value || 'default');
 
 function persistMessages() {
-  saveMsgCache(cacheKey.value, messages.value);
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    saveMsgCache(cacheKey.value, messages.value);
+  }, 300);
 }
 
 function seedSeenIds(rows) {
@@ -461,8 +496,11 @@ function send() {
     playSendSound();
     // 服务端回声通常很快；若尚未到达则先标已发送
     const still = messages.value.find((m) => m.id === local.id);
-    if (still) patchLocalMsg(messages.value, local.id, { sendStatus: 'sent', localPending: false });
-    messages.value = [...messages.value];
+    if (still) {
+      patchLocalMsg(messages.value, local.id, { sendStatus: 'sent', localPending: false });
+      // 只触发当前气泡更新，避免整表浅拷贝重渲染
+      messages.value = messages.value.slice();
+    }
   });
   draft.value = '';
   quoteMsg.value = null;
@@ -678,6 +716,7 @@ const searchQuery = ref('');
 const searchResults = ref([]);
 const searching = ref(false);
 const photoInput = ref(null);
+const cameraInput = ref(null);
 const recorder = ref(null);
 const recording = ref(false);
 const recCancel = ref(false);
@@ -715,6 +754,216 @@ function pickChatPhoto() {
   photoInput.value?.click();
 }
 
+function pickCamera() {
+  cameraInput.value?.click();
+}
+
+async function onChatCamera(e) {
+  const file = e.target.files?.[0];
+  e.target.value = '';
+  if (!file) return;
+  await sendImageFile(file);
+  dockMode.value = 0;
+}
+
+function openGroupTools() {
+  showGroupTools.value = true;
+  dockMode.value = 0;
+}
+
+async function openFavPicker() {
+  try {
+    const data = await api.favorites();
+    favList.value = data.favorites || [];
+  } catch {
+    favList.value = [];
+  }
+  showFavPicker.value = true;
+  dockMode.value = 0;
+}
+
+function sendFavoriteItem(fav) {
+  const content = fav.content || fav.mediaUrl || '[收藏]';
+  socket.emit('message:send', {
+    conversationId: conversationId.value,
+    content,
+    mediaType: fav.mediaUrl && fav.kind === 'image' ? 'image' : fav.kind === 'voice' ? 'voice' : null,
+    mediaUrl: fav.mediaUrl || null,
+  }, (res) => {
+    if (res?.error) showToast(res.error);
+  });
+  showFavPicker.value = false;
+}
+
+function loadGroupTodos() {
+  try {
+    const map = JSON.parse(localStorage.getItem('hudui_group_todos') || '{}');
+    todos.value = map[cacheKey.value] || [];
+  } catch {
+    todos.value = [];
+  }
+}
+
+function saveGroupTodos() {
+  try {
+    const map = JSON.parse(localStorage.getItem('hudui_group_todos') || '{}');
+    map[cacheKey.value] = todos.value;
+    localStorage.setItem('hudui_group_todos', JSON.stringify(map));
+  } catch { /* ignore */ }
+}
+
+function addGroupTodo() {
+  const title = todoTitle.value.trim();
+  if (!title) return;
+  todos.value = [{ id: Date.now(), title, done: false, createdAt: Date.now() }, ...todos.value];
+  todoTitle.value = '';
+  saveGroupTodos();
+  // 同步到会话，对齐微信「群待办」卡片
+  socket?.emit('message:send', {
+    conversationId: conversationId.value,
+    content: `[群待办] ${title}`,
+    mediaType: 'todo',
+    ext: { title },
+  }, (res) => {
+    if (res?.error) showToast(res.error);
+    else showToast('已创建群待办');
+  });
+}
+
+function toggleTodo(t) {
+  t.done = !t.done;
+  todos.value = [...todos.value];
+  saveGroupTodos();
+}
+
+function removeTodo(t) {
+  todos.value = todos.value.filter((x) => x.id !== t.id);
+  saveGroupTodos();
+}
+
+function openTranslate(m) {
+  const source = m?.content || '';
+  translatePanel.value = { source, result: '', loading: true, id: m.id };
+  // 本地轻量「翻译」：英中常见词 + 透传；无外网词典时给出可复制结果
+  setTimeout(() => {
+    const result = mockTranslate(source);
+    translatePanel.value = { ...translatePanel.value, result, loading: false };
+  }, 280);
+}
+
+function mockTranslate(text) {
+  const map = {
+    你好: 'Hello',
+    谢谢: 'Thank you',
+    再见: 'Goodbye',
+    加油: 'Come on / Go for it',
+    恭喜发财: 'Wishing you prosperity',
+    开会: 'have a meeting',
+    提醒: 'remind',
+    好的: 'OK / Alright',
+  };
+  let out = String(text || '');
+  for (const [k, v] of Object.entries(map)) {
+    if (out.includes(k)) out = out.replace(k, v);
+  }
+  // 已是英文则做简单中英互换提示
+  if (/^[\x00-\x7F\s]+$/.test(out) && out.length > 1) {
+    return out; // 英文原文保留，标注方向
+  }
+  return out === text ? `译文：${text}（演示翻译，可复制）` : out;
+}
+
+function openRemind(m) {
+  remindPanel.value = { msg: m, minutes: 5 };
+}
+
+function confirmRemind() {
+  const panel = remindPanel.value;
+  if (!panel) return;
+  const minutes = Number(panel.minutes) || 5;
+  const title = (panel.msg.content || '一条消息').slice(0, 40);
+  const fireAt = Date.now() + minutes * 60_000;
+  try {
+    const list = JSON.parse(localStorage.getItem('hudui_msg_reminders') || '[]');
+    list.push({ id: Date.now(), title, fireAt, conversationId: conversationId.value });
+    localStorage.setItem('hudui_msg_reminders', JSON.stringify(list));
+    scheduleLocalReminder({ id: Date.now(), title, fireAt });
+  } catch { /* ignore */ }
+  remindPanel.value = null;
+  showToast(`已设置 ${minutes} 分钟后提醒`);
+}
+
+let reminderTimers = [];
+function scheduleLocalReminder(item) {
+  const delay = item.fireAt - Date.now();
+  if (delay <= 0) return;
+  const t = setTimeout(() => {
+    showToast(`⏰ 提醒：${item.title}`);
+    try { navigator.vibrate?.([40, 60, 40]); } catch { /* ignore */ }
+    notifyMessage?.({ title: '消息提醒', body: item.title });
+  }, Math.min(delay, 2 ** 31 - 1));
+  reminderTimers.push(t);
+}
+
+function insertMentionName(name) {
+  if (!name || name === props.me?.nickname) return;
+  const insert = `@${name} `;
+  draft.value = draft.value ? `${draft.value} ${insert}` : insert;
+  dockMode.value = 0;
+  nextTick(() => textareaRef.value?.focus());
+}
+
+function toggleVoiceOutputMode() {
+  const mode = toggleVoiceOutput();
+  showToast(mode === 'earpiece' ? '已切换到听筒播放' : '已切换到扬声器播放');
+}
+
+function toggleVoiceAutoNext() {
+  const next = !voiceAutoNext.value;
+  setAutoPlayNext(next);
+  showToast(next ? '播完将自动播放下一条' : '已关闭自动连播');
+}
+
+async function onVoiceToText(m) {
+  try {
+    const text = await transcribeVoice(m);
+    if (text) showToast(`转文字：${text}`);
+  } catch (e) {
+    showToast(e.message || '转文字失败');
+  }
+}
+
+function onVoiceBubbleClick(m) {
+  const key = String(m.id ?? m.mediaUrl);
+  const list = messages.value.filter((x) => x.mediaType === 'voice' && x.mediaUrl);
+  setVoiceQueue(list, list.findIndex((x) => String(x.id ?? x.mediaUrl) === key));
+  playVoice(m);
+}
+
+function fmtDayLabel(ts) {
+  const d = new Date(ts);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return '今天';
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return '昨天';
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+}
+
+function showDateSep(i) {
+  if (i === 0) return true;
+  const prev = messages.value[i - 1];
+  const cur = messages.value[i];
+  if (!prev?.createdAt || !cur?.createdAt) return false;
+  // 只比日历日，避免 toDateString 分配
+  const a = new Date(prev.createdAt);
+  const b = new Date(cur.createdAt);
+  return a.getFullYear() !== b.getFullYear()
+    || a.getMonth() !== b.getMonth()
+    || a.getDate() !== b.getDate();
+}
+
 async function onChatPhoto(e) {
   const file = e.target.files?.[0];
   e.target.value = '';
@@ -735,6 +984,7 @@ async function onChatPhoto(e) {
 async function startRecord(e) {
   if (recording.value) return;
   recStartY.value = e?.clientY ?? 0;
+  try { e?.currentTarget?.setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
   recCancel.value = false;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -815,7 +1065,11 @@ async function startRecord(e) {
 function onRecordMove(e) {
   if (!recording.value) return;
   const y = e?.clientY ?? e?.touches?.[0]?.clientY ?? recStartY.value;
-  recCancel.value = (recStartY.value - y) > 72;
+  const x = e?.clientX ?? 0;
+  // 上滑取消（微信）+ 左右滑出按钮区也可取消
+  const upCancel = (recStartY.value - y) > 72;
+  const sideCancel = x < 24 || x > (window.innerWidth - 24);
+  recCancel.value = upCancel || sideCancel;
 }
 
 function stopRecord() {
@@ -905,6 +1159,18 @@ function doAction(kind) {
       mediaUrl: m.mediaUrl || null,
       fromName: m.senderName || '',
     }).then(() => showToast('已收藏，可在「我 → 收藏」查看')).catch((e) => showToast(e.message || '收藏失败'));
+    return;
+  }
+  if (kind === 'translate') {
+    openTranslate(m);
+    return;
+  }
+  if (kind === 'remind') {
+    openRemind(m);
+    return;
+  }
+  if (kind === 'voice-text') {
+    onVoiceToText(m);
     return;
   }
   if (kind === 'save-sticker') {
@@ -1713,6 +1979,13 @@ function loadHistoryNow(beforeId = null) {
 }
 
 onMounted(() => {
+  loadGroupTodos();
+  try {
+    const list = JSON.parse(localStorage.getItem('hudui_msg_reminders') || '[]');
+    for (const it of list) {
+      if (it.fireAt > Date.now()) scheduleLocalReminder(it);
+    }
+  } catch { /* ignore */ }
   ensureNotifyPermission().catch(() => {});
   if (props.pendingSearch) {
     showSearch.value = true;
@@ -1842,6 +2115,13 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+    saveMsgCache(cacheKey.value, messages.value);
+  }
+  reminderTimers.forEach((t) => clearTimeout(t));
+  reminderTimers = [];
   persistMessages();
   unbinders.forEach((fn) => { try { fn(); } catch { /* ignore */ } });
   unbinders = [];
@@ -1870,9 +2150,10 @@ onBeforeUnmount(() => {
     </header>
 
     <div v-if="showConnHint" class="conn-bar">连接已断开，正在重连…</div>
-    <div v-else-if="groupNotice" class="notice-bar" @click="showToast(groupNotice)">
+    <div v-else-if="groupNotice && !noticeDismissed" class="notice-bar" @click="showNoticeFull = true">
       <span class="notice-tag">公告</span>
       <span class="notice-text">{{ groupNotice }}</span>
+      <button class="notice-x" type="button" @click.stop="noticeDismissed = true">×</button>
     </div>
 
     <div v-if="multiMode" class="multi-bar">
@@ -1900,7 +2181,8 @@ onBeforeUnmount(() => {
       <div v-else-if="noMoreHistory && messages.length" class="history-tip">没有更多消息了</div>
 
       <template v-for="(m, i) in messages" :key="m.id">
-        <div v-if="showTime(i)" class="time-divider">{{ fmtTime(m.createdAt) }}</div>
+        <div v-if="showDateSep(i)" class="date-sep"><span>{{ fmtDayLabel(m.createdAt) }}</span></div>
+        <div v-else-if="showTime(i)" class="time-divider">{{ fmtTime(m.createdAt) }}</div>
 
         <div v-if="m.senderType === 'system'" class="sys-msg"><span>{{ sysText(m) }}</span></div>
 
@@ -1925,7 +2207,7 @@ onBeforeUnmount(() => {
           </div>
           <div v-else class="avatar-spacer"></div>
           <div class="msg-col">
-          <div v-if="showNicknames && !isMine(m) && !sameSenderAsPrev(i)" class="sender-name">{{ m.senderName }}</div>
+          <div v-if="showNicknames && !isMine(m) && !sameSenderAsPrev(i)" class="sender-name" @click.stop="insertMentionName(m.senderName)">{{ m.senderName }}</div>
             <div v-if="m.quote" class="quote-box">
               <div class="quote-name">{{ m.quote.name }}</div>
               <div class="quote-text">{{ m.quote.content }}</div>
@@ -1950,7 +2232,7 @@ onBeforeUnmount(() => {
               class="bubble voice-bubble"
               :class="{ playing: isVoicePlaying(m), mine: isMine(m) }"
               :style="{ minWidth: voiceWidth(m) }"
-              @click="playVoice(m)"
+              @click="onVoiceBubbleClick(m)"
             >
               <span v-if="!isMine(m)" class="voice-wave"><i></i><i></i><i></i></span>
               <span class="voice-dur">{{ parseVoiceSeconds(m.content) }}″</span>
@@ -1961,6 +2243,8 @@ onBeforeUnmount(() => {
                 :style="{ width: `${Math.round((voiceProgress || 0) * 100)}%` }"
               ></span>
             </div>
+            <div v-if="getTranscript(m.id)" class="voice-asr">{{ getTranscript(m.id) }}</div>
+            <div v-else-if="transcribingKey === String(m.id)" class="voice-asr">转文字中…</div>
             <div v-else-if="m.mediaType === 'card'" class="bubble card-bubble" @click="showToast('名片：' + (m.ext?.nickname || m.content))">
               <div class="card-name">{{ m.ext?.nickname || m.content }}</div>
               <div class="card-sub">个人名片</div>
@@ -2085,8 +2369,9 @@ onBeforeUnmount(() => {
         <button @click="retrySend">重试</button>
       </div>
       <div class="input-bar">
-        <button class="icon-btn" aria-label="语音" @click="setDock(3)">
-          <svg viewBox="0 0 24 24" width="24" height="24"><path d="M8 10a4 4 0 0 1 8 0v2a4 4 0 0 1-8 0v-2z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6 11a6 6 0 0 0 12 0M12 17v3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <button class="icon-btn" :aria-label="dockMode === 3 ? '键盘' : '语音'" @click="setDock(3)">
+          <svg v-if="dockMode !== 3" viewBox="0 0 24 24" width="24" height="24"><path d="M8 10a4 4 0 0 1 8 0v2a4 4 0 0 1-8 0v-2z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6 11a6 6 0 0 0 12 0M12 17v3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <svg v-else viewBox="0 0 24 24" width="24" height="24"><rect x="3" y="6" width="18" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M7 10h2M11 10h2M15 10h2M8 14h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         </button>
         <div class="input-wrap">
           <textarea
@@ -2130,18 +2415,28 @@ onBeforeUnmount(() => {
         <div class="plus-grid">
           <button class="plus-item" type="button" @click="pickChatPhoto"><span class="plus-icon">🖼</span><span>相册</span></button>
           <input ref="photoInput" type="file" accept="image/*" hidden @change="onChatPhoto" />
+          <input ref="cameraInput" type="file" accept="image/*,video/*" capture="environment" hidden @change="onChatCamera" />
           <input ref="fileInput2" type="file" accept="*" hidden @change="onChatFile" />
-          <button class="plus-item" type="button" @click="pickChatPhoto"><span class="plus-icon">📷</span><span>拍摄</span></button>
-          <button class="plus-item" type="button" @click="sendCard"><span class="plus-icon">📇</span><span>名片</span></button>
-          <button class="plus-item" type="button" @click="pickChatFile"><span class="plus-icon">📄</span><span>文件</span></button>
+          <button class="plus-item" type="button" @click="pickCamera"><span class="plus-icon">📷</span><span>拍摄</span></button>
           <button class="plus-item" type="button" @click="emit('open-video-call', { callMode: 'video', role: 'caller', target: { nickname: chatTitle, color: '#07c160', userId: null } }); showToast('群聊请先打开成员资料再通话')"><span class="plus-icon">📹</span><span>视频通话</span></button>
           <button class="plus-item" type="button" @click="openLocationSheet"><span class="plus-icon">📍</span><span>位置</span></button>
           <button class="plus-item" type="button" @click="openCreatePayGroup('redpacket')"><span class="plus-icon">🧧</span><span>红包</span></button>
           <button class="plus-item" type="button" @click="openCreatePayGroup('transfer')"><span class="plus-icon">💰</span><span>转账</span></button>
-          <button class="plus-item" type="button" @click="showJieleng = true; dockMode = 0"><span class="plus-icon">🐉</span><span>接龙</span></button>
-          <button class="plus-item" type="button" @click="showCollect = true; dockMode = 0"><span class="plus-icon">🧾</span><span>群收款</span></button>
-          <button class="plus-item" type="button" @click="dockMode = 3"><span class="plus-icon">🎤</span><span>语音输入</span></button>
-          <button class="plus-item" type="button" @click="insertAt"><span class="plus-icon">@</span><span>提醒</span></button>
+          <button class="plus-item" type="button" @click="sendCard"><span class="plus-icon">📇</span><span>个人名片</span></button>
+          <button class="plus-item" type="button" @click="openFavPicker"><span class="plus-icon">⭐</span><span>收藏</span></button>
+          <button class="plus-item" type="button" @click="pickChatFile"><span class="plus-icon">📄</span><span>文件</span></button>
+          <button class="plus-item" type="button" @click="openGroupTools"><span class="plus-icon">🧰</span><span>群工具</span></button>
+        </div>
+      </div>
+
+      <div v-if="showGroupTools" class="dock-panel plus-panel">
+        <div class="plus-grid">
+          <button class="plus-item" type="button" @click="showJieleng = true; showGroupTools = false"><span class="plus-icon">🐉</span><span>群接龙</span></button>
+          <button class="plus-item" type="button" @click="showCollect = true; showGroupTools = false"><span class="plus-icon">🧾</span><span>群收款</span></button>
+          <button class="plus-item" type="button" @click="showTodoSheet = true; showGroupTools = false"><span class="plus-icon">✅</span><span>群待办</span></button>
+          <button class="plus-item" type="button" @click="insertAt"><span class="plus-icon">@</span><span>@成员</span></button>
+          <button class="plus-item" type="button" @click="dockMode = 3; showGroupTools = false"><span class="plus-icon">🎤</span><span>语音输入</span></button>
+          <button class="plus-item" type="button" @click="showGroupTools = false"><span class="plus-icon">↩</span><span>返回</span></button>
         </div>
       </div>
     </footer>
@@ -2201,17 +2496,105 @@ onBeforeUnmount(() => {
     <div v-if="mergeExpand" class="merge-expand-mask" @click.self="mergeExpand = null">
       <div class="merge-expand">
         <header class="merge-expand-bar">
-          <span>聊天记录</span>
+          <span>聊天记录（{{ mergeExpand.length }}）</span>
           <button type="button" @click="mergeExpand = null">关闭</button>
         </header>
         <div class="merge-expand-body scroll-y">
           <div v-for="(it, i) in mergeExpand" :key="i" class="merge-expand-item">
-            <div class="me-name">{{ it.name || '消息' }}</div>
+            <div class="me-head">
+              <span class="me-name">{{ it.name || '消息' }}</span>
+              <span v-if="it.createdAt" class="me-time">{{ fmtTime(it.createdAt) }}</span>
+            </div>
             <div class="me-content">{{ it.content }}</div>
-            <div v-if="it.createdAt" class="me-time">{{ fmtTime(it.createdAt) }}</div>
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- 翻译 -->
+    <div v-if="translatePanel" class="mask" @click.self="translatePanel = null">
+      <div class="pay-panel">
+        <div class="pay-title">翻译</div>
+        <div class="tr-block">
+          <div class="tr-label">原文</div>
+          <div class="tr-text">{{ translatePanel.source }}</div>
+        </div>
+        <div class="tr-block">
+          <div class="tr-label">译文</div>
+          <div class="tr-text">{{ translatePanel.loading ? '翻译中…' : translatePanel.result }}</div>
+        </div>
+        <button class="pay-btn" @click="navigator.clipboard?.writeText(translatePanel.result || ''); showToast('已复制译文')">复制译文</button>
+        <button class="pay-btn ghost" @click="translatePanel = null">关闭</button>
+      </div>
+    </div>
+
+    <!-- 消息提醒 -->
+    <div v-if="remindPanel" class="mask" @click.self="remindPanel = null">
+      <div class="pay-panel">
+        <div class="pay-title">提醒</div>
+        <div class="pay-row col">
+          <span>消息</span>
+          <div class="tr-text">{{ (remindPanel.msg?.content || '[消息]').slice(0, 80) }}</div>
+        </div>
+        <div class="pay-row"><span>时间</span>
+          <select v-model.number="remindPanel.minutes" class="pay-select">
+            <option :value="5">5 分钟后</option>
+            <option :value="30">30 分钟后</option>
+            <option :value="60">1 小时后</option>
+            <option :value="120">2 小时后</option>
+            <option :value="1440">明天此时</option>
+          </select>
+        </div>
+        <button class="pay-btn" @click="confirmRemind">设置提醒</button>
+      </div>
+    </div>
+
+    <!-- 群待办 -->
+    <div v-if="showTodoSheet" class="mask" @click.self="showTodoSheet = false">
+      <div class="pay-panel">
+        <div class="pay-title">群待办</div>
+        <div class="pay-row"><span>内容</span><input v-model="todoTitle" maxlength="40" placeholder="例如：周五前交需求文档" /></div>
+        <button class="pay-btn" @click="addGroupTodo">创建待办</button>
+        <div class="todo-list">
+          <div v-for="t in todos" :key="t.id" class="todo-item" :class="{ done: t.done }">
+            <button class="todo-check" type="button" @click="toggleTodo(t)">{{ t.done ? '✓' : '' }}</button>
+            <span class="todo-title">{{ t.title }}</span>
+            <button class="todo-del" type="button" @click="removeTodo(t)">×</button>
+          </div>
+          <div v-if="!todos.length" class="todo-empty">暂无待办</div>
+        </div>
+        <button class="pay-btn ghost" @click="showTodoSheet = false">完成</button>
+      </div>
+    </div>
+
+    <!-- 收藏发送 -->
+    <div v-if="showFavPicker" class="mask" @click.self="showFavPicker = false">
+      <div class="pay-panel">
+        <div class="pay-title">选择收藏</div>
+        <div class="todo-list">
+          <button v-for="f in favList" :key="f.id" class="fav-item" type="button" @click="sendFavoriteItem(f)">
+            <div class="fav-kind">{{ f.kind || 'text' }}</div>
+            <div class="fav-content">{{ f.content || f.mediaUrl || '（空）' }}</div>
+          </button>
+          <div v-if="!favList.length" class="todo-empty">暂无收藏</div>
+        </div>
+        <button class="pay-btn ghost" @click="showFavPicker = false">取消</button>
+      </div>
+    </div>
+
+    <!-- 公告全文 -->
+    <div v-if="showNoticeFull" class="mask" @click.self="showNoticeFull = false">
+      <div class="pay-panel">
+        <div class="pay-title">群公告</div>
+        <div class="tr-text">{{ groupNotice }}</div>
+        <button class="pay-btn" @click="showNoticeFull = false; noticeDismissed = true">知道了</button>
+      </div>
+    </div>
+
+    <!-- 语音播放控制 -->
+    <div class="voice-ctrl" v-if="hasVoiceMsgs">
+      <button type="button" @click="toggleVoiceOutputMode">{{ voiceOutputMode === 'earpiece' ? '听筒' : '扬声器' }}</button>
+      <button type="button" @click="toggleVoiceAutoNext">{{ voiceAutoNext ? '连播开' : '连播关' }}</button>
     </div>
 
     <!-- 长按菜单（微信黑色圆角浮层） -->
@@ -2235,6 +2618,15 @@ onBeforeUnmount(() => {
           </button>
           <button class="action-item" @click="doAction('multi')">
             <span class="ai-ico">☑</span><span>多选</span>
+          </button>
+          <button v-if="actionMsg.content && !actionMsg.mediaType" class="action-item" @click="doAction('translate')">
+            <span class="ai-ico">译</span><span>翻译</span>
+          </button>
+          <button class="action-item" @click="doAction('remind')">
+            <span class="ai-ico">⏰</span><span>提醒</span>
+          </button>
+          <button v-if="actionMsg.mediaType === 'voice'" class="action-item" @click="doAction('voice-text')">
+            <span class="ai-ico">文</span><span>转文字</span>
           </button>
           <button v-if="isMine(actionMsg) && actionMsg.senderType === 'user'" class="action-item" @click="doAction('recall')">
             <span class="ai-ico">↩</span><span>撤回</span>
@@ -2862,6 +3254,10 @@ onBeforeUnmount(() => {
   background: rgba(7,193,96,0.85); border-radius: 0 1px 1px 0;
 }
 .msg-row.mine .voice-progress { background: rgba(255,255,255,0.7); }
+.voice-asr {
+  font-size: 12px; color: var(--text-2); margin-top: 4px; max-width: 220px;
+  background: rgba(0,0,0,0.04); border-radius: 6px; padding: 4px 8px;
+}
 .jieleng-bubble {
   min-width: 220px; max-width: 260px; background: var(--white) !important; cursor: pointer;
 }
@@ -3026,6 +3422,62 @@ onBeforeUnmount(() => {
   display: flex; align-items: center; justify-content: center; font-size: 26px;
 }
 .plus-item:active .plus-icon { background: #e5e5e5; }
+
+.date-sep {
+  display: flex; justify-content: center; margin: 14px 0 8px;
+}
+.date-sep span {
+  font-size: 12px; color: #fff; background: rgba(0,0,0,0.18);
+  padding: 3px 10px; border-radius: 10px;
+}
+.notice-x {
+  margin-left: 4px; border: 0; background: transparent; color: var(--text-2);
+  font-size: 18px; width: 28px; height: 28px; cursor: pointer;
+}
+.pay-select {
+  flex: 1; border: 0; background: var(--white); border-radius: 8px;
+  padding: 8px 10px; font-size: 14px; min-height: 36px;
+}
+.tr-block { margin: 8px 0 12px; }
+.tr-label { font-size: 12px; color: var(--text-2); margin-bottom: 4px; }
+.tr-text {
+  background: var(--white); border-radius: 8px; padding: 10px 12px;
+  font-size: 14px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+}
+.pay-btn.ghost {
+  background: transparent; color: var(--text-2); margin-top: 8px;
+}
+.todo-list { margin-top: 12px; max-height: 220px; overflow: auto; }
+.todo-item {
+  display: flex; align-items: center; gap: 8px; padding: 8px 0;
+  border-bottom: 0.5px solid var(--divider-soft);
+}
+.todo-item.done .todo-title { text-decoration: line-through; color: var(--text-2); }
+.todo-check {
+  width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--green);
+  background: transparent; color: var(--green); font-size: 12px; cursor: pointer;
+}
+.todo-item.done .todo-check { background: var(--green); color: #fff; }
+.todo-title { flex: 1; font-size: 14px; }
+.todo-del { border: 0; background: transparent; color: var(--text-2); font-size: 18px; cursor: pointer; }
+.todo-empty { text-align: center; color: var(--text-2); font-size: 13px; padding: 16px 0; }
+.fav-item {
+  display: block; width: 100%; text-align: left; border: 0;
+  background: var(--white); border-radius: 8px; padding: 10px 12px;
+  margin-bottom: 8px; cursor: pointer;
+}
+.fav-kind { font-size: 11px; color: var(--green); margin-bottom: 4px; }
+.fav-content { font-size: 13px; color: var(--text-1); max-height: 48px; overflow: hidden; }
+.merge-expand-item { padding: 10px 0; border-bottom: 0.5px solid var(--divider-soft); }
+.me-head { display: flex; justify-content: space-between; margin-bottom: 4px; }
+.voice-ctrl {
+  position: absolute; right: 10px; top: calc(var(--status-h) + var(--nav-h) + 8px);
+  display: flex; gap: 6px; z-index: 5;
+}
+.voice-ctrl button {
+  border: 0; background: rgba(0,0,0,0.45); color: #fff; font-size: 11px;
+  border-radius: 12px; padding: 4px 10px; cursor: pointer;
+}
 
 .mask {
   position: absolute; inset: 0; background: var(--mask); z-index: 40;

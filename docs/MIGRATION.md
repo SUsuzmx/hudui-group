@@ -15,7 +15,7 @@
 | 数据库 | `data/chat.db` **以及** `data/chat.db-wal` `data/chat.db-shm` | 保留业务数据则必须 |
 | 媒体 | `data/media/`（上传图/语音/文件/视频） | 保留聊天媒体则必须 |
 | AI 配置 | `config/ai.json`（或新机用 `config/ai.example.json` + `DASHSCOPE_API_KEY`） | 要用 AI 则必须 |
-| 音乐 Cookie | 项目根 `.netease-cookie` `.qq-cookie`（**永不入库、永不回传前端**） | 听一听要继续用原账号则必须 |
+| 音乐 Cookie | 项目根 `.netease-cookie` `.qq-cookie` `.kugou-cookie`（**永不入库、永不回传前端**） | 听一听要继续用原账号则必须 |
 | 小游戏 | `games/`（第三方体积大，默认 gitignore） | 要用发现页游戏则必须 |
 | 隧道 | Cloudflare Tunnel 凭证 / `cloudflared` 配置（隧道名如 `werewolf`） | 继续用域名则必须 |
 | 默认头像 | `img/amdin.png`（若被清理需补回） | 建议 |
@@ -38,7 +38,7 @@ tar -a -cf hudui-migrate.zip `
   client server scripts config img docs prototype `
   package.json package-lock.json vite.config.js README.md .env.example .gitignore `
   data/chat.db data/chat.db-wal data/chat.db-shm data/media `
-  .netease-cookie .qq-cookie `
+  .netease-cookie .qq-cookie .kugou-cookie `
   games
 # 若暂无 games/ 或 cookie，可从命令里去掉对应项
 ```
@@ -67,7 +67,7 @@ cd hudui-group
 - `data/chat.db` `data/chat.db-wal` `data/chat.db-shm`
 - `data/media/`
 - `config/ai.json`
-- `.netease-cookie` `.qq-cookie`
+- `.netease-cookie` `.qq-cookie` `.kugou-cookie`
 - `games/`（可选）
 
 ### 方案 C：空库全新装

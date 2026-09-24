@@ -29,7 +29,7 @@ const RESTRICTION_ACTION_LABEL = {
   login: '去登录音源',
   upgrade: '开通/升级会员',
   purchase: '去购买该单曲',
-  switch_source: '换源（网易云/QQ）',
+  switch_source: '换源（网易云/QQ/酷狗）',
 };
 
 export function setMusicRestrictionHandler(fn) {
@@ -42,11 +42,25 @@ function trackKey(t) {
 
 function trackExtra(track) {
   if (!track) return {};
-  return { mid: track.mid || '', mediaMid: track.mediaMid || '', title: track.title || '', artist: track.artist || '' };
+  return {
+    mid: track.mid || '',
+    mediaMid: track.mediaMid || '',
+    title: track.title || track.name || '',
+    artist: track.artist || '',
+    hash: track.hash || track.fileHash || '',
+    albumId: track.albumId || track.album_id || '',
+    albumAudioId: track.albumAudioId || track.album_audio_id || track.mixSongId || '',
+    mixSongId: track.mixSongId || track.mixsongid || '',
+    privilege: track.privilege,
+    hqHash: track.hqHash || '',
+    sqHash: track.sqHash || '',
+    resHash: track.resHash || '',
+  };
 }
 
 function streamSourceOf(track) {
-  return track?.source === 'netease' || track?.source === 'qq' ? track.source : 'qq';
+  const s = track?.source;
+  return s === 'netease' || s === 'qq' || s === 'kugou' ? s : 'qq';
 }
 
 function findIndex(track) {
@@ -111,7 +125,7 @@ function ensureAudio() {
       return;
     }
     state.playing = false;
-    toast('当前音源加载失败，可切换「网易云 / QQ音乐」');
+    toast('当前音源加载失败，可切换「网易云 / QQ音乐 / 酷狗」');
   });
   bindMediaSessionHandlers();
   return audio;
@@ -228,7 +242,7 @@ function handleUnplayable(info, track, { auto = false } = {}) {
       if (next && trackKey(next) !== trackKey(track)) playTrack(next, { auto: true });
       return restriction;
     }
-    const other = state.tracks.find((t) => (t.source === 'netease' || t.source === 'qq') && !(t.id === track.id && t.source === track.source));
+    const other = state.tracks.find((t) => (t.source === 'netease' || t.source === 'qq' || t.source === 'kugou') && !(t.id === track.id && t.source === track.source));
     if (other) setTimeout(() => playTrack(other), 400);
   }
   return restriction;
@@ -249,12 +263,15 @@ async function resolveStreamUrl(track) {
   }
   const streamSource = streamSourceOf(track);
   const extra = trackExtra(track);
-  const info = await api.musicStreamInfo(streamSource, track.id, extra);
+  const info = await api.musicStreamInfo(streamSource, track.id || track.hash, extra);
   if (!isPlayableInfo(info)) {
     const err = new Error(info?.error || 'unplayable');
     err.responseJson = info;
     throw err;
   }
+  // 酷狗优先同源代理（Referer 防盗链）；否则走公开 /api/audio
+  if (info.proxyUrl) return info.proxyUrl;
+  if (info.cdnUrl) return '/api/audio?url=' + encodeURIComponent(info.cdnUrl);
   return info.url;
 }
 
@@ -271,9 +288,12 @@ async function preloadNextUrl() {
   if (nextUrlCache.key === key && nextUrlCache.url) return;
   try {
     const streamSource = streamSourceOf(next);
-    const info = await api.musicStreamInfo(streamSource, next.id, trackExtra(next));
-    if (isPlayableInfo(info)) nextUrlCache = { key, url: info.url };
-    else nextUrlCache = { key: '', url: '' };
+    const info = await api.musicStreamInfo(streamSource, next.id || next.hash, trackExtra(next));
+    if (isPlayableInfo(info)) {
+      const url = info.proxyUrl
+        || (info.cdnUrl ? '/api/audio?url=' + encodeURIComponent(info.cdnUrl) : info.url);
+      nextUrlCache = { key, url };
+    } else nextUrlCache = { key: '', url: '' };
   } catch {
     nextUrlCache = { key: '', url: '' };
   }

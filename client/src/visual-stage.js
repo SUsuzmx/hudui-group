@@ -349,9 +349,16 @@ export function syncTrackToVisual(track) {
 }
 
 async function loadLyricsForTrack(track) {
-  const provider = track.source === 'netease' ? 'netease' : 'qq';
+  const source = track.source;
+  const provider = source === 'netease' || source === 'kugou' ? source : 'qq';
   try {
-    const data = await api.musicProviderLyric(provider, { id: track.id, mid: track.mid || '' });
+    const data = await api.musicProviderLyric(provider, {
+      id: track.id,
+      mid: track.mid || '',
+      hash: track.hash || track.fileHash || '',
+      albumAudioId: track.albumAudioId || track.mixSongId || '',
+      duration: track.duration || 0,
+    });
     applyLrcToVisual(data?.lrc || data?.lyric || '');
   } catch (e) {
     console.warn('[visual] lyric', e);

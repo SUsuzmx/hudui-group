@@ -1,7 +1,8 @@
 const TOKEN_KEY = 'hudui_token';
 import { dataUrlToBlob } from './chat-shared.js';
 import { toast } from './toast.js';
-import { uploadWithProgress, dataUrlToBlobSync } from './upload-progress.js';
+import { uploadWithProgress, dataUrlToBlobSync, dataUrlToBlobAsync } from './upload-progress.js';
+import { compressToBlob, IMAGE_PRESETS } from './image-pipeline.js';
 
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY);
@@ -11,43 +12,15 @@ export function setToken(token) {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
-export { uploadWithProgress, dataUrlToBlobSync };
+export { uploadWithProgress, dataUrlToBlobSync, dataUrlToBlobAsync, compressToBlob, IMAGE_PRESETS };
 
-/** 图片压缩到约 1MB 内, 返回 dataURL */
-export async function compressImage(file, maxEdge = 1600, quality = 0.82) {
-  if (!file) throw new Error('未选择图片');
-  if (!file.type?.startsWith('image/')) throw new Error('请选择图片文件');
-  // 小图直接读
-  if (file.size <= 800 * 1024) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(new Error('读取图片失败'));
-      reader.readAsDataURL(file);
-    });
-  }
-  const bitmap = await createImageBitmap(file).catch(() => null);
-  if (!bitmap) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(new Error('读取图片失败'));
-      reader.readAsDataURL(file);
-    });
-  }
-  let { width, height } = bitmap;
-  const scale = Math.min(1, maxEdge / Math.max(width, height));
-  width = Math.max(1, Math.round(width * scale));
-  height = Math.max(1, Math.round(height * scale));
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(bitmap, 0, 0, width, height);
-  bitmap.close?.();
-  // jpeg 压缩更稳
-  const dataUrl = canvas.toDataURL('image/jpeg', quality);
-  return dataUrl.startsWith('data:image/') ? dataUrl : canvas.toDataURL('image/png');
+/** 图片压缩（按场景预设），返回 Blob */
+export async function compressImage(file, maxEdge = 1280, quality = 0.82) {
+  const preset = maxEdge <= 480 ? 'sticker'
+    : maxEdge <= 512 ? 'avatar'
+      : maxEdge >= 1600 ? 'cover'
+        : 'chat';
+  return compressToBlob(file, preset, { maxEdge, quality });
 }
 
 async function request(path, { method = 'POST', body, query } = {}) {
@@ -172,7 +145,10 @@ export const api = {
   userMoments: (userId) => request(`/api/moments/user/${Number(userId)}`, { method: 'GET' }),
   createMoment: (content, images, visibility, visibleTo) =>
     request('/api/moments', { body: { content, images, visibility, visibleTo: visibleTo || [] } }),
+  friendStatuses: () => request('/api/status/friends', { method: 'GET' }),
   deleteMoment: (id) => request(`/api/moments/${id}`, { method: 'DELETE' }),
+  updateMomentVisibility: (id, visibility, visibleTo) =>
+    request('/api/moments/visibility', { body: { id, visibility, visibleTo: visibleTo || [] } }),
   likeMoment: (id) => request('/api/moments/like', { body: { id } }),
   unlikeMoment: (id) => request('/api/moments/unlike', { body: { id } }),
   commentMoment: (id, content, replyToId) =>
@@ -180,16 +156,26 @@ export const api = {
   deleteMomentComment: (commentId) =>
     request('/api/moments/comment/delete', { body: { commentId } }),
   uploadMomentImage: (data) => uploadMedia('/api/moments/upload', data, 'image'),
-  /** 带进度的图片上传（dataURL/Blob），onProgress(0-100) */
-  uploadMomentImageWithProgress: async (data, onProgress) => {
-    const blob = data instanceof Blob ? data : dataUrlToBlobSync(data) || dataUrlToBlob(data);
+  /** 带进度的图片上传，data 为 Blob 或 dataURL */
+  uploadMomentImageWithProgress: async (data, onProgress, preset = 'moment') => {
+    onProgress?.(2);
+    const blob = data instanceof Blob ? data : await compressToBlob(data, preset);
     if (!blob) throw new Error('图片数据无效');
+    onProgress?.(8);
     return uploadWithProgress('/api/moments/upload', blob, { kind: 'image', filename: 'image.jpg', onProgress });
   },
   uploadChatMedia: (data, kind) => uploadMedia('/api/chat/upload', data, kind || 'image'),
   uploadChatMediaWithProgress: async (data, kind, onProgress) => {
-    const blob = data instanceof Blob ? data : dataUrlToBlobSync(data) || dataUrlToBlob(data);
+    onProgress?.(2);
+    const isImg = (kind || 'image') === 'image';
+    let blob = data instanceof Blob ? data : null;
+    if (!blob) {
+      blob = isImg
+        ? await compressToBlob(data, 'chat')
+        : (await dataUrlToBlobAsync(data) || dataUrlToBlobSync(data) || dataUrlToBlob(data));
+    }
     if (!blob) throw new Error('文件数据无效');
+    onProgress?.(8);
     return uploadWithProgress('/api/chat/upload', blob, { kind: kind || 'image', filename: 'file.bin', onProgress });
   },
   searchChat: (q, conversationId) =>
@@ -219,7 +205,7 @@ export const api = {
   settings: () => request('/api/settings', { method: 'GET' }),
   updateSettings: (settings) => request('/api/settings', { method: 'PUT', body: { settings } }),
 
-  // 发现页: 听一听 — 网易云 / QQ
+  // 发现页: 听一听 — 网易云 / QQ / 酷狗
   musicList: ({ q = '', source = 'qq', limit = 30 } = {}) =>
     request('/api/music/list', { method: 'GET', query: { q, source, limit } }),
   musicStreamInfo: (source, id, extra = {}) =>

@@ -83,9 +83,10 @@ async function onUploadFile(e) {
       const { url: u } = await api.uploadChatMedia(file, 'image');
       url = u;
     } else {
-      const data = await compressImage(file, 480, 0.85);
+      // 统一走压缩管线（480 / 表情预设）
+      const data = await compressImage(file, 480, 0.86);
       const { url: u } = await api.uploadChatMedia(data, 'image');
-      url = u || data;
+      url = u || (typeof data === 'string' ? data : null);
     }
     if (!url) throw new Error('上传失败');
     stickers.value = addSticker(stickerFromFileMeta(file, url));

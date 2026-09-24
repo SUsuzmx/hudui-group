@@ -2,7 +2,7 @@
 import { ref, nextTick, onMounted, onBeforeUnmount, computed } from 'vue';
 import { api, compressImage } from '../api.js';
 import { EMOJI_LIST, renderContent } from '../chat-shared.js';
-import { useVoicePlayer } from '../voice-player.js';
+import { useVoicePlayer, toggleVoiceOutput, transcribeVoice, getTranscript, setAutoPlayNext } from '../voice-player.js';
 import { ensureNotifyPermission, notifyMessage, playMsgSound, playSendSound } from '../notify.js';
 import { makeLocalMsg, patchLocalMsg, dropLocalEcho } from '../chat-send-status.js';
 import { toast } from '../toast.js';
@@ -636,6 +636,25 @@ function onForwardDone(payload) {
   showToast(payload?.name ? `已转发到「${payload.name}」` : '已转发');
 }
 
+function sendMyCard() {
+  const me = props.me;
+  socket.emit('private:send', {
+    conversationId,
+    content: me.nickname,
+    mediaType: 'card',
+    ext: {
+      nickname: me.nickname,
+      userId: me.id,
+      avatar: me.avatar || null,
+      avatarColor: me.avatarColor || null,
+    },
+  }, (res) => {
+    if (res?.error) showToast(res.error);
+    else showToast('已发送名片');
+  });
+  dockMode.value = 0;
+}
+
 function doAction(kind) {
   const m = actionMsg.value;
   actionMsg.value = null;
@@ -664,6 +683,18 @@ function doAction(kind) {
       mediaUrl: m.mediaUrl || null,
       fromName: m.senderName || props.target?.nickname || '',
     }).then(() => showToast('已收藏，可在「我 → 收藏」查看')).catch((e) => showToast(e.message || '收藏失败'));
+    return;
+  }
+  if (kind === 'translate') {
+    openTranslate(m);
+    return;
+  }
+  if (kind === 'remind') {
+    openRemind(m);
+    return;
+  }
+  if (kind === 'voice-text') {
+    onVoiceToText(m);
     return;
   }
   if (kind === 'save-sticker') {
@@ -950,6 +981,119 @@ async function doSearchHistory() {
 
 function pickChatPhoto() {
   photoInput.value?.click();
+}
+
+const cameraInput = ref(null);
+const showFavPicker = ref(false);
+const favList = ref([]);
+const translatePanel = ref(null);
+const remindPanel = ref(null);
+
+function pickCamera() {
+  cameraInput.value?.click();
+}
+
+async function onChatCamera(e) {
+  const file = e.target.files?.[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const data = await compressImage(file);
+    const { url, mediaType } = await api.uploadChatMedia(data, 'image');
+    if (!url) throw new Error('上传失败');
+    socket.emit('private:send', {
+      conversationId,
+      content: '[图片]',
+      mediaType: mediaType || 'image',
+      mediaUrl: url,
+    }, (res) => {
+      if (res?.error) showToast(res.error);
+    });
+    dockMode.value = 0;
+  } catch (err) {
+    showToast(err.message || '发送失败');
+  }
+}
+
+async function openFavPicker() {
+  try {
+    const data = await api.favorites();
+    favList.value = data.favorites || [];
+  } catch {
+    favList.value = [];
+  }
+  showFavPicker.value = true;
+  dockMode.value = 0;
+}
+
+function sendFavoriteItem(fav) {
+  socket.emit('private:send', {
+    conversationId,
+    content: fav.content || '[收藏]',
+    mediaType: fav.mediaUrl && fav.kind === 'image' ? 'image' : null,
+    mediaUrl: fav.mediaUrl || null,
+  }, (res) => {
+    if (res?.error) showToast(res.error);
+  });
+  showFavPicker.value = false;
+}
+
+function openTranslate(m) {
+  const source = m?.content || '';
+  translatePanel.value = { source, result: '', loading: true };
+  setTimeout(() => {
+    translatePanel.value = { source, result: `译文：${source}（演示翻译）`, loading: false };
+  }, 240);
+}
+
+function openRemind(m) {
+  remindPanel.value = { msg: m, minutes: 5 };
+}
+
+function confirmRemind() {
+  const panel = remindPanel.value;
+  if (!panel) return;
+  const minutes = Number(panel.minutes) || 5;
+  const title = (panel.msg.content || '一条消息').slice(0, 40);
+  setTimeout(() => showToast(`⏰ 提醒：${title}`), minutes * 60_000);
+  remindPanel.value = null;
+  showToast(`已设置 ${minutes} 分钟后提醒`);
+}
+
+async function onVoiceToText(m) {
+  try {
+    const text = await transcribeVoice(m);
+    if (text) showToast(`转文字：${text}`);
+  } catch (e) {
+    showToast(e.message || '转文字失败');
+  }
+}
+
+function onVoiceBubbleClick(m) {
+  playVoice(m);
+}
+
+function toggleVoiceOutputMode() {
+  const mode = toggleVoiceOutput();
+  showToast(mode === 'earpiece' ? '已切换到听筒播放' : '已切换到扬声器播放');
+}
+
+function showDateSep(i) {
+  if (i === 0) return true;
+  const prev = messages.value[i - 1];
+  const cur = messages.value[i];
+  if (!prev?.createdAt || !cur?.createdAt) return false;
+  return new Date(prev.createdAt).toDateString() !== new Date(cur.createdAt).toDateString();
+}
+
+function fmtDayLabel(ts) {
+  const d = new Date(ts);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return '今天';
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return '昨天';
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
 function showToast(msg) {
@@ -1629,8 +1773,9 @@ onBeforeUnmount(() => {
         <button @click="retrySend">重试</button>
       </div>
       <div class="input-bar">
-        <button class="icon-btn" aria-label="语音" @click="setDock(3)">
-          <svg viewBox="0 0 24 24" width="24" height="24"><path d="M8 10a4 4 0 0 1 8 0v2a4 4 0 0 1-8 0v-2z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6 11a6 6 0 0 0 12 0M12 17v3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <button class="icon-btn" :aria-label="dockMode === 3 ? '键盘' : '语音'" @click="setDock(3)">
+          <svg v-if="dockMode !== 3" viewBox="0 0 24 24" width="24" height="24"><path d="M8 10a4 4 0 0 1 8 0v2a4 4 0 0 1-8 0v-2z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6 11a6 6 0 0 0 12 0M12 17v3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <svg v-else viewBox="0 0 24 24" width="24" height="24"><rect x="3" y="6" width="18" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M7 10h2M11 10h2M15 10h2M8 14h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         </button>
         <div class="input-wrap">
           <textarea
@@ -1682,14 +1827,17 @@ onBeforeUnmount(() => {
         <div class="plus-grid">
           <button class="plus-item" type="button" @click="pickChatPhoto"><span class="plus-icon">🖼</span><span>相册</span></button>
           <input ref="photoInput" type="file" accept="image/*" hidden @change="onChatPhoto" />
-          <button class="plus-item" type="button" @click="pickChatPhoto"><span class="plus-icon">📷</span><span>拍摄</span></button>
+          <input ref="cameraInput" type="file" accept="image/*,video/*" capture="environment" hidden @change="onChatCamera" />
+          <button class="plus-item" type="button" @click="pickCamera"><span class="plus-icon">📷</span><span>拍摄</span></button>
           <button v-if="!target.isAI && peerUid" class="plus-item" type="button" @click="openCall('video')"><span class="plus-icon">📹</span><span>视频通话</span></button>
           <button v-if="!target.isAI && peerUid" class="plus-item" type="button" @click="openCall('voice')"><span class="plus-icon">📞</span><span>语音通话</span></button>
           <button class="plus-item" type="button" @click="openCreatePay('redpacket')"><span class="plus-icon">🧧</span><span>红包</span></button>
           <button class="plus-item" type="button" @click="openCreatePay('transfer')"><span class="plus-icon">💰</span><span>转账</span></button>
-          <button class="plus-item" type="button" @click="pickChatFile"><span class="plus-icon">📁</span><span>文件</span></button>
-          <input ref="fileInput" type="file" accept="*" hidden @change="onChatFile" />
+          <button class="plus-item" type="button" @click="sendMyCard"><span class="plus-icon">📇</span><span>个人名片</span></button>
+          <button class="plus-item" type="button" @click="openFavPicker"><span class="plus-icon">⭐</span><span>收藏</span></button>
+          <button class="plus-item" type="button" @click="pickChatFile"><span class="plus-icon">📄</span><span>文件</span></button>
           <button class="plus-item" type="button" @click="openLocPick"><span class="plus-icon">📍</span><span>位置</span></button>
+          <button class="plus-item" type="button" @click="toggleVoiceOutputMode"><span class="plus-icon">🔈</span><span>听筒/扬声器</span></button>
         </div>
       </div>
     </footer>
@@ -1699,6 +1847,38 @@ onBeforeUnmount(() => {
         <div class="pay-title">位置</div>
         <div class="pay-row"><span>地点</span><input v-model="locName" maxlength="60" placeholder="当前位置或手动填写" /></div>
         <button class="pay-btn" @click="sendLocation">发送位置</button>
+      </div>
+    </div>
+    <div v-if="showFavPicker" class="mask" @click.self="showFavPicker = false">
+      <div class="pay-panel">
+        <div class="pay-title">选择收藏</div>
+        <div v-for="f in favList" :key="f.id" class="pay-row">
+          <button class="pay-btn" type="button" style="width:100%" @click="sendFavoriteItem(f)">{{ (f.content || f.mediaUrl || '收藏').slice(0, 40) }}</button>
+        </div>
+        <div v-if="!favList.length" class="pay-row"><span>暂无收藏</span></div>
+        <button class="pay-btn" style="background:transparent;color:#576b95" @click="showFavPicker = false">取消</button>
+      </div>
+    </div>
+    <div v-if="translatePanel" class="mask" @click.self="translatePanel = null">
+      <div class="pay-panel">
+        <div class="pay-title">翻译</div>
+        <div class="pay-row col"><span>原文</span><div>{{ translatePanel.source }}</div></div>
+        <div class="pay-row col"><span>译文</span><div>{{ translatePanel.loading ? '翻译中…' : translatePanel.result }}</div></div>
+        <button class="pay-btn" @click="translatePanel = null">关闭</button>
+      </div>
+    </div>
+    <div v-if="remindPanel" class="mask" @click.self="remindPanel = null">
+      <div class="pay-panel">
+        <div class="pay-title">提醒</div>
+        <div class="pay-row"><span>时间</span>
+          <select v-model.number="remindPanel.minutes" class="pay-select">
+            <option :value="5">5 分钟后</option>
+            <option :value="30">30 分钟后</option>
+            <option :value="60">1 小时后</option>
+            <option :value="1440">明天此时</option>
+          </select>
+        </div>
+        <button class="pay-btn" @click="confirmRemind">设置提醒</button>
       </div>
     </div>
     <div v-if="locDetail" class="mask" @click.self="locDetail = null">
@@ -1728,6 +1908,15 @@ onBeforeUnmount(() => {
           </button>
           <button v-if="actionMsg.content && actionMsg.mediaType !== 'image' && actionMsg.mediaType !== 'voice'" class="action-item" @click="doAction('quote')">
             <span class="ai-ico">❝</span><span>引用</span>
+          </button>
+          <button v-if="actionMsg.content && !actionMsg.mediaType" class="action-item" @click="doAction('translate')">
+            <span class="ai-ico">译</span><span>翻译</span>
+          </button>
+          <button class="action-item" @click="doAction('remind')">
+            <span class="ai-ico">⏰</span><span>提醒</span>
+          </button>
+          <button v-if="actionMsg.mediaType === 'voice'" class="action-item" @click="doAction('voice-text')">
+            <span class="ai-ico">文</span><span>转文字</span>
           </button>
           <button v-if="isMine(actionMsg) && actionMsg.senderType === 'user'" class="action-item" @click="doAction('recall')">
             <span class="ai-ico">↩</span><span>撤回</span>

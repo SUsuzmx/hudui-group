@@ -150,6 +150,7 @@ const discoverGroups = [
     { icon: 'game', label: '游戏', key: 'games' },
   ],
   [{ icon: 'works', label: '小程序', key: 'miniapp' }],
+  [{ icon: 'status', label: '状态墙', key: 'statusWall' }],
 ];
 const meService = [{ icon: 'services', label: '服务', key: 'services' }];
 const meGroup1 = [
@@ -178,6 +179,18 @@ const visibleChats = computed(() => {
   const foldedIds = new Set(foldedChats.value.map((c) => c.id));
   return chats.value.filter((c) => !foldedIds.has(c.id) || foldedOpen.value);
 });
+const showStatusWall = ref(false);
+const friendStatuses = ref([]);
+
+async function loadFriendStatuses() {
+  try {
+    const d = await api.friendStatuses();
+    friendStatuses.value = d.statuses || [];
+  } catch {
+    friendStatuses.value = [];
+  }
+  showStatusWall.value = true;
+}
 
 const navTitleText = computed(() => {
   if (tab.value === 'chats') {
@@ -532,6 +545,7 @@ function openDiscover(s) {
   }
   if (s.key === 'search') { openSearch(); return; }
   if (s.key === 'scan') { openFeature('scan', s.label); return; }
+  if (s.key === 'statusWall') { loadFriendStatuses(); return; }
   if (s.key === 'listen') {
     emit('open-view', { type: 'listen' });
     return;
@@ -1003,6 +1017,22 @@ function doChatAction(kind) {
           <div class="empty-illu">💬</div>
           <div class="empty-title">暂无消息</div>
           <div class="empty-sub">可添加好友或进入群聊开始聊天</div>
+        </div>
+      </div>
+
+      <!-- 状态墙弹层 -->
+      <div v-if="showStatusWall" class="mask" style="position:absolute;inset:0;z-index:40;background:rgba(0,0,0,0.35)" @click.self="showStatusWall = false">
+        <div style="position:absolute;left:6%;right:6%;top:12%;bottom:12%;background:#fff;border-radius:12px;padding:16px;overflow:auto">
+          <div style="font-weight:600;margin-bottom:10px">好友状态墙</div>
+          <div v-if="!friendStatuses.length" style="color:#888;font-size:13px;padding:20px 0;text-align:center">好友们还没设状态</div>
+          <div v-for="s in friendStatuses" :key="s.userId || s.id" style="display:flex;gap:10px;align-items:center;padding:10px 0;border-bottom:0.5px solid #eee">
+            <UserAvatar :name="s.nickname" :avatar="s.avatar" :color="s.avatarColor || '#07c160'" :size="40" />
+            <div style="flex:1">
+              <div style="font-size:14px">{{ s.nickname }}</div>
+              <div style="font-size:12px;color:#576b95;margin-top:2px">{{ s.statusText || s.status?.text || '在状态中' }}</div>
+            </div>
+          </div>
+          <button style="margin-top:12px;width:100%;height:40px;border:0;border-radius:8px;background:#07c160;color:#fff" @click="showStatusWall = false">关闭</button>
         </div>
       </div>
 

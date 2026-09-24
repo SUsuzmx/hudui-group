@@ -7,6 +7,7 @@ import ImagePreview from './ImagePreview.vue';
 import ImageCropper from './ImageCropper.vue';
 import UploadProgress from './UploadProgress.vue';
 import { toast } from '../toast.js';
+import { pinyinInitial } from '../pinyin-initial.js';
 
 const props = defineProps({
   me: { type: Object, required: true },
@@ -18,6 +19,8 @@ const emit = defineEmits(['back', 'updated', 'open-user-moments']);
 const moments = ref([]);
 const loading = ref(false);
 const noMore = ref(false);
+const refreshing = ref(false);
+const pullY = ref(0);
 const showComposer = ref(false);
 const draft = ref('');
 const publishing = ref(false);
@@ -30,6 +33,7 @@ const fileInput = ref(null);
 const previewImages = ref([]);
 const previewIndex = ref(0);
 const showPreview = ref(false);
+const expandId = ref(null);
 const likesMoment = ref(null);
 const cropSrc = ref('');
 const cropKind = ref('cover'); // cover | post
@@ -43,6 +47,18 @@ const visibility = ref('public');
 const visibleTo = ref([]);
 const friendOptions = ref([]);
 const showVisPicker = ref(false);
+// 发布编辑页（微信样式）
+const composerPage = ref('edit'); // edit | vis | remind | location
+const locationText = ref('');
+const remindIds = ref([]);
+const remindQuery = ref('');
+const lastGroupText = ref('');
+const VIS_META = {
+  public: '公开',
+  private: '私密',
+  partial: '部分可见',
+  except: '不给谁看',
+};
 const friendList = ref([]);
 const targetUser = ref(props.user || null);
 let liveSocket = null;
@@ -53,6 +69,9 @@ const isMineMode = computed(() => props.mode === 'mine' || (!isUserMode.value &&
 const isFeedMode = computed(() => !isUserMode.value && props.mode !== 'mine');
 
 async function refreshFeed() {
+  if (refreshing.value) return;
+  refreshing.value = true;
+  pullY.value = 40;
   loading.value = true;
   try {
     let data;
@@ -70,11 +89,41 @@ async function refreshFeed() {
     }
     moments.value = data.moments || [];
     noMore.value = isUserMode.value || props.mode === 'mine' || (data.moments || []).length < 10;
+    toast('已刷新');
   } catch (e) {
     console.warn(e);
   } finally {
     loading.value = false;
+    refreshing.value = false;
+    pullY.value = 0;
   }
+}
+
+// 下拉刷新
+let pullStartY = 0;
+let pulling = false;
+function onFeedTouchStart(e) {
+  const el = e.currentTarget;
+  if (el.scrollTop > 4) return;
+  pullStartY = e.touches?.[0]?.clientY ?? e.clientY ?? 0;
+  pulling = true;
+}
+function onFeedTouchMove(e) {
+  if (!pulling) return;
+  const y = e.touches?.[0]?.clientY ?? e.clientY ?? 0;
+  const dy = y - pullStartY;
+  if (dy > 0) {
+    pullY.value = Math.min(72, dy * 0.45);
+    if (dy > 8) e.preventDefault?.();
+  } else {
+    pullY.value = 0;
+  }
+}
+function onFeedTouchEnd() {
+  if (!pulling) return;
+  pulling = false;
+  if (pullY.value > 48) refreshFeed();
+  else pullY.value = 0;
 }
 
 function scheduleLiveRefresh() {
@@ -135,12 +184,13 @@ function onCoverPick(e) {
   replaceCover(file);
 }
 
-async function uploadImageWithProgress(dataUrl, label) {
+async function uploadImageWithProgress(data, label, preset = 'moment') {
   uploading.value = true;
   uploadPct.value = 0;
   uploadLabel.value = label || '上传中';
   try {
-    const { url } = await api.uploadMomentImageWithProgress(dataUrl, (p) => { uploadPct.value = p; });
+    const payload = data && typeof data === 'object' && data.blob ? data.blob : data;
+    const { url } = await api.uploadMomentImageWithProgress(payload, (p) => { uploadPct.value = p; }, preset);
     return url;
   } finally {
     uploading.value = false;
@@ -148,12 +198,15 @@ async function uploadImageWithProgress(dataUrl, label) {
   }
 }
 
-async function onCropConfirm(dataUrl) {
+async function onCropConfirm(dataUrlOrObj) {
   const kind = cropKind.value;
+  const payload = dataUrlOrObj && typeof dataUrlOrObj === 'object' && dataUrlOrObj.blob
+    ? dataUrlOrObj.blob
+    : dataUrlOrObj;
   cropSrc.value = '';
   try {
     if (kind === 'cover') {
-      const url = await uploadImageWithProgress(dataUrl, '上传封面');
+      const url = await uploadImageWithProgress(payload, '上传封面', 'cover');
       if (!url) throw new Error('上传失败');
       coverUrl.value = url;
       const { user } = await api.updateMe({ momentsCover: url });
@@ -165,10 +218,9 @@ async function onCropConfirm(dataUrl) {
         alert('最多 9 张图片');
         return;
       }
-      const url = await uploadImageWithProgress(dataUrl, '上传配图');
+      const url = await uploadImageWithProgress(payload, '上传配图', 'moment');
       if (!url) throw new Error('上传失败');
       pickedImages.value = [...pickedImages.value, url];
-      // 队列：继续裁剪下一张
       if (cropQueue.value.length) {
         const next = cropQueue.value.shift();
         cropKind.value = 'post';
@@ -197,6 +249,10 @@ function openLikes(m) {
   likesMoment.value = m;
 }
 
+function closeLikes() {
+  likesMoment.value = null;
+}
+
 function friendMomentEmptyText() {
   if (!props.user && !isUserMode.value) return '还没有动态, 发一条吧';
   return '对方设置了朋友圈权限，或你们暂无可见动态';
@@ -209,8 +265,11 @@ function likedByMe(m) {
 function likePreview(m) {
   const names = (m.likes || []).map((l) => (l.userId === props.me?.id ? '我' : l.nickname));
   if (!names.length) return '';
-  if (names.length > 3) return `${names.slice(0, 3).join('、')}等${names.length}人觉得很赞`;
-  return `${names.join('、')}觉得很赞`;
+  return names.join(', ');
+}
+
+function onBodyTap() {
+  expandId.value = null;
 }
 
 function applyInteractions(m, data) {
@@ -362,12 +421,28 @@ function onScroll(e) {
 }
 
 async function publish() {
-  const content = draft.value.trim();
+  let content = draft.value.trim();
   if ((!content && !pickedImages.value.length) || publishing.value) return;
   if (visibility.value === 'partial' && !visibleTo.value.length) {
+    composerPage.value = 'vis';
+    await loadFriendsForPicker();
     alert('请选择部分可见的好友');
-    showVisPicker.value = true;
     return;
+  }
+  if (visibility.value === 'except' && !visibleTo.value.length) {
+    composerPage.value = 'vis';
+    await loadFriendsForPicker();
+    alert('请选择不给谁看的好友');
+    return;
+  }
+  const remindNames = friendOptions.value
+    .filter((f) => remindIds.value.includes(f.id))
+    .map((f) => f.nickname);
+  if (locationText.value.trim()) {
+    content = content ? `${content}\n📍 ${locationText.value.trim()}` : `📍 ${locationText.value.trim()}`;
+  }
+  if (remindNames.length) {
+    content = content ? `${content}\n@${remindNames.join(' @')}` : `@${remindNames.join(' @')}`;
   }
   publishing.value = true;
   try {
@@ -375,19 +450,116 @@ async function publish() {
       content,
       pickedImages.value,
       visibility.value,
-      visibility.value === 'partial' ? visibleTo.value : [],
+      visibility.value === 'partial' || visibility.value === 'except' ? visibleTo.value : [],
     );
     moments.value = [moment, ...moments.value];
+    if (visibility.value === 'partial' || visibility.value === 'except') {
+      rememberVisGroup(
+        friendOptions.value.filter((f) => visibleTo.value.includes(f.id)).map((f) => f.nickname),
+      );
+    }
     draft.value = '';
     pickedImages.value = [];
     visibility.value = 'public';
     visibleTo.value = [];
+    remindIds.value = [];
+    locationText.value = '';
+    composerPage.value = 'edit';
     showComposer.value = false;
+    saveMomentsPrivacy();
   } catch (e) {
     alert(e.message);
   } finally {
     publishing.value = false;
   }
+}
+
+function openComposer() {
+  showComposer.value = true;
+  composerPage.value = 'edit';
+  lastGroupText.value = lastGroupLabel();
+}
+
+function closeComposer() {
+  showComposer.value = false;
+  composerPage.value = 'edit';
+}
+
+async function openVisPage() {
+  composerPage.value = 'vis';
+  await loadFriendsForPicker();
+}
+
+function pickVisOption(v) {
+  visibility.value = v;
+  visibleTo.value = [];
+  showVisPicker.value = v === 'partial' || v === 'except';
+  if (showVisPicker.value) loadFriendsForPicker();
+}
+
+async function openRemindPage() {
+  composerPage.value = 'remind';
+  remindQuery.value = '';
+  await loadFriendsForPicker();
+}
+
+function toggleRemind(id) {
+  const set = new Set(remindIds.value);
+  if (set.has(id)) set.delete(id);
+  else set.add(id);
+  remindIds.value = [...set];
+}
+
+function confirmRemind() {
+  composerPage.value = 'edit';
+}
+
+function openLocationPage() {
+  composerPage.value = 'location';
+}
+
+function useCurrentLocation() {
+  if (!navigator.geolocation) {
+    locationText.value = '手动位置';
+    composerPage.value = 'edit';
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const { latitude, longitude } = pos.coords;
+      locationText.value = `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+      composerPage.value = 'edit';
+    },
+    () => {
+      if (!locationText.value) locationText.value = '所在位置';
+      composerPage.value = 'edit';
+    },
+    { timeout: 5000, enableHighAccuracy: false },
+  );
+}
+
+function saveMomentsPrivacy() {
+  try {
+    localStorage.setItem('hudui_moments_privacy', JSON.stringify({
+      range: momentsRange.value,
+      hiddenFrom: hiddenFrom.value,
+      hideThem: hideThem.value,
+    }));
+    api.updateSettings({
+      momentsRange: momentsRange.value,
+      momentsHideFrom: hiddenFrom.value,
+      momentsHideThem: hideThem.value,
+    }).catch(() => {});
+  } catch { /* ignore */ }
+}
+
+function loadMomentsPrivacy() {
+  try {
+    const raw = JSON.parse(localStorage.getItem('hudui_moments_privacy') || '{}');
+    momentsRange.value = raw.range || 'all';
+    hiddenFrom.value = raw.hiddenFrom || [];
+    hideThem.value = raw.hideThem || [];
+  } catch { /* ignore */ }
 }
 
 async function loadFriendsForPicker() {
@@ -413,13 +585,14 @@ function toggleVisFriend(id) {
 }
 
 function onVisibilityChange() {
-  if (visibility.value === 'partial') {
+  if (visibility.value === 'partial' || visibility.value === 'except') {
     loadFriendsForPicker();
     showVisPicker.value = true;
   } else {
     showVisPicker.value = false;
-    if (visibility.value !== 'partial') visibleTo.value = [];
+    if (visibility.value !== 'partial' && visibility.value !== 'except') visibleTo.value = [];
   }
+  visLabelShort();
 }
 
 function visLabel(m) {
@@ -427,6 +600,7 @@ function visLabel(m) {
   if (v === 'private') return '私密';
   if (v === 'friends') return '好友可见';
   if (v === 'partial') return `部分可见${m.visibleTo?.length ? `(${m.visibleTo.length})` : ''}`;
+  if (v === 'except') return `不给谁看${m.visibleTo?.length ? `(${m.visibleTo.length})` : ''}`;
   return '';
 }
 
@@ -489,13 +663,74 @@ function albumSignature() {
 const VIS_OPTIONS = [
   { value: 'public', label: '公开', sub: '所有朋友可见' },
   { value: 'private', label: '私密', sub: '仅自己可见' },
-  { value: 'friends', label: '好友可见', sub: '仅好友可见' },
-  { value: 'partial', label: '部分可见', sub: '选中的朋友可见' },
+  { value: 'partial', label: '部分可见', sub: '' },
+  { value: 'except', label: '不给谁看', sub: '' },
 ];
+
+const filteredRemindFriends = computed(() => {
+  const q = remindQuery.value.trim().toLowerCase();
+  let list = friendOptions.value;
+  if (q) list = list.filter((f) => String(f.nickname || '').toLowerCase().includes(q));
+  return list;
+});
+
+const remindLetterGroups = computed(() => {
+  const map = new Map();
+  for (const f of filteredRemindFriends.value) {
+    const L = letterOf(f.nickname);
+    if (!map.has(L)) map.set(L, []);
+    map.get(L).push(f);
+  }
+  return [...map.entries()].sort((a, b) => (a[0] === '#' ? 1 : b[0] === '#' ? -1 : a[0].localeCompare(b[0])));
+});
+
+function letterOf(name) {
+  try {
+    return pinyinInitial(name) || '#';
+  } catch {
+    return '#';
+  }
+}
+
+function visLabelShort() {
+  const base = VIS_META[visibility.value] || '公开';
+  if (visibility.value === 'partial' || visibility.value === 'except') {
+    return visibleTo.value.length ? `${base}(${visibleTo.value.length})` : base;
+  }
+  return base;
+}
+
+function lastGroupLabel() {
+  try {
+    const raw = JSON.parse(localStorage.getItem('hudui_last_vis_group') || 'null');
+    if (!raw?.names?.length) return '';
+    return `上次分组: ${raw.names.slice(0, 4).join(', ')}${raw.names.length > 4 ? '…' : ''}`;
+  } catch {
+    return '';
+  }
+}
+
+function rememberVisGroup(names) {
+  try {
+    if (!names?.length) return;
+    localStorage.setItem('hudui_last_vis_group', JSON.stringify({ names, at: Date.now() }));
+    lastGroupText.value = lastGroupLabel();
+  } catch { /* ignore */ }
+}
+
+const RANGE_OPTIONS = [
+  { value: 'all', label: '全部' },
+  { value: '3d', label: '最近三天' },
+  { value: '1m', label: '最近一个月' },
+  { value: '0.5y', label: '最近半年' },
+];
+const momentsRange = ref('all');
+const hiddenFrom = ref([]); // 不给他看（对方视角过滤用设置）
+const hideThem = ref([]); // 不看他
 
 function pickVisibility(v) {
   visibility.value = v;
-  if (v === 'partial') {
+  if (v === 'partial' || v === 'except') {
     loadFriendsForPicker();
     showVisPicker.value = true;
   } else {
@@ -522,11 +757,71 @@ async function openCommentAt() {
 }
 
 function openMenu(m) {
+  // 他人动态不弹删除
+  if (!isOwnMoment(m)) return;
   menuMoment.value = m;
+}
+
+const visEditMoment = ref(null);
+const visEditValue = ref('public');
+const visEditTo = ref([]);
+
+function openVisEdit(m) {
+  visEditMoment.value = m;
+  visEditValue.value = m.visibility || 'public';
+  visEditTo.value = [...(m.visibleTo || [])];
+  loadFriendsForPicker();
+}
+
+async function saveVisEdit() {
+  const m = visEditMoment.value;
+  if (!m) return;
+  if (visEditValue.value === 'partial' && !visEditTo.value.length) {
+    alert('请选择部分可见的好友');
+    return;
+  }
+  if (visEditValue.value === 'except' && !visEditTo.value.length) {
+    alert('请选择不给谁看的好友');
+    return;
+  }
+  try {
+    const { moment } = await api.updateMomentVisibility(
+      m.id,
+      visEditValue.value,
+      visEditValue.value === 'partial' || visEditValue.value === 'except' ? visEditTo.value : [],
+    );
+    const idx = moments.value.findIndex((x) => x.id === m.id);
+    if (idx >= 0 && moment) moments.value[idx] = { ...moments.value[idx], ...moment };
+    else moments.value = moments.value.map((x) => (x.id === m.id
+      ? { ...x, visibility: visEditValue.value, visibleTo: visEditTo.value }
+      : x));
+    visEditMoment.value = null;
+    toast('可见范围已更新');
+  } catch (e) {
+    alert(e.message || '更新失败');
+  }
+}
+
+function toggleVisEditFriend(id) {
+  const set = new Set(visEditTo.value);
+  if (set.has(id)) set.delete(id);
+  else set.add(id);
+  visEditTo.value = [...set];
+}
+
+function isOwnMoment(m) {
+  const mid = Number(m?.userId ?? m?.author?.id);
+  const meId = Number(props.me?.id);
+  return Number.isFinite(mid) && Number.isFinite(meId) && mid > 0 && mid === meId;
 }
 
 async function deleteMoment() {
   if (!menuMoment.value) return;
+  if (!isOwnMoment(menuMoment.value)) {
+    menuMoment.value = null;
+    alert('只能删除自己的动态');
+    return;
+  }
   try {
     await api.deleteMoment(menuMoment.value.id);
     moments.value = moments.value.filter((x) => x.id !== menuMoment.value.id);
@@ -539,6 +834,8 @@ async function deleteMoment() {
 
 function startLongPress(m) {
   clearLongPress();
+  // 仅自己的动态才弹删除菜单
+  if (!isOwnMoment(m)) return;
   longPressTimer.value = setTimeout(() => openMenu(m), 550);
 }
 function clearLongPress() {
@@ -551,6 +848,8 @@ function clearLongPress() {
 onMounted(() => {
   if (props.me?.momentsCover && !isUserMode.value) coverUrl.value = props.me.momentsCover;
   if (props.user) targetUser.value = props.user;
+  loadMomentsPrivacy();
+  lastGroupText.value = lastGroupLabel();
   load(true);
   liveSocket = io('/', { auth: { token: getToken() }, transports: ['polling', 'websocket'] });
   liveSocket.on('moments:update', (p) => {
@@ -640,11 +939,21 @@ onBeforeUnmount(() => {
         <button class="nav-back" @click="emit('back')">‹</button>
         <div class="nav-title">{{ title }}</div>
         <button v-if="isFeedMode" class="nav-cam" type="button" :disabled="loading" @click="refreshFeed">↻</button>
-        <button v-if="isFeedMode" class="nav-cam" @click="showComposer = true">📷</button>
+        <button v-if="isFeedMode" class="nav-cam" @click="openComposer">📷</button>
         <div v-else class="nav-right"></div>
       </header>
 
-      <main class="content" @scroll="onScroll">
+      <main
+        class="content"
+        @scroll="onScroll"
+        @click="onBodyTap"
+        @touchstart.passive="onFeedTouchStart"
+        @touchmove.passive="onFeedTouchMove"
+        @touchend="onFeedTouchEnd"
+      >
+        <div class="pull-tip" :class="{ on: pullY > 8 || refreshing }" :style="{ height: (refreshing ? 36 : pullY) + 'px' }">
+          {{ refreshing ? '刷新中…' : pullY > 48 ? '松开刷新' : pullY > 8 ? '下拉刷新' : '' }}
+        </div>
         <div
           class="moments-cover"
           :style="coverUrl ? {
@@ -679,7 +988,7 @@ onBeforeUnmount(() => {
         @touchstart="startLongPress(m)"
         @touchend="clearLongPress"
         @touchmove="clearLongPress"
-        @contextmenu.prevent="openMenu(m)"
+        @contextmenu.prevent="isOwnMoment(m) && openMenu(m)"
       >
         <UserAvatar
           class="moment-avatar"
@@ -710,32 +1019,58 @@ onBeforeUnmount(() => {
           </div>
           <div class="moment-meta">
             <span class="moment-time">{{ fmtTime(m.createdAt) }}</span>
-            <div class="moment-actions">
-              <button
-                class="moment-act"
-                :class="{ on: likedByMe(m) }"
-                @click.stop="toggleLike(m)"
-              >
-                <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 20s-7-4.4-7-9.2C5 8 7 6 9.2 6c1.3 0 2.3.7 2.8 1.6C12.5 6.7 13.5 6 14.8 6 17 6 19 8 19 10.8 19 15.6 12 20 12 20z" fill="none" :stroke="likedByMe(m) ? '#fa5151' : '#576b95'" stroke-width="1.6"/></svg>
-                <span class="act-count" @click.stop="openLikes(m)">{{ m.likes?.length || 0 }}</span>
+            <div v-if="isOwnMoment(m)" class="moment-owner-ops">
+              <button class="owner-ico" type="button" title="修改可见范围" @click.stop="openVisEdit(m)">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="#576b95">
+                  <circle cx="9" cy="9" r="3.2"/>
+                  <path d="M3.5 18c.8-2.6 2.8-4.2 5.5-4.2S13.7 15.4 14.5 18H3.5z"/>
+                  <circle cx="16.5" cy="9.5" r="2.5"/>
+                  <path d="M13.8 18c.5-1.7 1.8-2.8 3.7-2.8 1.3 0 2.3.5 3 1.5V18h-6.7z"/>
+                </svg>
               </button>
-              <button class="moment-act" @click.stop="openComment(m)">
-                <svg viewBox="0 0 24 24" width="16" height="16"><path d="M5 6h14v9H9l-4 3V6z" fill="none" stroke="#576b95" stroke-width="1.6" stroke-linejoin="round"/></svg>
-                <span class="act-count">{{ m.comments?.length || 0 }}</span>
+              <button class="owner-ico" type="button" title="删除" @click.stop="openMenu(m)">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="#576b95">
+                  <path d="M7 7h10l-.8 12.2a1.5 1.5 0 0 1-1.5 1.4H9.3a1.5 1.5 0 0 1-1.5-1.4L7 7z"/>
+                  <path d="M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7" fill="none" stroke="#576b95" stroke-width="1.6"/>
+                  <path d="M5.5 7h13" stroke="#576b95" stroke-width="1.6" stroke-linecap="round"/>
+                </svg>
               </button>
+            </div>
+            <div class="meta-right">
+              <div v-if="expandId === m.id" class="act-pop">
+                <button class="act-pop-btn" type="button" :class="{ on: likedByMe(m) }" @click.stop="toggleLike(m)">
+                  <svg viewBox="0 0 24 24" width="18" height="18">
+                    <path d="M12 20s-7-4.4-7-9.2C5 8 7 6 9.2 6c1.3 0 2.3.7 2.8 1.6C12.5 6.7 13.5 6 14.8 6 17 6 19 8 19 10.8 19 15.6 12 20 12 20z"
+                      fill="none" :stroke="likedByMe(m) ? '#fa5151' : '#fff'" stroke-width="1.6"/>
+                  </svg>
+                  <span>{{ likedByMe(m) ? '取消' : '赞' }}</span>
+                </button>
+                <button class="act-pop-btn" type="button" @click.stop="expandId = null; openComment(m)">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#fff" stroke-width="1.6">
+                    <path d="M5 6h14v9H9l-4 3V6z"/>
+                  </svg>
+                  <span>评论</span>
+                </button>
+              </div>
+              <button class="owner-more" type="button" title="更多" @click.stop="expandId = expandId === m.id ? null : m.id">•••</button>
             </div>
           </div>
           <div class="interact-box" v-if="likePreview(m) || m.comments?.length">
-            <div v-if="likePreview(m)" class="moment-likes" @click="openLikes(m)">♥ {{ likePreview(m) }}</div>
+            <div v-if="likePreview(m)" class="moment-likes" @click="openLikes(m)">
+              <svg class="like-heart" viewBox="0 0 24 24" width="16" height="16">
+                <path d="M12 20s-7-4.4-7-9.2C5 8 7 6 9.2 6c1.3 0 2.3.7 2.8 1.6C12.5 6.7 13.5 6 14.8 6 17 6 19 8 19 10.8 19 15.6 12 20 12 20z"
+                  fill="none" stroke="#576b95" stroke-width="1.6"/>
+              </svg>
+              <span class="like-names">{{ likePreview(m) }}</span>
+            </div>
             <div v-if="m.comments?.length" class="moment-comments">
               <div v-for="c in m.comments" :key="c.id" class="comment-line">
                 <span class="comment-name" @click="openComment(m, c)">
                   {{ c.userId === me.id ? '我' : c.nickname }}
                   <em v-if="c.isAI" class="ai-tag">AI</em>
                 </span>
-                <span v-if="c.replyToName" class="comment-reply"> 回复 </span>
-                <span v-if="c.replyToName" class="comment-name">{{ c.replyToName }}</span>
-                <span class="comment-text">：{{ c.content }}</span>
+                <span v-if="c.replyToName"><span class="comment-reply"> 回复 </span><span class="comment-name">{{ c.replyToName }}</span></span>
+                <span class="comment-text">: {{ c.content }}</span>
                 <button
                   v-if="canDeleteComment(m, c)"
                   class="comment-del"
@@ -743,9 +1078,6 @@ onBeforeUnmount(() => {
                 >删除</button>
               </div>
             </div>
-          </div>
-          <div v-if="m.userId === me.id || m.author?.id === me.id" class="moment-owner-del">
-            <button class="moment-del" @click.stop="openMenu(m)">删除</button>
           </div>
         </div>
       </article>
@@ -755,70 +1087,186 @@ onBeforeUnmount(() => {
       </main>
     </template>
 
-    <div v-if="showComposer" class="composer-mask" @click.self="showComposer = false">
-      <div class="composer">
-        <div class="composer-bar">
-          <button class="cancel" @click="showComposer = false">取消</button>
-          <span class="composer-title">发表朋友圈</span>
-          <button class="ok" :disabled="(!draft.trim() && !pickedImages.length) || publishing" @click="publish">
-            {{ publishing ? '…' : '发表' }}
-          </button>
-        </div>
-        <div class="vis-row wechat-vis">
-          <div class="vis-head">谁可以看</div>
-          <button
-            v-for="opt in VIS_OPTIONS"
-            :key="opt.value"
-            type="button"
-            class="vis-opt"
-            :class="{ on: visibility === opt.value }"
-            @click="pickVisibility(opt.value)"
-          >
-            <span class="vis-check">{{ visibility === opt.value ? '✓' : '' }}</span>
-            <span class="vis-main">
-              <span class="vis-label2">{{ opt.label }}</span>
-              <span class="vis-sub">{{ opt.value === 'partial' && visibleTo.length ? `已选 ${visibleTo.length} 人` : opt.sub }}</span>
-            </span>
-          </button>
-        </div>
-        <div v-if="visibility === 'partial'" class="vis-friends">
-          <div class="vis-friends-head">
-            <span>选择可见好友（{{ visibleTo.length }}）</span>
-            <button type="button" @click="showVisPicker = !showVisPicker">{{ showVisPicker ? '收起' : '展开' }}</button>
+    <!-- 发表朋友圈（微信全屏编辑） -->
+    <div v-if="showComposer && composerPage === 'edit'" class="wx-pub">
+      <header class="wx-pub-bar">
+        <button type="button" class="wx-pub-cancel" @click="closeComposer">取消</button>
+        <button
+          type="button"
+          class="wx-pub-ok"
+          :disabled="(!draft.trim() && !pickedImages.length) || publishing"
+          @click="publish"
+        >{{ publishing ? '…' : '发表' }}</button>
+      </header>
+      <div class="wx-pub-body scroll-y">
+        <textarea
+          v-model="draft"
+          class="wx-pub-input"
+          placeholder="这一刻的想法..."
+          maxlength="500"
+          rows="5"
+        ></textarea>
+        <div class="wx-photo-grid">
+          <div v-for="(img, i) in pickedImages" :key="img" class="wx-photo">
+            <img :src="img" alt="配图" />
+            <button class="wx-photo-x" type="button" @click="removePicked(i)">×</button>
           </div>
-          <div v-if="showVisPicker" class="vis-friend-list">
+          <button v-if="pickedImages.length < 9" class="wx-photo-add" type="button" aria-label="添加图片" @click="pickImages">
+            <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#8a8a8a" stroke-width="1.4" stroke-linecap="round">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+          </button>
+          <input ref="fileInput" type="file" accept="image/*" multiple hidden @change="onPickFiles" />
+        </div>
+        <div class="wx-spacer"></div>
+        <div class="wx-rows">
+          <button class="wx-row" type="button" @click="openLocationPage">
+            <span class="wx-row-ico">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#111" stroke-width="1.5">
+                <path d="M12 21s7-5.4 7-11a7 7 0 1 0-14 0c0 5.6 7 11 7 11z"/>
+                <circle cx="12" cy="10" r="2.5"/>
+              </svg>
+            </span>
+            <span class="wx-row-label">所在位置</span>
+            <span class="wx-row-val">{{ locationText }}</span>
+            <span class="wx-row-arrow">›</span>
+          </button>
+          <button class="wx-row" type="button" @click="openRemindPage">
+            <span class="wx-row-ico">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#111" stroke-width="1.5">
+                <circle cx="12" cy="12" r="9"/>
+                <path d="M15 12a3 3 0 1 1-3-3c1.7 0 3 1.3 3 3v.5c0 .8-.5 1.5-1.5 1.5H12"/>
+                <path d="M12 14.5V16"/>
+              </svg>
+            </span>
+            <span class="wx-row-label">提醒谁看</span>
+            <span class="wx-row-val">{{ remindIds.length ? `${remindIds.length}人` : '' }}</span>
+            <span class="wx-row-arrow">›</span>
+          </button>
+          <button class="wx-row" type="button" @click="openVisPage">
+            <span class="wx-row-ico">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#111" stroke-width="1.5">
+                <circle cx="12" cy="8" r="3.2"/>
+                <path d="M5 19c1.5-3.2 4-5 7-5s5.5 1.8 7 5"/>
+              </svg>
+            </span>
+            <span class="wx-row-label">谁可以看</span>
+            <span class="wx-row-val strong">{{ visLabelShort() }}</span>
+            <span class="wx-row-arrow">›</span>
+          </button>
+          <div v-if="lastGroupText" class="wx-last-group">{{ lastGroupText }}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 谁可以看 -->
+    <div v-if="showComposer && composerPage === 'vis'" class="wx-pub">
+      <header class="wx-pub-bar">
+        <button type="button" class="wx-pub-back" @click="composerPage = 'edit'">‹</button>
+        <div class="wx-pub-title">谁可以看</div>
+        <button type="button" class="wx-pub-ok" @click="composerPage = 'edit'">完成</button>
+      </header>
+      <div class="wx-vis-body">
+        <button
+          v-for="opt in VIS_OPTIONS"
+          :key="opt.value"
+          type="button"
+          class="wx-vis-item"
+          @click="pickVisOption(opt.value)"
+        >
+          <span class="wx-radio" :class="{ on: visibility === opt.value }"></span>
+          <span class="wx-vis-main">
+            <span class="wx-vis-label">{{ opt.label }}</span>
+            <span v-if="opt.sub || (opt.value === 'partial' || opt.value === 'except') && visibleTo.length" class="wx-vis-sub">
+              {{ (opt.value === 'partial' || opt.value === 'except') && visibleTo.length ? `已选 ${visibleTo.length} 人` : opt.sub }}
+            </span>
+          </span>
+        </button>
+        <div v-if="showVisPicker && (visibility === 'partial' || visibility === 'except')" class="wx-friend-pick">
+          <div class="wx-friend-head">{{ visibility === 'except' ? '选择不可见好友' : '选择可见好友' }}</div>
+          <div class="wx-friend-list scroll-y">
             <button
               v-for="f in friendOptions"
               :key="f.id"
               type="button"
-              class="vis-friend-item"
-              :class="{ on: visibleTo.includes(f.id) }"
+              class="wx-friend-item"
               @click="toggleVisFriend(f.id)"
             >
-              <span class="vis-friend-check">{{ visibleTo.includes(f.id) ? '✓' : '' }}</span>
-              {{ f.nickname }}
+              <span class="wx-check" :class="{ on: visibleTo.includes(f.id) }"></span>
+              <UserAvatar :name="f.nickname" :avatar="f.avatar" :color="f.color || '#07c160'" :size="40" />
+              <span class="wx-friend-name">{{ f.nickname }}</span>
             </button>
-            <div v-if="!friendOptions.length" class="vis-empty">暂无好友，可先添加好友</div>
+            <div v-if="!friendOptions.length" class="wx-empty">暂无好友</div>
           </div>
         </div>
-        <textarea
-          v-model="draft"
-          class="composer-input"
-          placeholder="这一刻的想法…"
-          maxlength="500"
-          rows="6"
-        ></textarea>
-        <div v-if="pickedImages.length" class="picked-grid">
-          <div v-for="(img, i) in pickedImages" :key="img" class="picked-item">
-            <img :src="img" alt="配图" />
-            <button class="picked-x" @click="removePicked(i)">×</button>
-          </div>
+      </div>
+    </div>
+
+    <!-- 提醒谁看 -->
+    <div v-if="showComposer && composerPage === 'remind'" class="wx-pub">
+      <header class="wx-pub-bar">
+        <button type="button" class="wx-pub-back" @click="composerPage = 'edit'">‹</button>
+        <div class="wx-pub-title">提醒谁看</div>
+        <button type="button" class="wx-pub-ok" @click="confirmRemind">确定</button>
+      </header>
+      <div class="wx-search-wrap">
+        <input v-model="remindQuery" class="wx-search" type="search" placeholder="搜索" />
+      </div>
+      <div class="wx-friend-scroll scroll-y">
+        <div class="wx-letter-head">星标朋友</div>
+        <button
+          v-for="f in filteredRemindFriends.slice(0, 4)"
+          :key="'star-' + f.id"
+          type="button"
+          class="wx-friend-item"
+          @click="toggleRemind(f.id)"
+        >
+          <span class="wx-check" :class="{ on: remindIds.includes(f.id) }"></span>
+          <UserAvatar :name="f.nickname" :avatar="f.avatar" :color="f.color || '#07c160'" :size="44" />
+          <span class="wx-friend-name">{{ f.nickname }}</span>
+        </button>
+        <template v-for="[L, list] in remindLetterGroups" :key="L">
+          <div class="wx-letter-head">{{ L }}</div>
+          <button
+            v-for="f in list"
+            :key="f.id"
+            type="button"
+            class="wx-friend-item"
+            @click="toggleRemind(f.id)"
+          >
+            <span class="wx-check" :class="{ on: remindIds.includes(f.id) }"></span>
+            <UserAvatar :name="f.nickname" :avatar="f.avatar" :color="f.color || '#07c160'" :size="44" />
+            <span class="wx-friend-name">{{ f.nickname }}</span>
+          </button>
+        </template>
+        <div v-if="!friendOptions.length" class="wx-empty">暂无好友，可先添加好友</div>
+      </div>
+      <div class="wx-index" aria-hidden="true"><span v-for="L in '↑☆ABCDEFGHIJKLMNOPQRSTUVWXYZ#'.split('')" :key="L">{{ L }}</span></div>
+    </div>
+
+    <!-- 所在位置 -->
+    <div v-if="showComposer && composerPage === 'location'" class="wx-pub">
+      <header class="wx-pub-bar">
+        <button type="button" class="wx-pub-back" @click="composerPage = 'edit'">‹</button>
+        <div class="wx-pub-title">所在位置</div>
+        <button type="button" class="wx-pub-ok" @click="composerPage = 'edit'">完成</button>
+      </header>
+      <div class="wx-loc-body">
+        <button class="wx-row" type="button" @click="useCurrentLocation">
+          <span class="wx-row-ico">📍</span>
+          <span class="wx-row-label">不显示位置</span>
+        </button>
+        <button class="wx-row" type="button" @click="useCurrentLocation">
+          <span class="wx-row-ico">🎯</span>
+          <span class="wx-row-label">使用当前位置</span>
+        </button>
+        <div class="wx-loc-input">
+          <input v-model="locationText" maxlength="40" placeholder="搜索地点或手动填写" />
         </div>
-        <div class="composer-tools">
-          <button class="add-photo" @click="pickImages">🖼 添加图片</button>
-          <input ref="fileInput" type="file" accept="image/*" multiple hidden @change="onPickFiles" />
-          <span class="tool-hint">{{ pickedImages.length ? `${pickedImages.length}/9 张` : '可发纯文字' }} · 长按动态可删除</span>
-        </div>
+        <button class="wx-row" type="button" @click="composerPage = 'edit'">
+          <span class="wx-row-label">完成填写</span>
+          <span class="wx-row-val">{{ locationText }}</span>
+        </button>
       </div>
     </div>
 
@@ -849,6 +1297,46 @@ onBeforeUnmount(() => {
           maxlength="200"
           rows="3"
         ></textarea>
+      </div>
+    </div>
+
+    <div v-if="visEditMoment" class="composer-mask" @click.self="visEditMoment = null">
+      <div class="composer">
+        <div class="composer-bar">
+          <button class="cancel" @click="visEditMoment = null">取消</button>
+          <span class="composer-title">谁可以看</span>
+          <button class="ok" @click="saveVisEdit">完成</button>
+        </div>
+        <div class="vis-row wechat-vis">
+          <button
+            v-for="opt in VIS_OPTIONS"
+            :key="'ve-' + opt.value"
+            type="button"
+            class="vis-opt"
+            :class="{ on: visEditValue === opt.value }"
+            @click="visEditValue = opt.value; if (opt.value === 'partial' || opt.value === 'except') loadFriendsForPicker()"
+          >
+            <span class="vis-check">{{ visEditValue === opt.value ? '✓' : '' }}</span>
+            <span class="vis-main">
+              <span class="vis-label2">{{ opt.label }}</span>
+              <span class="vis-sub">{{ opt.sub }}</span>
+            </span>
+          </button>
+        </div>
+        <div v-if="visEditValue === 'partial' || visEditValue === 'except'" class="vis-friend-list" style="max-height:240px;overflow:auto">
+          <button
+            v-for="f in friendOptions"
+            :key="'vf-' + f.id"
+            type="button"
+            class="vis-friend-item"
+            :class="{ on: visEditTo.includes(f.id) }"
+            @click="toggleVisEditFriend(f.id)"
+          >
+            <span class="vis-friend-check">{{ visEditTo.includes(f.id) ? '✓' : '' }}</span>
+            {{ f.nickname }}
+          </button>
+          <div v-if="!friendOptions.length" class="vis-empty">暂无好友</div>
+        </div>
       </div>
     </div>
 
@@ -891,7 +1379,7 @@ onBeforeUnmount(() => {
     <ImageCropper
       v-if="cropSrc"
       :src="cropSrc"
-      :ratio="cropKind === 'cover' ? 'cover' : 'free'"
+      :ratio="cropKind === 'cover' ? 'cover' : 'post'"
       :title="cropKind === 'cover' ? '裁剪朋友圈封面' : '裁剪配图'"
       @confirm="onCropConfirm"
       @cancel="onCropCancel"
@@ -1366,53 +1854,99 @@ onBeforeUnmount(() => {
 .moment-meta {
   display: flex;
   align-items: center;
-  margin-top: 8px;
-  gap: 12px;
+  margin-top: 12px;
+  gap: 8px;
   width: 100%;
 }
 .moment-time {
-  font-size: 12px;
+  font-size: 13px;
   color: #b2b2b2;
   flex: 1;
 }
-.moment-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+.moment-owner-ops {
+  display: flex; gap: 4px; align-items: center;
 }
-.moment-act {
-  width: 32px;
+.owner-ico {
+  border: 0; background: transparent;
+  width: 34px; height: 34px;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}
+.meta-right {
+  position: relative;
+  display: flex; align-items: center;
+  margin-left: 8px;
+}
+.owner-more {
+  border: 0;
+  background: #f0f0f2;
+  color: #576b95;
+  font-size: 15px;
+  letter-spacing: 2px;
+  line-height: 1;
+  border-radius: 8px;
+  min-width: 52px;
   height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 700;
 }
-.moment-act:active { background: #f0f0f0; }
-.moment-act.on svg path { fill: #fa5151; stroke: #fa5151; }
-.moment-likes {
-  margin-top: 6px;
-  padding: 6px 8px;
-  background: #f7f7f7;
-  border-radius: 3px;
+.act-pop {
+  position: absolute;
+  right: 56px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  background: #4c4c4c;
+  border-radius: 8px;
+  overflow: hidden;
+  z-index: 5;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+}
+.act-pop-btn {
+  border: 0;
+  background: transparent;
+  color: #fff;
   font-size: 13px;
+  display: flex; align-items: center; gap: 6px;
+  padding: 10px 14px;
+  min-height: 40px;
+  cursor: pointer;
+}
+.act-pop-btn + .act-pop-btn {
+  border-left: 0.5px solid rgba(255,255,255,0.15);
+}
+.act-pop-btn.on { color: #fa5151; }
+.moment-actions { display: none; }
+.interact-box {
+  margin-top: 10px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #f7f7f7;
+}
+.moment-likes {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 12px 14px;
+  background: transparent;
+  font-size: 15px;
   color: #576b95;
   width: 100%;
+  border-bottom: 0.5px solid #ececec;
 }
+.like-heart { flex: 0 0 auto; margin-top: 2px; }
+.like-names { color: #576b95; line-height: 1.45; word-break: break-word; font-weight: 500; }
 .moment-comments {
-  margin-top: 4px;
-  padding: 6px 8px;
-  background: #f7f7f7;
-  border-radius: 3px;
+  padding: 12px 14px;
+  background: transparent;
   width: 100%;
 }
 .comment-line {
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 15px;
+  line-height: 1.6;
   word-break: break-word;
+  margin-bottom: 6px;
 }
-.comment-name { color: #576b95; margin-right: 4px; cursor: pointer; }
-.comment-reply { color: var(--text-2); font-size: 12px; }
+.comment-name { color: #576b95; margin-right: 2px; cursor: pointer; font-weight: 500; }
+.comment-reply { color: var(--text-2); font-size: 14px; margin: 0 2px; }
 .comment-text { color: #111; }
 .comment-del {
   margin-left: 8px;
@@ -1560,6 +2094,178 @@ onBeforeUnmount(() => {
   color: #b2b2b2;
   font-size: 12px;
   padding: 16px 0;
+}
+
+/* 微信发表朋友圈 */
+.moment-owner-ops {
+  display: flex; gap: 4px; align-items: center;
+}
+.owner-ico {
+  border: 0; background: transparent; color: #576b95;
+  font-size: 16px; min-width: 32px; min-height: 32px; cursor: pointer;
+}
+.pull-tip {
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden; color: #888; font-size: 12px;
+  transition: height 120ms ease;
+}
+.pull-tip.on { color: #07c160; }
+
+.wx-pub {
+  position: fixed; inset: 0; z-index: 60;
+  background: #fff;
+  display: flex; flex-direction: column;
+  max-width: 480px; margin: 0 auto; left: 0; right: 0;
+}
+.wx-pub-bar {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: calc(env(safe-area-inset-top, 0px) + 10px) 16px 10px;
+  min-height: 52px;
+}
+.wx-pub-cancel {
+  border: 0; background: transparent; color: #111;
+  font-size: 17px; min-height: 40px; cursor: pointer;
+}
+.wx-pub-back {
+  border: 0; background: transparent; color: #111;
+  font-size: 28px; line-height: 1; width: 36px; min-height: 40px; cursor: pointer;
+  margin-left: -6px;
+}
+.wx-pub-title {
+  font-size: 17px; font-weight: 600; color: #111;
+}
+.wx-pub-ok {
+  border: 0; border-radius: 8px;
+  background: #07c160; color: #fff;
+  font-size: 15px; font-weight: 500;
+  padding: 8px 18px; min-height: 38px; cursor: pointer;
+}
+.wx-pub-ok:disabled { background: #c8c9cc; }
+.wx-pub-body { flex: 1; min-height: 0; overflow-y: auto; }
+.wx-pub-input {
+  width: 100%; border: 0; outline: 0;
+  padding: 18px 18px 8px;
+  font-size: 17px; line-height: 1.5;
+  min-height: 100px; resize: none;
+  color: #111;
+}
+.wx-pub-input::placeholder { color: #b2b2b2; }
+.wx-photo-grid {
+  display: flex; flex-wrap: wrap; gap: 10px;
+  padding: 16px 18px 8px;
+}
+.wx-photo {
+  position: relative; width: 88px; height: 88px; border-radius: 4px; overflow: hidden;
+  background: #f2f2f2;
+}
+.wx-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.wx-photo-x {
+  position: absolute; top: 2px; right: 2px;
+  width: 20px; height: 20px; border: 0; border-radius: 50%;
+  background: rgba(0,0,0,0.55); color: #fff; font-size: 14px; line-height: 1;
+  cursor: pointer;
+}
+.wx-photo-add {
+  width: 88px; height: 88px; border: 0; border-radius: 4px;
+  background: #ededed; color: #888; font-size: 36px; font-weight: 300;
+  line-height: 1; cursor: pointer;
+}
+.wx-sec-gap { height: 28px; background: transparent; }
+.wx-rows { border-top: 0.5px solid #e5e5e5; }
+.wx-row {
+  width: 100%; display: flex; align-items: center; gap: 12px;
+  padding: 16px 18px; border: 0; border-bottom: 0.5px solid #e5e5e5;
+  background: #fff; font-size: 17px; color: #111; text-align: left;
+  cursor: pointer; min-height: 56px;
+}
+.wx-row-ico { width: 24px; text-align: center; font-size: 18px; }
+.wx-row-label { flex: 0 0 auto; }
+.wx-row-val {
+  margin-left: auto; color: #888; font-size: 16px;
+  max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wx-row-arrow { color: #c7c7cc; font-size: 18px; margin-left: 4px; }
+.wx-last-group {
+  padding: 14px 18px 18px 54px;
+  color: #576b95; font-size: 15px;
+  border-bottom: 0.5px solid #e5e5e5;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wx-vis-body {
+  flex: 1; min-height: 0; overflow-y: auto;
+  background: #ededed; padding-top: 12px;
+}
+.wx-vis-item {
+  width: 100%; display: flex; align-items: flex-start; gap: 14px;
+  padding: 18px 18px; border: 0; border-bottom: 0.5px solid #e5e5e5;
+  background: #fff; text-align: left; cursor: pointer;
+}
+.wx-radio {
+  flex: 0 0 auto; width: 20px; height: 20px; border-radius: 50%;
+  border: 1.5px solid #c7c7cc; margin-top: 2px; box-sizing: border-box;
+}
+.wx-radio.on {
+  border-color: #07c160; background: #07c160;
+  box-shadow: inset 0 0 0 3px #fff;
+}
+.wx-vis-label { display: block; font-size: 17px; color: #111; }
+.wx-vis-sub { display: block; margin-top: 4px; font-size: 14px; color: #888; }
+.wx-friend-pick {
+  margin-top: 12px; background: #fff;
+  border-top: 0.5px solid #e5e5e5; border-bottom: 0.5px solid #e5e5e5;
+}
+.wx-friend-head {
+  padding: 12px 18px 6px; font-size: 13px; color: #888;
+}
+.wx-friend-list { max-height: 320px; overflow-y: auto; }
+.wx-friend-item {
+  width: 100%; display: flex; align-items: center; gap: 12px;
+  padding: 10px 18px; border: 0; border-bottom: 0.5px solid #f0f0f0;
+  background: #fff; cursor: pointer; text-align: left; min-height: 64px;
+}
+.wx-check {
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 1.5px solid #c7c7cc; flex: 0 0 auto; box-sizing: border-box;
+}
+.wx-check.on {
+  border-color: #07c160; background: #07c160;
+  box-shadow: inset 0 0 0 3px #fff;
+}
+.wx-friend-name { font-size: 17px; color: #111; }
+.wx-search-wrap {
+  padding: 10px 16px; background: #ededed;
+}
+.wx-search {
+  width: 100%; border: 0; border-radius: 8px;
+  background: #fff; padding: 10px 14px; font-size: 16px;
+}
+.wx-friend-scroll {
+  flex: 1; min-height: 0; overflow-y: auto; background: #fff;
+  padding-right: 18px;
+}
+.wx-letter-head {
+  padding: 8px 18px 4px; font-size: 13px; color: #888;
+  background: #fff;
+}
+.wx-index {
+  flex: 0 0 auto;
+  position: absolute; right: 2px; top: 120px; bottom: 40px;
+  display: flex; flex-direction: column; justify-content: center; gap: 1px;
+  font-size: 10px; color: #576b95; letter-spacing: 0;
+  pointer-events: none; width: 14px; text-align: center; line-height: 1.15;
+}
+.wx-loc-body {
+  flex: 1; background: #ededed; padding-top: 12px;
+}
+.wx-loc-input {
+  background: #fff; padding: 12px 18px; border-bottom: 0.5px solid #e5e5e5;
+}
+.wx-loc-input input {
+  width: 100%; border: 0; outline: 0; font-size: 16px; padding: 8px 0;
+}
+.wx-empty {
+  padding: 28px; text-align: center; color: #b2b2b2; font-size: 13px;
 }
 
 .composer-mask, .action-mask {

@@ -18,7 +18,9 @@ const showLogin = ref(false);
 const loginProvider = ref('qq');
 const cookieInput = ref('');
 const loginBusy = ref(false);
-const loginStatuses = ref({ netease: null, qq: null });
+const loginStatuses = ref({ netease: null, qq: null, kugou: null });
+const SOURCE_LABELS = { netease: '网易云', qq: 'QQ音乐', kugou: '酷狗' };
+const ALL_SOURCES = ['qq', 'netease', 'kugou'];
 
 // 音乐库：root 列表 → 歌单详情
 const showLibrary = ref(false);
@@ -29,7 +31,7 @@ const libError = ref('');
 const libPlaylists = ref([]);
 const libTracks = ref([]);
 const activePlaylist = ref(null);
-const libProviderLabel = computed(() => (source.value === 'netease' ? '网易云' : 'QQ音乐'));
+const libProviderLabel = computed(() => SOURCE_LABELS[source.value] || 'QQ音乐');
 const libEntryTitle = computed(() => `Perry的${libProviderLabel.value}歌单，一起品味`);
 const recommendTitle = computed(() => `${libProviderLabel.value}推荐歌曲`);
 let libSeq = 0;
@@ -127,7 +129,7 @@ function openLogin(provider) {
 }
 
 async function refreshLoginStatus() {
-  for (const p of ['netease', 'qq']) {
+  for (const p of ALL_SOURCES) {
     try { loginStatuses.value[p] = await api.musicProviderLoginStatus(p); }
     catch { loginStatuses.value[p] = null; }
   }
@@ -175,7 +177,7 @@ function extractSongs(r) {
 
 async function loadLibraryRoot() {
   const seq = ++libSeq;
-  const provider = source.value === 'netease' ? 'netease' : 'qq';
+  const provider = source.value === 'netease' || source.value === 'kugou' ? source.value : 'qq';
   libLoading.value = true;
   libError.value = '';
   libView.value = 'root';
@@ -216,7 +218,7 @@ async function loadLibraryRoot() {
 async function openPlaylist(pl, { playAll = false } = {}) {
   if (!pl?.id) return;
   const seq = ++libSeq;
-  const provider = source.value === 'netease' ? 'netease' : 'qq';
+  const provider = source.value === 'netease' || source.value === 'kugou' ? source.value : 'qq';
   libLoading.value = true;
   libError.value = '';
   activePlaylist.value = pl;
@@ -313,7 +315,8 @@ function playlistBadge(pl) {
 onMounted(() => {
   musicPlayer.ensureAudio();
   refreshLoginStatus();
-  preloadVisualStage();
+  // 列表先出来，视觉引擎（three 约 600KB）空闲再拉，避免进页长时间空屏
+  setTimeout(() => { preloadVisualStage(); }, 300);
   if (!tracksList.value.length) load('');
   else tracks.value = musicPlayer.state.tracks.slice();
 });
@@ -343,6 +346,7 @@ onMounted(() => {
     <div class="source-tabs" role="tablist">
       <button type="button" role="tab" :aria-selected="source === 'qq'" :class="{ on: source === 'qq' }" @click="setSource('qq')">QQ音乐</button>
       <button type="button" role="tab" :aria-selected="source === 'netease'" :class="{ on: source === 'netease' }" @click="setSource('netease')">网易云</button>
+      <button type="button" role="tab" :aria-selected="source === 'kugou'" :class="{ on: source === 'kugou' }" @click="setSource('kugou')">酷狗</button>
       <div class="source-hint">{{ listNote }}</div>
     </div>
 
@@ -569,7 +573,7 @@ onMounted(() => {
               </div>
               <div class="control-meta">
                 <div class="control-title">{{ current.title }}</div>
-                <div class="control-artist">{{ current.artist }} · {{ current.source === 'netease' ? '网易云' : 'QQ' }}</div>
+                <div class="control-artist">{{ current.artist }} · {{ SOURCE_LABELS[current.source] || 'QQ' }}</div>
               </div>
             </button>
           </div>
@@ -600,12 +604,14 @@ onMounted(() => {
         <div class="login-status">
           <div>网易云：{{ loginStatuses.netease?.loggedIn ? (loginStatuses.netease.nickname || '已登录') + (loginStatuses.netease.isSvip ? '（SVIP）' : loginStatuses.netease.isVip ? '（VIP）' : '') : '未登录' }}</div>
           <div>QQ音乐：{{ loginStatuses.qq?.loggedIn ? '已登录 ' + (loginStatuses.qq.userId || '') : '未登录' }}</div>
+          <div>酷狗：{{ loginStatuses.kugou?.loggedIn ? (loginStatuses.kugou.nickname || '已登录') + (loginStatuses.kugou.vipLabel && loginStatuses.kugou.vipLabel !== '无VIP' ? `（${loginStatuses.kugou.vipLabel}）` : '') : '未登录' }}</div>
         </div>
         <div class="login-tabs">
           <button type="button" :class="{ on: loginProvider === 'qq' }" @click="loginProvider = 'qq'">QQ</button>
           <button type="button" :class="{ on: loginProvider === 'netease' }" @click="loginProvider = 'netease'">网易云</button>
+          <button type="button" :class="{ on: loginProvider === 'kugou' }" @click="loginProvider = 'kugou'">酷狗</button>
         </div>
-        <textarea v-model="cookieInput" rows="4" :placeholder="loginProvider === 'qq' ? 'Cookie 需含 uin + qm_keyst' : 'Cookie 需含 MUSIC_U'"></textarea>
+        <textarea v-model="cookieInput" rows="4" :placeholder="loginProvider === 'qq' ? 'Cookie 需含 uin + qm_keyst' : loginProvider === 'kugou' ? 'Cookie 需含 KuGoo（内含 userid/token）' : 'Cookie 需含 MUSIC_U'"></textarea>
         <div class="login-actions">
           <button type="button" @click="showLogin = false">取消</button>
           <button type="button" @click="doLogout(loginProvider)">退出</button>

@@ -85,6 +85,28 @@ async function savePermission(p) {
   if (p === 'block') {
     if (!confirm('加入黑名单后，对方将无法给你发消息，也看不到你的朋友圈。继续？')) return;
   }
+  if (p === 'mute-them') {
+    try {
+      const raw = JSON.parse(localStorage.getItem('hudui_moments_privacy') || '{}');
+      const set = new Set(raw.hideThem || []);
+      set.add(id);
+      raw.hideThem = [...set];
+      localStorage.setItem('hudui_moments_privacy', JSON.stringify(raw));
+      api.updateSettings({ momentsHideThem: raw.hideThem }).catch(() => {});
+    } catch { /* ignore */ }
+    toast('已设置：不看他（她）');
+    return;
+  }
+  if (p === 'hide-moments') {
+    try {
+      const raw = JSON.parse(localStorage.getItem('hudui_moments_privacy') || '{}');
+      const set = new Set(raw.hiddenFrom || []);
+      set.add(id);
+      raw.hiddenFrom = [...set];
+      localStorage.setItem('hudui_moments_privacy', JSON.stringify(raw));
+      api.updateSettings({ momentsHideFrom: raw.hiddenFrom }).catch(() => {});
+    } catch { /* ignore */ }
+  }
   try {
     const d = await api.setFriendPermission(id, p);
     profile.value = {
@@ -97,7 +119,7 @@ async function savePermission(p) {
       permission: p,
       blacklisted: Boolean(d?.blacklisted ?? p === 'block'),
     };
-    toast(p === 'block' ? '已加入黑名单' : '权限已更新');
+    toast(p === 'block' ? '已加入黑名单' : p === 'hide-moments' ? '已设置：不让他看我' : '权限已更新');
   } catch (e) {
     toast(e.message || '设置失败');
   }
@@ -301,6 +323,7 @@ onMounted(async () => {
         <button class="sheet-item" type="button" @click="savePermission('all')">聊天、朋友圈、微信运动等</button>
         <button class="sheet-item" type="button" @click="savePermission('chat')">仅聊天</button>
         <button class="sheet-item" type="button" @click="savePermission('hide-moments')">不让他看我</button>
+        <button class="sheet-item" type="button" @click="savePermission('mute-them')">不看他（她）</button>
         <button class="sheet-item danger" type="button" @click="savePermission('block')">加入黑名单</button>
         <button class="sheet-item cancel" type="button" @click="showPermission = false">取消</button>
       </div>
