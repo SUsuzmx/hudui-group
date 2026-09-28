@@ -1,10 +1,9 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
-import { io } from 'socket.io-client';
-import { getToken, api } from '../api.js';
+import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue';
+import { api } from '../api.js';
+import { getSocket, bindSocket } from '../socket-store.js';
 import UserAvatar from './UserAvatar.vue';
 import WxIcons from './WxIcons.vue';
-import { pinyinInitial, groupContactsByLetter } from '../pinyin-initial.js';
 import { isStarFriend, refreshStarFriends, starRevision } from '../profile-extras.js';
 import { statusGradient, statusIconPath, statusRemaining } from '../status-bg.js';
 import { loadProfileExtras, saveProfileExtras } from '../profile-extras.js';
@@ -126,7 +125,7 @@ let swipeStartY = 0;
 let lastMoveX = 0;
 let lastMoveY = 0;
 const swipeAxis = ref(null);
-let socket = null;
+let unbindSocketFns = [];
 let chatsReloadTimer = null;
 
 // 对齐真实微信截图的入口分组
@@ -334,20 +333,18 @@ onMounted(async () => {
     // AI 不进通讯录；群成员数据里仍保留 AI 供群聊展示
     extraAi.value = [];
   } catch { extraAi.value = []; }
-  socket = io('/', {
-    auth: { token: getToken() },
-    transports: ['polling', 'websocket'],
-    upgrade: true,
-  });
-  socket.on('members:update', (data) => { members.value = data; });
-  socket.on('message:new', () => scheduleReloadChats());
-  socket.on('group:message', () => scheduleReloadChats());
-  socket.on('private:message', () => scheduleReloadChats());
-  socket.on('chat:sync', () => scheduleReloadChats(600));
-  socket.on('moments:update', (p) => {
+  // 复用全局 Socket, 避免主界面再开一条连接
+  getSocket();
+  const on = (event, fn) => { unbindSocketFns.push(bindSocket(event, fn)); };
+  on('members:update', (data) => { members.value = data; });
+  on('message:new', () => scheduleReloadChats());
+  on('group:message', () => scheduleReloadChats());
+  on('private:message', () => scheduleReloadChats());
+  on('chat:sync', () => scheduleReloadChats(600));
+  on('moments:update', (p) => {
     if (p && p.userId !== props.me?.id) momentsDot.value = true;
   });
-  socket.on('call:incoming', (payload) => {
+  on('call:incoming', (payload) => {
     if (!payload?.from) return;
     emit('open-view', {
       type: 'video-call',
@@ -367,7 +364,10 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   clearTimeout(chatsReloadTimer);
-  socket?.disconnect();
+  for (const off of unbindSocketFns) {
+    try { off(); } catch { /* ignore */ }
+  }
+  unbindSocketFns = [];
   clearTimeout(longPressTimer);
 });
 
@@ -388,6 +388,7 @@ function switchTab(next) {
   try { localStorage.setItem(TAB_KEY, next); } catch { /* ignore */ }
   // 进通讯录时刷新好友/标签/星标，保证展示与设置同步
   if (next === 'contacts') {
+    loadPinyinMod().then(() => rebuildContactGroups()).catch(() => {});
     loadFriends();
     loadContactTags();
     refreshStarFriends();
@@ -722,12 +723,32 @@ function setContactTagFilter(id) {
   contactTagFilter.value = Number(id) || 0;
 }
 
-function alphaOf(name) {
-  return pinyinInitial(name);
+// 拼音表体积偏大, 仅在进通讯录时再拉
+let pinyinModPromise = null;
+function loadPinyinMod() {
+  if (!pinyinModPromise) pinyinModPromise = import('../pinyin-initial.js');
+  return pinyinModPromise;
 }
 
-const contactGroups = computed(() => groupContactsByLetter(contactPeople()));
+const contactGroups = ref([]);
 const contactCount = computed(() => contactGroups.value.reduce((s, g) => s + g.people.length, 0));
+
+async function rebuildContactGroups() {
+  try {
+    const mod = await loadPinyinMod();
+    contactGroups.value = mod.groupContactsByLetter(contactPeople());
+  } catch {
+    contactGroups.value = [];
+  }
+}
+
+watch(
+  () => [tab.value, friends.value, contactTagFilter.value, contactTags.value],
+  () => {
+    if (tab.value === 'contacts') rebuildContactGroups();
+  },
+  { immediate: true }
+);
 
 function toggleMore() { showMore.value = !showMore.value; }
 

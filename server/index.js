@@ -7,6 +7,7 @@ import { Server } from 'socket.io';
 import { ROOT, stmts, db } from './db.js';
 import { register, login, verifyToken, publicUser, listAvatars, updateProfile, IMG_DIR, loginRateLimited, registerRateLimited, publicProfile, parseUserStatus, changePassword, keepOnlyCurrentSession, requireAuth, userFromRequest, extractBearerToken } from './auth.js';
 import { initChat } from './chat.js';
+import { initListenTogether } from './listen-together.js';
 import { createEngine } from './ai/engine.js';
 import { isAiEnabled } from './ai/provider.js';
 import { aiAvatarFile } from './ai/avatars.js';
@@ -939,7 +940,17 @@ if (fs.existsSync(DIST)) {
 }
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: true }, maxHttpBufferSize: 1e6 });
+const io = new Server(server, {
+  cors: { origin: true },
+  maxHttpBufferSize: 1e6,
+  // Cloudflare / 弱网下放宽心跳，减少误断线
+  pingInterval: 25000,
+  pingTimeout: 60000,
+  // 允许 EIO=4 标准路径；传输由客户端协商（polling 优先再升 websocket）
+  allowUpgrades: true,
+  httpCompression: true,
+  transports: ['polling', 'websocket'],
+});
 ioRef = io;
 
 // 播种群聊数据
@@ -962,6 +973,7 @@ const engine = createEngine({
   },
 });
 chatApi = initChat(io, { config, engine });
+initListenTogether(io);
 
 setInterval(() => engine.tick(), 30_000).unref();
 // 红包/转账 24h 超时退回

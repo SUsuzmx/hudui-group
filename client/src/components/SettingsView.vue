@@ -42,7 +42,7 @@ const bgPresets = [
 const sectionTitle = {
   root: '设置',
   appearance: '通用 · 显示',
-  about: '关于微信',
+  about: '关于',
   notify: '新消息通知',
   chat: '聊天',
   account: '账号与安全',
@@ -271,7 +271,7 @@ function exportChatBackup() {
 }
 
 const titles = [
-  '账号与安全', '新消息通知', '聊天', '通用', '隐私', '通讯录黑名单', '存储空间', '关于微信',
+  '账号与安全', '新消息通知', '聊天', '通用', '隐私', '通讯录黑名单', '存储空间', '关于',
 ];
 function goSection(label) {
   const map = {
@@ -282,6 +282,7 @@ function goSection(label) {
     '隐私': 'privacy',
     '通讯录黑名单': 'blacklist',
     '存储空间': 'storage',
+    '关于': 'about',
     '关于微信': 'about',
   };
   const s = map[label];
@@ -531,8 +532,9 @@ onMounted(() => { appearance.value = getAppearance(); });
         <div class="row"><span class="label">当前版本</span><span class="value">1.0.0</span></div>
         <div class="row"><span class="label">产品</span><span class="value">WeChat 克隆演示</span></div>
         <div class="row"><span class="label">线上地址</span><span class="value">chat.supeiji.top</span></div>
-        <div class="row"><span class="label">技术栈</span><span class="value">Vue3 + Express + SQLite</span></div>
+        <div class="row"><span class="label">作者</span><span class="value">由 Perry 制作</span></div>
       </section>
+      <p class="about-foot">希望你和朋友在这里玩得开心。— Perry</p>
     </main>
 
     <div v-if="showPwd" class="mask" @click.self="showPwd = false">
@@ -628,4 +630,13 @@ onMounted(() => { appearance.value = getAppearance(); });
 }
 .dialog-actions button.ok { color: #07c160; font-weight: 600; }
 .dialog-actions button.ok:disabled { opacity: 0.45; }
+</style>
+<style scoped>
+.about-foot {
+  margin: 16px 8px 24px;
+  text-align: center;
+  font-size: 11px;
+  color: rgba(120, 120, 120, 0.85);
+  line-height: 1.5;
+}
 </style>

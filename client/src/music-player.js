@@ -12,6 +12,8 @@ const state = reactive({
   restriction: null,
   // order | one | shuffle
   playMode: localStorage.getItem('hudui_music_mode') || 'order',
+  // 一起听：同一 audio 核心，由房间状态驱动
+  listenMode: false,
 });
 
 let audio = null;
@@ -97,6 +99,8 @@ function ensureAudio() {
     maybeUpdatePositionState();
   });
   audio.addEventListener('ended', () => {
+    // 一起听模式由房间服务器决定下一首，避免本地连播抢跑
+    if (state.listenMode) return;
     // 息屏/后台也尽量立即切歌；one 模式重播当前
     nextTrack({ auto: true });
   });
@@ -339,6 +343,7 @@ function schedulePreloadNext() {
 async function playTrack(track, opts = {}) {
   if (!track) return;
   const auto = !!opts.auto;
+  const listenSync = !!opts.listenSync;
   const token = ++loadToken;
   const el = ensureAudio();
   suppressAudioError = true;
@@ -354,15 +359,41 @@ async function playTrack(track, opts = {}) {
     const url = await resolveStreamUrl(track);
     if (token !== loadToken) return;
     const el2 = el || ensureAudio();
-    if (!el2) return;
-    el2.src = (/^https?:/i.test(url) ? '/api/audio?url=' + encodeURIComponent(url) : url);
+    if (!el2 || typeof el2 !== 'object') return;
+    try {
+      el2.src = (/^https?:/i.test(url) ? '/api/audio?url=' + encodeURIComponent(url) : url);
+    } catch (srcErr) {
+      console.warn('[player] set src failed', srcErr);
+      return;
+    }
+    if (listenSync && Number.isFinite(Number(opts.startAt))) {
+      const seekTo = Math.max(0, Number(opts.startAt) || 0);
+      const applySeek = () => {
+        try { el2.currentTime = seekTo; } catch { /* ignore */ }
+      };
+      if (el2.readyState >= 1) applySeek();
+      else {
+        const onMeta = () => {
+          el2.removeEventListener('loadedmetadata', onMeta);
+          applySeek();
+        };
+        el2.addEventListener('loadedmetadata', onMeta);
+        setTimeout(() => el2.removeEventListener('loadedmetadata', onMeta), 8000);
+      }
+    }
+    if (listenSync && opts.autoplay === false) {
+      state.playing = false;
+      suppressAudioError = false;
+      setTimeout(() => { if (token === loadToken) suppressAudioError = false; }, 500);
+      return;
+    }
     await el2.play();
     if (token === loadToken) {
       state.playing = true;
       autoFailStreak = 0;
       suppressAudioError = false;
       maybeUpdatePositionState(true);
-      schedulePreloadNext();
+      if (!listenSync) schedulePreloadNext();
       setTimeout(() => { if (token === loadToken) suppressAudioError = false; }, 500);
     }
   } catch (err) {
@@ -373,6 +404,7 @@ async function playTrack(track, opts = {}) {
 }
 
 function togglePlay() {
+  if (state.listenMode) return;
   const el = ensureAudio();
   if (!state.current) {
     if (state.tracks[0]) playTrack(state.tracks[0]);
@@ -399,6 +431,42 @@ function togglePlay() {
     state.playing = false;
     setMediaPlaybackState('paused');
   }
+}
+
+/** 明确播放（一起听远程命令用，避免 toggle 语义） */
+function playPlayback() {
+  const el = ensureAudio();
+  suppressAudioError = true;
+  const p = el.play();
+  if (p?.then) {
+    p.then(() => {
+      state.playing = true;
+      setMediaPlaybackState('playing');
+      setTimeout(() => { suppressAudioError = false; }, 300);
+    }).catch(() => {
+      suppressAudioError = false;
+      if (state.listenMode) {
+        try { onListenPlayFail?.(); } catch { /* ignore */ }
+      }
+    });
+  }
+}
+
+function pausePlayback() {
+  const el = ensureAudio();
+  try { el.pause(); } catch { /* ignore */ }
+  state.playing = false;
+  setMediaPlaybackState('paused');
+}
+
+/** 一起听：加载歌曲并在 metadata 后定位，再按房间状态播放 */
+function loadTrackAt(track, { startAt = 0, autoplay = true, listenSync = true } = {}) {
+  return playTrack(track, { listenSync, startAt, autoplay });
+}
+
+let onListenPlayFail = null;
+function setListenPlayFailHandler(fn) {
+  onListenPlayFail = typeof fn === 'function' ? fn : null;
 }
 
 function nextTrack(opts = {}) {
@@ -472,9 +540,19 @@ function stopAllPlayback() {
   state.duration = 0;
   state.ready = false;
   state.restriction = null;
+  state.listenMode = false;
   setMediaPlaybackState('none');
   syncMediaMetadata(null);
   try { if ('mediaSession' in navigator) navigator.mediaSession.metadata = null; } catch { /* ignore */ }
+}
+
+function setListenMode(on) {
+  state.listenMode = !!on;
+  if (on) {
+    // 一起听时不走本地连播/预取，避免与房间抢控制
+    if (preloadTimer) { clearTimeout(preloadTimer); preloadTimer = 0; }
+    nextUrlCache = { key: '', url: '' };
+  }
 }
 
 export const musicPlayer = {
@@ -483,14 +561,19 @@ export const musicPlayer = {
   getAudioElement() { return ensureAudio(); },
   setTracks,
   playTrack,
+  loadTrackAt,
+  play: playPlayback,
+  pause: pausePlayback,
   resolveStreamUrlForAnalysis,
   togglePlay,
   nextTrack,
   prevTrack,
   seek,
   setMusicRestrictionHandler,
+  setListenPlayFailHandler,
   setPlayMode,
   cyclePlayMode,
+  setListenMode,
   stopAll: stopAllPlayback,
 };
 

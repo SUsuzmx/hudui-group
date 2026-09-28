@@ -1,10 +1,80 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { api } from '../api.js';
 import { toast } from '../toast.js';
+import { listenTogether, createRoom } from '../listen-together.js';
 import { musicPlayer, fmtAudioTime } from '../music-player.js';
 import SongDetailView from './SongDetailView.vue';
 import { preloadVisualStage } from '../visual-stage.js';
+
+const showConvPick = ref(false);
+const convList = ref([]);
+const convLoading = ref(false);
+const pendingInviteTrack = ref(null);
+
+async function inviteListenTogether() {
+  const cur = musicPlayer.state.current;
+  if (!cur) {
+    toast('先挑首歌，再叫上朋友一起听。');
+    return;
+  }
+  if (listenTogether.state.room) {
+    toast('大家已经开听啦，直接进去吧。');
+    return;
+  }
+  pendingInviteTrack.value = {
+    id: cur.id,
+    source: cur.source || 'qq',
+    title: cur.title || cur.name || '未知歌曲',
+    artist: cur.artist || '',
+    cover: cur.cover || cur.picUrl || '',
+    duration: cur.duration || 0,
+    durationMs: cur.durationMs,
+    mid: cur.mid,
+    mediaMid: cur.mediaMid,
+    hash: cur.hash,
+    albumId: cur.albumId,
+    albumAudioId: cur.albumAudioId,
+    mixSongId: cur.mixSongId,
+    privilege: cur.privilege,
+    hqHash: cur.hqHash,
+    sqHash: cur.sqHash,
+    resHash: cur.resHash,
+  };
+  showConvPick.value = true;
+}
+
+async function openConvPick() {
+  convLoading.value = true;
+  try {
+    const d = await api.chats();
+    convList.value = (d?.chats || []).filter((c) => !c.isAI && c.type !== 'ai');
+  } catch {
+    convList.value = [];
+  } finally {
+    convLoading.value = false;
+  }
+}
+
+watch(showConvPick, (v) => {
+  if (v) openConvPick();
+});
+
+async function pickConvForInvite(c) {
+  const track = pendingInviteTrack.value;
+  if (!track) return;
+  showConvPick.value = false;
+  const res = await createRoom({
+    conversationId: c.conversationId || c.id || 'default',
+    track,
+    hostName: '我',
+    sendInvite: true,
+    conversationName: c.name || c.nickname || '会话',
+  });
+  if (res?.ok) {
+    // createRoom 内已提示邀请卡片去向
+  } else if (res?.error) toast(res.error);
+}
 
 const emit = defineEmits(['back']);
 
@@ -32,7 +102,7 @@ const libPlaylists = ref([]);
 const libTracks = ref([]);
 const activePlaylist = ref(null);
 const libProviderLabel = computed(() => SOURCE_LABELS[source.value] || 'QQ音乐');
-const libEntryTitle = computed(() => `Perry的${libProviderLabel.value}歌单，一起品味`);
+const libEntryTitle = computed(() => `${libProviderLabel.value}歌单，挑几首喜欢的`);
 const recommendTitle = computed(() => `${libProviderLabel.value}推荐歌曲`);
 let libSeq = 0;
 
@@ -328,6 +398,7 @@ onMounted(() => {
       <button class="nav-back" type="button" @click="emit('back')">‹</button>
       <div class="nav-title">听一听</div>
       <div class="nav-actions">
+        <button class="nav-chip" type="button" @click="inviteListenTogether">邀请一起听</button>
         <button class="nav-chip" type="button" @click="openLogin()">音源</button>
       </div>
     </header>
@@ -617,6 +688,25 @@ onMounted(() => {
           <button type="button" @click="doLogout(loginProvider)">退出</button>
           <button type="button" :disabled="loginBusy" @click="submitCookie">{{ loginBusy ? '导入中…' : '导入 Cookie' }}</button>
         </div>
+      </div>
+    </div>
+
+    <div v-if="showConvPick" class="lt-conv-mask" @click.self="showConvPick = false">
+      <div class="lt-conv-sheet">
+        <div class="lt-conv-title">叫上哪个会话的朋友？</div>
+        <div v-if="convLoading" class="lt-conv-empty">正在打开会话列表……</div>
+        <div v-else-if="!convList.length" class="lt-conv-empty">暂时没有可邀请的会话</div>
+        <button
+          v-for="c in convList"
+          :key="c.conversationId || c.id"
+          class="lt-conv-item"
+          type="button"
+          @click="pickConvForInvite(c)"
+        >
+          <span class="lt-conv-name">{{ c.name || c.nickname }}</span>
+          <span class="lt-conv-sub">{{ c.type === 'private' ? '私聊' : '群聊' }}</span>
+        </button>
+        <button class="lt-conv-cancel" type="button" @click="showConvPick = false">取消</button>
       </div>
     </div>
   </div>
@@ -1037,4 +1127,12 @@ onMounted(() => {
 .login-actions { margin-top: 10px; display: flex; gap: 8px; justify-content: flex-end; }
 .login-actions button { min-height: 36px; padding: 0 14px; border-radius: 8px; border: 0; font-size: 13px; background: var(--divider-soft); color: var(--text); }
 .login-actions button:last-child { background: var(--green); color: #fff; }
+.lt-conv-mask{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:40;display:flex;align-items:flex-end}
+.lt-conv-sheet{width:100%;max-height:70vh;overflow:auto;background:#fff;border-radius:14px 14px 0 0;padding:14px 12px calc(16px + env(safe-area-inset-bottom,0px))}
+.lt-conv-title{font-size:15px;font-weight:600;margin-bottom:10px}
+.lt-conv-empty{font-size:12px;color:#999;padding:16px 0;text-align:center}
+.lt-conv-item{display:flex;justify-content:space-between;align-items:center;width:100%;border:0;border-bottom:1px solid #f2f2f2;padding:12px 4px;background:transparent;text-align:left}
+.lt-conv-name{font-size:14px;color:#1f1f1f}
+.lt-conv-sub{font-size:11px;color:#999}
+.lt-conv-cancel{margin-top:12px;width:100%;border:0;border-radius:8px;padding:12px;background:#f5f5f5;color:#576b95;font-size:14px}
 </style>

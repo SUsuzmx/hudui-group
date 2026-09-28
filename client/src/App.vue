@@ -1,40 +1,58 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount, defineAsyncComponent, computed } from 'vue';
+import { ref, onMounted, onBeforeUnmount, defineAsyncComponent, computed, h } from 'vue';
 import { getToken, setToken, api } from './api.js';
 import { createNavStack } from './nav-stack.js';
 import { toast } from './toast.js';
 import { clearMsgCache, removeHiddenChatId } from './chat-cache.js';
 import { notifyMessage } from './notify.js';
-import { getSocket, bindSocket, releaseSocket } from './socket-store.js';
 import ToastHost from './components/ToastHost.vue';
 import LoginView from './components/LoginView.vue';
-import MainView from './components/MainView.vue';
-import ChatView from './components/ChatView.vue';
-import PrivateChatView from './components/PrivateChatView.vue';
+
+const pageLoading = {
+  render: () => h('div', { class: 'boot-loading' }, '加载中…'),
+};
+
+function asyncPage(loader) {
+  return defineAsyncComponent({ loader, loadingComponent: pageLoading, delay: 0 });
+}
+
+// 主界面/聊天页体积大, 首屏只拉壳; 鉴权成功后并行预取
+const MainView = asyncPage(() => import('./components/MainView.vue'));
+const ChatView = asyncPage(() => import('./components/ChatView.vue'));
+const PrivateChatView = asyncPage(() => import('./components/PrivateChatView.vue'));
+
+function warmCoreViews() {
+  import('./components/MainView.vue').catch(() => {});
+  import('./components/ChatView.vue').catch(() => {});
+  import('./components/PrivateChatView.vue').catch(() => {});
+}
 
 // 次要页面异步加载, 缩小首包
-const GroupSettingsView = defineAsyncComponent(() => import('./components/GroupSettingsView.vue'));
-const MomentsView = defineAsyncComponent(() => import('./components/MomentsView.vue'));
-const EditProfileView = defineAsyncComponent(() => import('./components/EditProfileView.vue'));
-const AddFriendView = defineAsyncComponent(() => import('./components/AddFriendView.vue'));
-const FriendProfileView = defineAsyncComponent(() => import('./components/FriendProfileView.vue'));
-const FriendDetailView = defineAsyncComponent(() => import('./components/FriendDetailView.vue'));
-const FriendSettingsView = defineAsyncComponent(() => import('./components/FriendSettingsView.vue'));
-const CreateGroupView = defineAsyncComponent(() => import('./components/CreateGroupView.vue'));
-const SettingsView = defineAsyncComponent(() => import('./components/SettingsView.vue'));
-const QrCodeView = defineAsyncComponent(() => import('./components/QrCodeView.vue'));
-const ChatInfoView = defineAsyncComponent(() => import('./components/ChatInfoView.vue'));
-const FeaturePage = defineAsyncComponent(() => import('./components/FeaturePage.vue'));
-const DeepFeatureView = defineAsyncComponent(() => import('./components/DeepFeatureView.vue'));
-const VideoCallView = defineAsyncComponent(() => import('./components/VideoCallView.vue'));
-const CallFloatBar = defineAsyncComponent(() => import('./components/CallFloatBar.vue'));
+const GroupSettingsView = asyncPage(() => import('./components/GroupSettingsView.vue'));
+const MomentsView = asyncPage(() => import('./components/MomentsView.vue'));
+const EditProfileView = asyncPage(() => import('./components/EditProfileView.vue'));
+const AddFriendView = asyncPage(() => import('./components/AddFriendView.vue'));
+const FriendProfileView = asyncPage(() => import('./components/FriendProfileView.vue'));
+const FriendDetailView = asyncPage(() => import('./components/FriendDetailView.vue'));
+const FriendSettingsView = asyncPage(() => import('./components/FriendSettingsView.vue'));
+const CreateGroupView = asyncPage(() => import('./components/CreateGroupView.vue'));
+const SettingsView = asyncPage(() => import('./components/SettingsView.vue'));
+const QrCodeView = asyncPage(() => import('./components/QrCodeView.vue'));
+const ChatInfoView = asyncPage(() => import('./components/ChatInfoView.vue'));
+const FeaturePage = asyncPage(() => import('./components/FeaturePage.vue'));
+const DeepFeatureView = asyncPage(() => import('./components/DeepFeatureView.vue'));
+const VideoCallView = asyncPage(() => import('./components/VideoCallView.vue'));
+const CallFloatBar = asyncPage(() => import('./components/CallFloatBar.vue'));
 const callSession = ref(null); // { target, callMode, role, callId, incoming, minimized }
 const callViewRef = ref(null);
-const GlobalSearchView = defineAsyncComponent(() => import('./components/GlobalSearchView.vue'));
-const ListenView = defineAsyncComponent(() => import('./components/ListenView.vue'));
-const LookView = defineAsyncComponent(() => import('./components/LookView.vue'));
-const MusicFloatBar = defineAsyncComponent(() => import('./components/MusicFloatBar.vue'));
+const GlobalSearchView = asyncPage(() => import('./components/GlobalSearchView.vue'));
+const ListenView = asyncPage(() => import('./components/ListenView.vue'));
+const LookView = asyncPage(() => import('./components/LookView.vue'));
+const MusicFloatBar = asyncPage(() => import('./components/MusicFloatBar.vue'));
+const ListenTogetherView = asyncPage(() => import('./components/ListenTogetherView.vue'));
+const ListenTogetherBar = asyncPage(() => import('./components/ListenTogetherBar.vue'));
 import { musicPlayer } from './music-player.js';
+import { listenTogether, leaveRoom, joinRoom, createRoom } from './listen-together.js';
 
 const view = ref('loading');
 const me = ref(null);
@@ -47,11 +65,19 @@ const activeChat = ref(null);
 const pendingSearch = ref(false);
 
 const showMusicFloat = computed(() => {
+  // 一起听与「听一听」单曲播放完全隔离：房间模式下不显示歌曲悬浮窗
+  if (listenTogether.inRoom || musicPlayer.state.listenMode) return false;
   const onListen = view.value === 'sub' && subView.value?.type === 'listen';
-  return Boolean(musicPlayer.state.current) && !onListen;
+  const onListenTogether = view.value === 'sub' && subView.value?.type === 'listen-together';
+  return Boolean(musicPlayer.state.current) && !onListen && !onListenTogether;
 });
 
 function openListenFromFloat() {
+  // 悬浮条只进单人「听一听」，不进一起听房间
+  if (listenTogether.inRoom) {
+    openSub({ type: 'listen-together' });
+    return;
+  }
   openSub({ type: 'listen' });
 }
 
@@ -94,20 +120,41 @@ function handleAuthed({ token, user, isNew }) {
   transitionName.value = 'page-fade';
   nav.reset('main');
   view.value = 'main';
-  try {
-    unbindKick?.();
-    getSocket();
-    unbindKick = bindSocket('auth:kicked', onAuthKicked);
-  } catch { /* ignore */ }
+  warmCoreViews();
+  bindAuthKick();
 }
 
 let unbindKick = null;
+let socketApi = null;
+
+async function loadSocketApi() {
+  if (!socketApi) socketApi = await import('./socket-store.js');
+  return socketApi;
+}
+
+function bindAuthKick() {
+  try {
+    unbindKick?.();
+    unbindKick = null;
+  } catch { /* ignore */ }
+  loadSocketApi().then(({ bindSocket }) => {
+    unbindKick = bindSocket('auth:kicked', onAuthKicked);
+  }).catch(() => {});
+}
+
+async function releaseSharedSocket() {
+  try {
+    const api = await loadSocketApi();
+    api.releaseSocket();
+  } catch { /* ignore */ }
+}
 
 function forceLogout(reason = 'session') {
   setToken(null);
   me.value = null;
   callSession.value = null;
-  try { releaseSocket(); } catch { /* ignore */ }
+  try { unbindKick?.(); unbindKick = null; } catch { /* ignore */ }
+  releaseSharedSocket();
   nav.reset('login');
   transitionName.value = 'page-fade';
   view.value = 'login';
@@ -132,16 +179,15 @@ onMounted(async () => {
     view.value = 'login';
     return;
   }
+  // 与 /api/me 并行预取主界面/聊天分包, 避免鉴权后串行二次等待
+  warmCoreViews();
   try {
     const { user } = await api.me();
     me.value = user;
     nav.reset('main');
     view.value = 'main';
     // 单端登录：被挤下线时立刻回登录页
-    try {
-      getSocket();
-      unbindKick = bindSocket('auth:kicked', onAuthKicked);
-    } catch { /* ignore */ }
+    bindAuthKick();
   } catch {
     setToken(null);
     view.value = 'login';
@@ -209,10 +255,43 @@ function openSub(payload) {
     openVideoCall(payload);
     return;
   }
+  if (payload?.type === 'listen-together') {
+    nav.push();
+    subView.value = payload;
+    transitionName.value = 'page-push';
+    view.value = 'sub';
+    return;
+  }
   nav.push();
   subView.value = payload;
   transitionName.value = 'page-push';
   view.value = 'sub';
+}
+
+function openListenTogether() {
+  if (!listenTogether.state.room) {
+    toast('暂无一起听房间');
+    return;
+  }
+  openSub({ type: 'listen-together' });
+}
+
+async function handleJoinListen(payload) {
+  const ext = payload?.ext || {};
+  const roomId = ext.roomId;
+  if (!roomId) return;
+  if (ext.ended) {
+    toast('本次一起听已结束');
+    return;
+  }
+  // 加入前提示将切换为房间歌曲
+  if (musicPlayer.state.current && musicPlayer.state.current.id !== ext.id) {
+    toast('将切换为房间歌曲');
+  }
+  const res = await joinRoom(roomId, { inviteMessageId: payload?.messageId });
+  if (res?.ok) {
+    openSub({ type: 'listen-together' });
+  }
 }
 
 function openUserMoments(user) {
@@ -560,6 +639,12 @@ async function onChatInfoToggle({ key, value }) {
 <template>
   <div class="app-shell">
     <ToastHost />
+    <!-- 主页顶部轻量提示（聊天页内用各自导航下的条，避免盖住返回） -->
+    <ListenTogetherBar
+      v-if="listenTogether.inRoom && view === 'main'"
+      class="lt-bar-on-main"
+      @open-room="openListenTogether"
+    />
     <Transition :name="transitionName" mode="out-in">
       <LoginView v-if="view === 'login'" key="login" @authed="handleAuthed" />
       <MainView
@@ -585,6 +670,7 @@ async function onChatInfoToggle({ key, value }) {
         @members="onGroupMembers"
         @search-used="pendingSearch = false"
         @open-video-call="openVideoCall"
+        @open-view="openSub"
       />
       <PrivateChatView
         v-else-if="view === 'private-chat'"
@@ -597,6 +683,7 @@ async function onChatInfoToggle({ key, value }) {
         @open-chat-info="openChatInfo"
         @search-used="pendingSearch = false"
         @open-video-call="openVideoCall"
+        @open-view="openSub"
       />
       <GroupSettingsView
         v-else-if="view === 'sub' && subView?.type === 'group-settings'"
@@ -743,6 +830,17 @@ async function onChatInfoToggle({ key, value }) {
         @back="goBack"
         @created="onGroupCreated"
       />
+      <ListenTogetherView
+        v-else-if="view === 'sub' && subView?.type === 'listen-together'"
+        key="listen-together"
+        :me="me"
+        :conversation-id="subView.conversationId || 'default'"
+        :pick-song="Boolean(subView.pickSong)"
+        :host-name="subView.hostName || me?.nickname || ''"
+        :conversation-name="subView.conversationName || ''"
+        @back="goBack"
+        @open-chat="goBack"
+      />
       <div v-else-if="view === 'sub'" :key="'stub-' + (subView?.title || 'x')" class="stub-fallback">
         <p>{{ subView?.title || '功能页' }}</p>
         <button type="button" @click="goBack">返回</button>
@@ -782,6 +880,9 @@ async function onChatInfoToggle({ key, value }) {
 </template>
 
 <style scoped>
+.lt-bar-on-main {
+  flex-shrink: 0;
+}
 .stub-fallback {
   flex: 1;
   display: flex;

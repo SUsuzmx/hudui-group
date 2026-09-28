@@ -2,7 +2,7 @@
  * 视觉舞台桥接：本项目播放器 ↔ Mineradio 全局视觉系统
  */
 import { api } from './api.js';
-import { musicPlayer } from './music-player.js';
+import { musicPlayer, resolveStreamUrlForAnalysis } from './music-player.js';
 
 let loadPromise = null;
 let ready = false;
@@ -261,6 +261,7 @@ export function initVisualStage() {
       window.musicPlayerToggle = () => musicPlayer.togglePlay();
       window.musicPlayerNext = () => musicPlayer.nextTrack();
       window.musicPlayerPrev = () => musicPlayer.prevTrack();
+      installBeatAudioUrlResolver();
       const sync = () => {
         window.playing = musicPlayer.state.playing;
         if (window.playing) ensureAudioAudible();
@@ -294,25 +295,97 @@ function absoluteCover(cover) {
 }
 
 
-function scheduleBeatForTrack(track, el) {
+function unwrapProxyAudioUrl(rawUrl) {
+  let raw = rawUrl || '';
+  if (raw.includes('/api/audio')) {
+    const m = raw.match(/[?&]url=([^&]+)/);
+    if (m) { try { raw = decodeURIComponent(m[1]); } catch { /* ignore */ } }
+  }
+  return raw;
+}
+
+function toAnalysisFetchUrl(rawUrl) {
+  const raw = unwrapProxyAudioUrl(rawUrl);
+  if (!raw) return '';
+  return /^https?:/i.test(raw) ? ('/api/audio?url=' + encodeURIComponent(raw)) : raw;
+}
+
+function songObjFromTrack(track) {
+  if (!track) return null;
+  return {
+    source: track.source,
+    id: track.id,
+    mid: track.mid,
+    songmid: track.mid || track.songmid,
+    mediaMid: track.mediaMid || track.media_mid || '',
+    name: track.title || track.name || '',
+    artist: track.artist || '',
+    duration: track.duration,
+    hash: track.hash || track.fileHash || '',
+    fileHash: track.fileHash || track.hash || '',
+    albumId: track.albumId || track.album_id || '',
+    albumAudioId: track.albumAudioId || track.album_audio_id || track.mixSongId || '',
+    mixSongId: track.mixSongId || track.mixsongid || '',
+    privilege: track.privilege,
+    hqHash: track.hqHash || '',
+    sqHash: track.sqHash || '',
+    resHash: track.resHash || '',
+    localUrl: track.localUrl || '',
+    type: track.type || '',
+  };
+}
+
+/** 节拍分析旁路刷新直链：只取新 URL，绝不碰播放中的 audio */
+async function refreshBeatAudioUrl(song) {
+  if (!song) return '';
+  if (song.type === 'local' || song.localUrl) return song.localUrl || '';
+  const track = {
+    source: song.source,
+    id: song.id,
+    hash: song.hash || song.fileHash,
+    fileHash: song.fileHash || song.hash,
+    mid: song.mid || song.songmid,
+    songmid: song.songmid || song.mid,
+    mediaMid: song.mediaMid || song.media_mid,
+    title: song.name || song.title,
+    name: song.name || song.title,
+    artist: song.artist,
+    albumId: song.albumId || song.album_id,
+    albumAudioId: song.albumAudioId || song.album_audio_id || song.mixSongId,
+    mixSongId: song.mixSongId || song.mixsongid,
+    privilege: song.privilege,
+    hqHash: song.hqHash,
+    sqHash: song.sqHash,
+    resHash: song.resHash,
+    duration: song.duration,
+    localUrl: song.localUrl,
+    type: song.type,
+    url: song.url,
+  };
+  const fresh = await resolveStreamUrlForAnalysis(track);
+  return fresh ? toAnalysisFetchUrl(fresh) : '';
+}
+
+function installBeatAudioUrlResolver() {
+  window.__beatRefreshAudioUrl = (song) => refreshBeatAudioUrl(song).catch(() => '');
+}
+
+async function scheduleBeatForTrack(track, el) {
   try {
     if (typeof window.scheduleBeatAnalysis !== 'function') return;
-    let rawUrl = (el && (el.currentSrc || el.src)) || track.url || '';
-    if (!rawUrl) return;
-    if (rawUrl.includes('/api/audio')) {
-      const m = rawUrl.match(/[?&]url=([^&]+)/);
-      if (m) { try { rawUrl = decodeURIComponent(m[1]); } catch { /* ignore */ } }
+    installBeatAudioUrlResolver();
+    // 析前重新取一次播放地址（旁路，不影响当前播放）
+    let audioUrl = '';
+    try {
+      const fresh = await resolveStreamUrlForAnalysis(track);
+      if (fresh) audioUrl = toAnalysisFetchUrl(fresh);
+    } catch { /* ignore */ }
+    if (!audioUrl) {
+      const rawUrl = (el && (el.currentSrc || el.src)) || track.url || '';
+      audioUrl = toAnalysisFetchUrl(rawUrl);
     }
-    const audioUrl = /^https?:/i.test(rawUrl) ? ('/api/audio?url=' + encodeURIComponent(rawUrl)) : rawUrl;
-    const songObj = {
-      source: track.source,
-      id: track.id,
-      mid: track.mid,
-      songmid: track.mid,
-      name: track.title,
-      artist: track.artist,
-      duration: track.duration,
-    };
+    if (!audioUrl) return;
+    const songObj = songObjFromTrack(track);
     let songId = '';
     try {
       if (typeof window.beatMapSongKey === 'function') songId = window.beatMapSongKey(songObj) || '';
@@ -328,11 +401,18 @@ function scheduleBeatForTrack(track, el) {
 export function syncTrackToVisual(track) {
   if (!ready || !track) return;
   const key = `${track.source}:${track.id}`;
-  const cover = absoluteCover(track.cover);
+  const cover = absoluteCover(track.cover || '');
   try { ensureDefaultPreset(); } catch (e) { console.warn('[visual] preset', e); }
   try {
-    if (typeof window.loadCoverFromUrl === 'function' && cover) {
-      window.loadCoverFromUrl(cover, { trackSwitch: key !== lastSongKey });
+    // SongDetail 未挂载时没有 #thumb-cover / #album-bg，跳过封面写入，避免 null.src
+    const hasCoverDom = Boolean(document.getElementById('thumb-cover') || document.getElementById('album-bg'));
+    if (typeof window.loadCoverFromUrl === 'function' && cover && hasCoverDom) {
+      try {
+        const maybe = window.loadCoverFromUrl(cover, { trackSwitch: key !== lastSongKey });
+        if (maybe && typeof maybe.catch === 'function') maybe.catch(() => {});
+      } catch (coverErr) {
+        console.warn('[visual] cover', coverErr);
+      }
     }
   } catch (e) { console.warn('[visual] cover', e); }
   const el = musicPlayer.ensureAudio();

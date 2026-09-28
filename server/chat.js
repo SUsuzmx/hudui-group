@@ -38,7 +38,7 @@ const rowToMsg = (r) => {
   };
 };
 
-export const MEDIA_TYPES = new Set(['image', 'voice', 'video', 'card', 'file', 'redpacket', 'transfer', 'location', 'merge', 'jielong', 'groupcollect']);
+export const MEDIA_TYPES = new Set(['image', 'voice', 'video', 'card', 'file', 'redpacket', 'transfer', 'location', 'merge', 'jielong', 'groupcollect', 'listentogether']);
 // 与 scripts/e2e-test.mjs 对齐: 60s 窗口内超过该条数则拒绝
 export const MSG_RATE = { limit: 20, windowMs: 60_000 };
 
@@ -258,7 +258,10 @@ export function initChat(io, { config, engine }) {
 
     socket.on('history:load', ({ beforeId, conversationId } = {}, ack) => {
       if (typeof ack !== 'function') return;
-      const conv = conversationId || defaultConvId;
+      const rawConv = conversationId;
+      const conv = (!rawConv || rawConv === 'default' || rawConv === defaultConvId)
+        ? defaultConvId
+        : rawConv;
       if (!conv) return ack([]);
       const isPrivate = String(conv).startsWith('pv_');
       if (isPrivate) {
@@ -297,7 +300,11 @@ export function initChat(io, { config, engine }) {
       let ext = null;
       if (payload && typeof payload === 'object') {
         content = payload.content;
-        conversationId = payload.conversationId || defaultConvId;
+        // 归一化会话：default / 空 → 默认群 defaultConvId
+        const rawConv = payload.conversationId;
+        conversationId = (!rawConv || rawConv === 'default' || rawConv === defaultConvId)
+          ? defaultConvId
+          : rawConv;
         mediaType = MEDIA_TYPES.has(payload.mediaType) ? payload.mediaType : null;
         mediaUrl = typeof payload.mediaUrl === 'string' && (payload.mediaUrl.startsWith('/media/') || payload.mediaUrl.startsWith('/avatars/')) ? payload.mediaUrl : null;
         if (payload.ext && typeof payload.ext === 'object') ext = payload.ext;
@@ -313,7 +320,7 @@ export function initChat(io, { config, engine }) {
       content = typeof content === 'string' ? content.trim() : '';
       const extJson = ext ? JSON.stringify(ext).slice(0, 800) : null;
       // 卡片/红包/转账/位置等可无 mediaUrl
-      if ((!content && !mediaUrl && !extJson && !['redpacket', 'transfer', 'location', 'card', 'jielong', 'groupcollect', 'merge'].includes(mediaType || '')) || content.length > 2000) {
+      if ((!content && !mediaUrl && !extJson && !['redpacket', 'transfer', 'location', 'card', 'jielong', 'groupcollect', 'merge', 'listentogether'].includes(mediaType || '')) || content.length > 2000) {
         if (typeof ack === 'function') ack({ error: '消息内容不合法' });
         return;
       }
@@ -322,10 +329,13 @@ export function initChat(io, { config, engine }) {
       } else if (!mediaUrl) {
         mediaType = null;
       }
-      if (conversationId !== defaultConvId && !canAccessGroup(conversationId)) {
+      // 默认群（含 default 别名）放行；其它群走 ACL
+      const isDefaultConv = !conversationId || conversationId === defaultConvId || conversationId === 'default';
+      if (!isDefaultConv && !canAccessGroup(conversationId)) {
         if (typeof ack === 'function') ack({ error: '无效的群聊' });
         return;
       }
+      if (isDefaultConv) conversationId = defaultConvId;
       const now = Date.now();
       // 按用户限流, 断线重连无法绕过
       const ts = (sendTimestamps.get(user.id) ?? []).filter((t) => now - t < MSG_RATE.windowMs);
@@ -348,6 +358,7 @@ export function initChat(io, { config, engine }) {
         : mediaType === 'location' ? '[位置]'
         : mediaType === 'jielong' ? `接龙\n${String(ext?.title || content || '').slice(0, 80)}`
         : mediaType === 'groupcollect' ? `[群收款]${ext?.note || ''}`
+        : mediaType === 'listentogether' ? `[一起听] ${String(ext?.title || '').slice(0, 40)}`.trim()
         : ''
       );
       const r = quote
@@ -764,10 +775,10 @@ export function initChat(io, { config, engine }) {
       }
       content = typeof content === 'string' ? content.trim() : '';
       let mType = mediaType === 'image' || mediaType === 'voice' ? mediaType : null;
-      if (['redpacket', 'transfer', 'card', 'file'].includes(mediaType)) mType = mediaType;
+      if (['redpacket', 'transfer', 'card', 'file', 'listentogether'].includes(mediaType)) mType = mediaType;
       let mUrl = typeof mediaUrl === 'string' && mediaUrl.startsWith('/media/') ? mediaUrl : null;
       if (['image', 'voice', 'video', 'file'].includes(mType) && !mUrl) mType = null;
-      if ((!content && !mUrl && !['redpacket', 'transfer', 'card'].includes(mType || '')) || content.length > 2000) {
+      if ((!content && !mUrl && !['redpacket', 'transfer', 'card', 'listentogether'].includes(mType || '')) || content.length > 2000) {
         if (typeof ack === 'function') ack({ error: '消息内容不合法' });
         return;
       }
@@ -794,6 +805,7 @@ export function initChat(io, { config, engine }) {
         : mType === 'voice' ? '[语音]'
         : mType === 'redpacket' ? '[微信红包]'
         : mType === 'transfer' ? '[转账]'
+        : mType === 'listentogether' ? `[一起听] ${String(ext?.title || '').slice(0, 40)}`.trim()
         : ''
       );
 
@@ -884,16 +896,52 @@ export function initChat(io, { config, engine }) {
           }
           try { stmts.updateMessageExt.run(JSON.stringify(extWithId).slice(0, 800), mid); } catch { /* ignore */ }
         }
+        // 一起听/普通卡片：持久化 ext，便于重载后仍可加入
+        if (mType === 'listentogether' && ext && !extWithId) {
+          const compact = {
+            kind: 'listen',
+            sessionId: String(ext.roomId || ext.sessionId || '').slice(0, 24),
+            title: String(ext.title || '').slice(0, 80),
+            artist: String(ext.artist || '').slice(0, 80),
+            cover: String(ext.cover || '').slice(0, 200),
+            status: String(ext.status || 'active').slice(0, 16),
+            hostName: String(ext.hostName || '').slice(0, 32),
+            id: String(ext.id || '').slice(0, 80),
+            source: String(ext.source || '').slice(0, 16),
+          };
+          extWithId = compact;
+          try { stmts.updateMessageExt.run(JSON.stringify(compact).slice(0, 800), mid); } catch { /* ignore */ }
+        }
       } catch (e) {
         console.log('private pay persist', e.message);
       }
 
       const msg = pushTo(conversationId, stmts.messageById.get(mid));
+      // 同时投递会话房间与双方 user 房间，保证对方未打开会话也能实时收到
       io.to(conversationId).emit('private:message', msg);
+      try {
+        const pp = String(conversationId).split('_');
+        if (pp[1] === 'u') {
+          const a = parseInt(pp[2], 10);
+          const b = parseInt(pp[3], 10);
+          if (Number.isInteger(a)) io.to(`user_${a}`).emit('private:message', msg);
+          if (Number.isInteger(b)) io.to(`user_${b}`).emit('private:message', msg);
+        } else if (pp[1] === 'ai' || pp[1]) {
+          const owner = parseInt(pp[1] === 'ai' ? pp[2] : pp[1], 10);
+          if (Number.isInteger(owner)) io.to(`user_${owner}`).emit('private:message', msg);
+        }
+      } catch { /* ignore */ }
       if (extWithId) {
         try {
           const msg2 = pushTo(conversationId, stmts.messageById.get(mid));
           io.to(conversationId).emit('private:message', msg2);
+          const pp = String(conversationId).split('_');
+          if (pp[1] === 'u') {
+            const a = parseInt(pp[2], 10);
+            const b = parseInt(pp[3], 10);
+            if (Number.isInteger(a)) io.to(`user_${a}`).emit('private:message', msg2);
+            if (Number.isInteger(b)) io.to(`user_${b}`).emit('private:message', msg2);
+          }
         } catch { /* ignore */ }
       }
       if (typeof ack === 'function') ack({ ok: true, id: mid });

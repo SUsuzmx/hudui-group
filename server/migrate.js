@@ -304,6 +304,33 @@ const migrations = [
       createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_friend_requests_to ON friend_requests(to_id, status)');
     },
   },
+  {
+    id: 8,
+    name: 'listen_rooms',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS listen_rooms (
+          id               TEXT PRIMARY KEY,
+          conversation_id  TEXT NOT NULL,
+          host_user_id     INTEGER NOT NULL,
+          playback_state   TEXT NOT NULL DEFAULT 'paused',
+          position_ms      INTEGER NOT NULL DEFAULT 0,
+          anchor_at        INTEGER NOT NULL,
+          track_json       TEXT NOT NULL DEFAULT '{}',
+          queue_json       TEXT NOT NULL DEFAULT '[]',
+          control_mode     TEXT NOT NULL DEFAULT 'host',
+          revision         INTEGER NOT NULL DEFAULT 1,
+          invite_message_id INTEGER,
+          created_at       INTEGER NOT NULL,
+          updated_at       INTEGER NOT NULL,
+          expires_at       INTEGER NOT NULL,
+          ended_at         INTEGER
+        );
+      `);
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_listen_rooms_conv ON listen_rooms(conversation_id, ended_at)');
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_listen_rooms_expires ON listen_rooms(expires_at)');
+    },
+  },
 ];
 
 export function runMigrations(db) {

@@ -9,13 +9,15 @@ export function getSocket() {
   if (!socket) {
     socket = io('/', {
       auth: { token },
-      transports: ['websocket', 'polling'],
+      // Cloudflare Tunnel 下先 polling 建立会话，再升级 websocket，减少握手被掐断
+      transports: ['polling', 'websocket'],
       upgrade: true,
+      rememberUpgrade: true,
       reconnection: true,
       reconnectionAttempts: Infinity,
-      reconnectionDelay: 400,
-      reconnectionDelayMax: 3000,
-      timeout: 8000,
+      reconnectionDelay: 500,
+      reconnectionDelayMax: 4000,
+      timeout: 12000,
       autoConnect: true,
     });
     socket.on('auth:kicked', () => {

@@ -2,12 +2,49 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import { musicPlayer, fmtAudioTime } from '../music-player.js';
 import {
+  listenTogether,
+  control as listenControl,
+} from '../listen-together.js';
+import {
   initVisualStage, ensureStageGestures, syncTrackToVisual, setVisualPreset, setFxField,
   startVisualWatch, stopVisualWatch, getVisualStageError,
   ensureDefaultPreset, ensureAudioAudible, PRESET_LIST,
 } from '../visual-stage.js';
 
-const emit = defineEmits(['close']);
+const props = defineProps({
+  /** 一起听收起态：共用本页 3D 舞台与歌词，控制走房间 */
+  roomMode: { type: Boolean, default: false },
+});
+const emit = defineEmits(['close', 'invite-listen', 'expand-panel']);
+
+function onPlayToggle() {
+  if (props.roomMode) {
+    if (!listenTogether.canControl) return;
+    listenControl(listenTogether.state.room?.playing ? 'pause' : 'play');
+    return;
+  }
+  musicPlayer.togglePlay();
+}
+function onPrev() {
+  if (props.roomMode) {
+    if (!listenTogether.canControl) return;
+    listenControl('previous');
+    return;
+  }
+  musicPlayer.prevTrack();
+}
+function onNext() {
+  if (props.roomMode) {
+    if (!listenTogether.canControl) return;
+    listenControl('next');
+    return;
+  }
+  musicPlayer.nextTrack();
+}
+function onChromeBack() {
+  if (props.roomMode) emit('expand-panel');
+  else emit('close');
+}
 const showQueue = ref(false);
 const showFx = ref(false);
 const stageReady = ref(false);
@@ -21,7 +58,7 @@ const currentLine = ref('');
 const seeking = ref(false);
 const seekPct = ref(0);
 
-const current = computed(() => musicPlayer.state.current);
+const current = computed(() => musicPlayer.state.current || { title: '', artist: '', cover: '', duration: 0, source: '' });
 const playing = computed(() => musicPlayer.state.playing);
 const progress = computed(() => musicPlayer.state.progress);
 const duration = computed(() => musicPlayer.state.duration);
@@ -38,7 +75,13 @@ const displayPct = computed(() => {
 function onSeekInput(e) { seeking.value = true; seekPct.value = Number(e.target.value); }
 function onSeekDone(e) {
   const d = duration.value || 0;
-  if (d) musicPlayer.seek((Number(e.target.value) / 100) * d);
+  const sec = (Number(e.target.value) / 100) * d;
+  if (props.roomMode) {
+    if (listenTogether.canControl) listenControl('seek', { positionMs: Math.round(sec * 1000) });
+    seeking.value = false;
+    return;
+  }
+  if (d) musicPlayer.seek(sec);
   seeking.value = false;
 }
 function playFromQueue(t) { showQueue.value = false; musicPlayer.playTrack(t); }
@@ -80,7 +123,7 @@ async function bootStage() {
     ensureStageGestures();
     stageReady.value = true;
     presetId.value = ensureDefaultPreset();
-    if (current.value) syncTrackToVisual(current.value);
+    if (current.value?.id) syncTrackToVisual(current.value);
     startVisualWatch();
     lyricTimer = setInterval(pollCurrentLyric, 200);
     pollCurrentLyric();
@@ -90,14 +133,14 @@ async function bootStage() {
     stageError.value = (e && e.message) || getVisualStageError() || '视觉引擎加载失败';
   }
 }
-watch(current, (t) => { if (t) syncTrackToVisual(t); });
+watch(current, (t) => { if (t?.id) syncTrackToVisual(t); });
 watch(playing, (p) => { window.playing = p; if (p) ensureAudioAudible(); });
 onMounted(() => { musicPlayer.ensureAudio(); bootStage(); });
 onBeforeUnmount(() => { stopVisualWatch(); if (lyricTimer) clearInterval(lyricTimer); });
 </script>
 
 <template>
-  <div v-if="current" class="player-stage">
+  <div v-if="current || roomMode" class="player-stage">
     <div class="visual-stage-root" aria-hidden="true">
       <div id="custom-bg"><video id="custom-bg-video" muted loop playsinline></video></div>
       <div id="wallpaper-engine-layer">
@@ -121,8 +164,13 @@ onBeforeUnmount(() => { stopVisualWatch(); if (lyricTimer) clearInterval(lyricTi
     </div>
 
     <header class="top-chrome">
-      <button type="button" class="chrome-btn" @click="emit('close')" title="返回">‹</button>
-      <div class="top-title">{{ current.title }}</div>
+      <button type="button" class="chrome-btn" @click="onChromeBack()" :title="roomMode ? '展开控制台' : '返回'">
+        {{ roomMode ? '☰' : '‹' }}
+      </button>
+      <div class="top-title">
+        <span v-if="roomMode">一起听 · {{ current?.title || '舞台' }}</span>
+        <span v-else>{{ current?.title || '一起听' }}</span>
+      </div>
       <div class="top-spacer"></div>
     </header>
 
@@ -193,25 +241,30 @@ onBeforeUnmount(() => { stopVisualWatch(); if (lyricTimer) clearInterval(lyricTi
       <div class="controls">
         <div class="control-cluster actions">
           <div class="control-track">
-            <div class="control-cover" :class="{ 'cover-empty': !current.cover }">
-              <img v-if="current.cover" :src="current.cover" alt="" />
+            <div class="control-cover" :class="{ 'cover-empty': !current?.cover }">
+              <img v-if="current?.cover" :src="current.cover" alt="" />
             </div>
             <div class="control-meta">
-              <div class="control-title">{{ current.title }}</div>
-              <div class="control-artist">{{ current.artist }} · {{ sourceLabel }}</div>
+              <div class="control-title">{{ current?.title || '未在播放' }}</div>
+              <div class="control-artist">{{ current?.artist || '' }} · {{ sourceLabel }}</div>
             </div>
           </div>
         </div>
         <div class="control-cluster transport">
-          <button type="button" class="ctrl-btn" title="上一首" @click="musicPlayer.prevTrack()">
+          <button type="button" class="ctrl-btn" title="上一首" @click="onPrev()">
             <svg width="18" height="18" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
           </button>
-          <button type="button" id="play-btn" class="ctrl-btn play-btn" :class="{ playing }" title="播放/暂停" @click="musicPlayer.togglePlay()">
+          <button type="button" id="play-btn" class="ctrl-btn play-btn" :class="{ playing }" title="播放/暂停" @click="onPlayToggle()">
             <svg v-if="!playing" width="22" height="22" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
             <svg v-else width="22" height="22" fill="currentColor" viewBox="0 0 24 24"><path d="M7 5h3v14H7zm7 0h3v14h-3z"/></svg>
           </button>
-          <button type="button" class="ctrl-btn" title="下一首" @click="musicPlayer.nextTrack()">
+          <button type="button" class="ctrl-btn" title="下一首" @click="onNext()">
             <svg width="18" height="18" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          </button>
+          <button v-if="!roomMode" type="button" class="ctrl-btn" title="邀请一起听" @click="emit('invite-listen')">
+            <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <circle cx="9" cy="8" r="3"/><path d="M3 19c0-3 3-5 6-5s6 2 6 5"/><path d="M18 8v6M15 11h6"/>
+            </svg>
           </button>
           <button type="button" class="ctrl-btn" :class="{ active: showQueue }" title="当前队列" @click="showQueue = !showQueue">
             <svg width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -221,7 +274,7 @@ onBeforeUnmount(() => { stopVisualWatch(); if (lyricTimer) clearInterval(lyricTi
           </button>
         </div>
         <div class="control-cluster modes">
-          <div class="time-display">{{ fmtAudioTime(progress) }} / {{ fmtAudioTime(duration || current.duration) }}</div>
+          <div class="time-display">{{ fmtAudioTime(progress) }} / {{ fmtAudioTime(duration || current?.duration || 0) }}</div>
         </div>
       </div>
     </div>

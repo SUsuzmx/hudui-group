@@ -11,6 +11,7 @@
 
 ### 近期功能要点
 
+- **一起听**：群聊/私聊实时同听；聊天「+」面板或听一听「邀请好友一起听」创建房间并发送邀请卡片；服务器权威同步播放/暂停/切歌/进度；主持权限与「全员控制」；队列、歌词、表情互动、迷你状态条；详见下方「一起听」
 - **听一听音源**：网易云 + QQ 音乐 + **酷狗**；Cookie 服务端持久化；播放地址探测与 restriction 引导；酷狗音频同源代理防盗链；详见 [docs/MUSIC-VISUAL.md](docs/MUSIC-VISUAL.md)
 - **Perry 歌单**：入口卡随音源切换标题；「我喜欢 / 自建收藏」可下钻曲目并播放；底部播放台进度条渐变填充
 - **视觉舞台**：粒子/预设/手势/3D 歌词；默认预设「丝绸/封面粒子」
@@ -41,6 +42,35 @@
 | GET | `/api/kugou/audio?u=` | 酷狗音频代理（**免鉴权**，仅 kugou CDN） |
 | GET | `/api/music/list?source=` | 听一听：`qq` / `netease` / `kugou` |
 
+### 一起听（Listen Together）
+
+实时同听房间，**不新开一级入口**，挂在聊天与听一听内。配色为薄荷绿/淡青控制台；收起后显示 SongDetail 同款 3D 舞台与歌词。
+
+| 项 | 说明 |
+|----|------|
+| **入口** | 聊天「+」→「一起听」（绑定当前群/私聊）；听一听 →「邀请一起听」（可选会话） |
+| **点歌流程** | 进入控制台后搜索 →「点歌」→ 创建房间**立即播放**，并发邀请卡片 |
+| **邀请卡片** | 发到**开房时绑定的会话**（群/私聊）；文案 `某某 正在听《歌名》` +「进去听听」；结束显示「本次一起听已结束」 |
+| **私聊** | 仅会话双方可加入；AI 私聊不提供入口且拒绝开房 |
+| **控制台 UI** | 封面两侧斜置头像 + 耳机线；QQ/酷狗/网易云 Tab + 搜索点歌；「•••」看已点歌曲 |
+| **收起/展开** | 底部「收起，看 3D 舞台」→ SongDetail 舞台+3D 歌词；展开时不露出 3D |
+| **权限** | 创建者=主持；默认仅主持可控；可开「所有人都可以控制」；成员可加歌 |
+| **主持转移** | 主持主动退出立即移交最早在线成员；意外离线约 45s 后移交 |
+| **同步** | 服务器权威状态 + `commandId`/`revision` 防重；按服务器时间推算进度；进房立刻跟播 |
+| **播放核心** | 复用 `music-player.js` 同一 `<audio>`；一起听与单曲「听一听」隔离（房间中不显示歌曲悬浮条） |
+| **安全** | 校验会话成员；只接受网易云/QQ/酷狗曲目元数据（不含 URL/Cookie）；操作限流 |
+| **生命周期** | 房间 `listen_rooms` 持久化元数据；明确退出空房立即结束；断线有短暂宽限 |
+
+```bash
+# 自动检查（需先起服务）
+PORT=3012 node server/index.js &
+BASE=http://127.0.0.1:3012 npm run test:listen
+BASE=http://127.0.0.1:3012 npm run test:private-listen
+BASE=http://127.0.0.1:3012 npm run test:invite-card
+```
+
+Socket：Cloudflare Tunnel 下 **polling 优先再升级 websocket**，减少握手被掐断。
+
 ---
 
 ## 目录结构
@@ -56,7 +86,8 @@
 │       ├── draft-sync.js    # 聊天输入草稿防抖与防覆盖
 │       ├── status-bg.js     # 状态渐变/图标/剩余时长
 │       ├── api.js           # HTTP 封装
-│       ├── music-player.js  # 听一听播放器（三音源）
+│       ├── music-player.js  # 听一听播放器（三音源，唯一 Audio）
+│       ├── listen-together.js # 一起听房间状态与同步
 │       ├── socket-store.js  # 共享 Socket.IO
 │       └── ...
 ├── client-dist/             # 构建产物（npm run build，不入库）
@@ -74,11 +105,15 @@
 │   ├── e2e-test.mjs
 │   ├── regression-all.mjs
 │   ├── smoke-security.mjs
+│   ├── test-listen-together.mjs
+│   ├── test-private-listen.mjs
 │   └── archive/             # 红包/通话/私聊支付等冒烟脚本
 ├── server/
 │   ├── index.js             # Express + Socket.IO 入口
-│   ├── db.js                # SQLite schema
-│   ├── auth.js              # 注册/登录/资料/限流
+│   ├── db.js                # SQLite 连接与预编译语句
+│   ├── migrate.js           # 版本化表结构迁移
+│   ├── listen-together.js   # 一起听房间（服务器权威）
+│   ├── auth.js              # 注册/登录/资料/限流/统一鉴权
 │   ├── chat.js              # 群/私聊消息、红包转账、通话信令
 │   ├── providers/           # 音源：netease / qq / kugou（kugou-api.cjs 完整协议）
 │   ├── groups.js            # 群种子 + 成员表

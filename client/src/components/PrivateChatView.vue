@@ -28,13 +28,21 @@ import ImagePreview from './ImagePreview.vue';
 import FilePreview from './FilePreview.vue';
 import WxPayCard from './WxPayCard.vue';
 import WxPayOverlay from './WxPayOverlay.vue';
+import ListenTogetherCard from './ListenTogetherCard.vue';
+import ListenTogetherBar from './ListenTogetherBar.vue';
+import {
+  listenTogether,
+  createRoom,
+  joinRoom,
+} from '../listen-together.js';
+import { musicPlayer } from '../music-player.js';
 
 const props = defineProps({
   me: { type: Object, required: true },
   target: { type: Object, required: true },
   pendingSearch: { type: Boolean, default: false },
 });
-const emit = defineEmits(['back', 'open-profile', 'open-chat-info', 'search-used', 'open-video-call']);
+const emit = defineEmits(['back', 'open-profile', 'open-chat-info', 'search-used', 'open-video-call', 'open-view']);
 
 const messages = ref([]);
 const draft = ref('');
@@ -528,6 +536,58 @@ async function sendImageFile(file) {
     });
   } catch (err) {
     showToast(err.message || '发送图片失败');
+  }
+}
+
+function openListenTogether() {
+  // conversationId 是字符串常量（不是 ref），不能取 .value
+  const conv = String(conversationId || '');
+  if (!conv.startsWith('pv_')) {
+    showToast('请先打开真人私聊会话');
+    return;
+  }
+  const existing = listenTogether.state.room;
+  if (existing && existing.conversationId === conv) {
+    emit('open-view', {
+      type: 'listen-together',
+      conversationId: conv,
+      conversationName: props.target?.remark || props.target?.nickname || '私聊',
+    });
+    return;
+  }
+  if (existing) {
+    showToast('请先退出当前一起听');
+    return;
+  }
+  // 先点歌，选中后再开房播放（会话绑定当前私聊）
+  emit('open-view', {
+    type: 'listen-together',
+    pickSong: true,
+    conversationId: conv,
+    hostName: props.me?.nickname || '我',
+    conversationName: props.target?.remark || props.target?.nickname || '私聊',
+  });
+}
+
+async function onJoinListenCard(m) {
+  const ext = parseExt(m) || {};
+  const roomId = ext.roomId || ext.sessionId;
+  if (ext.ended || ext.status === 'ended') {
+    showToast('本次一起听已结束');
+    return;
+  }
+  if (!roomId) {
+    showToast('这个小房间已经散场了。');
+    return;
+  }
+  if (musicPlayer.state.current) showToast('将切换为房间歌曲');
+  const res = await joinRoom(roomId, { inviteMessageId: m.id });
+  if (res?.ok) {
+    emit('open-view', {
+      type: 'listen-together',
+      conversationId,
+      conversationName: props.target?.remark || props.target?.nickname || '私聊',
+    });
   }
 }
 
@@ -1602,6 +1662,11 @@ onBeforeUnmount(() => {
       </button>
     </header>
 
+    <ListenTogetherBar
+      v-if="listenTogether.inRoom && listenTogether.state.room?.conversationId === conversationId"
+      @open-room="emit('open-view', { type: 'listen-together', conversationId, conversationName: props.target?.remark || props.target?.nickname || '私聊' })"
+    />
+
     <div v-if="showConnHint" class="conn-bar">连接已断开，正在重连…</div>
     <div v-if="notFriend && !target.isAI" class="not-friend-bar">
       <div class="nf-text">
@@ -1695,6 +1760,15 @@ onBeforeUnmount(() => {
               </div>
               <div class="loc-name">{{ m.ext?.name || m.content || '位置' }}</div>
             </div>
+            <ListenTogetherCard
+              v-else-if="m.mediaType === 'listentogether'"
+              class="bubble"
+              :ext="parseExt(m)"
+              :is-mine="isMine(m)"
+              :member-count="parseExt(m).memberCount || 1"
+              :status="parseExt(m).ended ? 'ended' : ''"
+              @join="onJoinListenCard(m)"
+            />
             <WxPayCard
               v-else-if="payKindOf(m)"
               class="bubble"
@@ -1814,6 +1888,7 @@ onBeforeUnmount(() => {
           <button class="plus-item" type="button" @click="openCreatePay('redpacket')"><span class="plus-icon">🧧</span><span>红包</span></button>
           <button class="plus-item" type="button" @click="openCreatePay('transfer')"><span class="plus-icon">💰</span><span>转账</span></button>
           <button class="plus-item" type="button" @click="sendMyCard"><span class="plus-icon">📇</span><span>个人名片</span></button>
+          <button v-if="!target?.isAI" class="plus-item" type="button" @click="openListenTogether"><span class="plus-icon">🎧</span><span>一起听</span></button>
           <button class="plus-item" type="button" @click="openFavPicker"><span class="plus-icon">⭐</span><span>收藏</span></button>
           <button class="plus-item" type="button" @click="pickChatFile"><span class="plus-icon">📄</span><span>文件</span></button>
           <button class="plus-item" type="button" @click="openLocPick"><span class="plus-icon">📍</span><span>位置</span></button>

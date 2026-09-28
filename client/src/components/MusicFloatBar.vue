@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount } from 'vue';
+import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
 import { musicPlayer, fmtAudioTime } from '../music-player.js';
 import { toast } from '../toast.js';
 
@@ -7,6 +7,9 @@ const props = defineProps({
   visible: { type: Boolean, default: false },
 });
 const emit = defineEmits(['open-listen']);
+
+// 一起听与单曲「听一听」隔离：房间/听音模式不显示本悬浮条
+const show = computed(() => props.visible && !musicPlayer.state.listenMode && Boolean(musicPlayer.state.current));
 
 const pos = ref({ x: 0, y: 0 });
 const dragging = ref(false);
@@ -21,9 +24,17 @@ let longPressTimer = null;
 
 const LONG_PRESS_MS = 420;
 
+function elSize() {
+  const el = document.querySelector('.music-float, .float-bar, [class*=float]');
+  return {
+    w: el?.offsetWidth || 168,
+    h: el?.offsetHeight || 56,
+  };
+}
+
 function snapX(x) {
   const w = window.innerWidth || 375;
-  const size = 64;
+  const size = elSize().w;
   const pad = 8;
   const min = pad;
   const max = Math.max(min, w - size - pad);
@@ -34,10 +45,10 @@ function snapX(x) {
 function clamp(x, y) {
   const w = window.innerWidth || 375;
   const h = window.innerHeight || 667;
-  const size = 64;
+  const size = elSize();
   return {
-    x: Math.min(Math.max(8, x), Math.max(8, w - size - 8)),
-    y: Math.min(Math.max(8, y), Math.max(8, h - size - 8)),
+    x: Math.min(Math.max(8, x), Math.max(8, w - size.w - 8)),
+    y: Math.min(Math.max(8, y), Math.max(8, h - size.h - 8)),
   };
 }
 
@@ -169,7 +180,7 @@ onBeforeUnmount(() => {
 
 <template>
   <!-- 长按后：底部微红渐变手电筒 + 垃圾桶 -->
-  <div v-if="visible && musicPlayer.state.current && showTrash" class="trash-layer">
+  <div v-if="show && showTrash" class="trash-layer">
     <div class="flashlight" :class="{ hot: overTrash }">
       <div class="beam"></div>
       <div class="glow"></div>
@@ -188,7 +199,7 @@ onBeforeUnmount(() => {
   </div>
 
   <div
-    v-if="visible && musicPlayer.state.current"
+    v-if="show"
     class="music-float"
     :style="{ left: pos.x + 'px', top: pos.y + 'px' }"
     :class="{ dragging, over: overTrash && showTrash }"

@@ -1,4 +1,4 @@
-const CACHE = 'wx-shell-v11';
+const CACHE = 'wx-shell-v13';
 const SHELL = ['/manifest.json', '/icon-192.png', '/icon-512.png', '/icon.svg'];
 function isApi(p) { return p.startsWith('/api') || p.startsWith('/socket.io'); }
 function isNoCacheDoc(p) { return p === '/' || p === '/index.html' || p === '/sw.js'; }
@@ -32,14 +32,24 @@ self.addEventListener('fetch', (e) => {
   if (url.origin !== self.location.origin) return;
   if (isApi(url.pathname) || isNoCacheDoc(url.pathname)) return;
   if (isVisualStagePath(url.pathname) || isMediaPath(url.pathname)) {
+    // 网络优先，离线回退缓存（舞台/媒体体积大，不挡首屏）
     e.respondWith(fetch(req).catch(() => caches.match(req).then((h) => h || Response.error())));
     return;
   }
   if (isHashedAsset(url.pathname)) {
+    // 内容 hash 资源：缓存优先，命中后后台刷新
     e.respondWith(
       caches.open(CACHE).then(async (c) => {
         const hit = await c.match(req);
-        if (hit) return hit;
+        if (hit) {
+          fetch(req).then((res) => {
+            if (canStore(req, res)) {
+              const copy = res.clone();
+              c.put(req, copy).catch(() => {});
+            }
+          }).catch(() => {});
+          return hit;
+        }
         const res = await fetch(req);
         // 必须同步 clone，body 一旦被页面读取就不能再 clone；206 不可写入 Cache
         if (canStore(req, res)) {

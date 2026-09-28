@@ -38,6 +38,7 @@ jobs:
             sleep 1
           done
           npm run test:security
+          npm run test:listen
           kill $SERVER_PID || true
 
       - name: Music provider unit tests
