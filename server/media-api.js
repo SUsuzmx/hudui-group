@@ -313,7 +313,7 @@ export function createMediaApi() {
         resHash: req.query.resHash,
       });
     }
-    const meta = req.query.title ? { title: String(req.query.title), artists: String(req.query.artist || '').split(/[\/,]/).filter(Boolean), mid: req.query.mid, mediaMid: req.query.mediaMid } : null;
+    const meta = req.query.title ? { title: String(req.query.title), artists: String(req.query.artist || '').split(/[/,]/).filter(Boolean), mid: req.query.mid, mediaMid: req.query.mediaMid } : null;
     if (source === 'netease') return netease.getSongUrl({ id, level, songMeta: meta });
     return qq.getSongUrl({
       id,

@@ -1,5 +1,6 @@
 // 朋友圈 API: 发布/删除/点赞/评论(回复/删除)/可见范围
 import { stmts, db } from './db.js';
+import { requireAuth } from './auth.js';
 import { scheduleAiMomentReact, personaByDbId, personaByKey } from './moments-ai.js';
 import { aiAvatarFile } from './ai/avatars.js';
 import { isBlockedEither } from './friends.js';
@@ -121,13 +122,7 @@ function canView(moment, userId) {
   return true;
 }
 
-export function createMomentsRouter({ verifyToken, notify } = {}) {
-  function requireAuth(req, res, next) {
-    const user = verifyToken(req.get('Authorization')?.replace(/^Bearer /, ''));
-    if (!user) return res.status(401).json({ error: '未登录' });
-    req.user = user;
-    next();
-  }
+export function createMomentsRouter({ notify } = {}) {
 
   function emitMoment(payload) {
     if (typeof notify === 'function') {

@@ -1,0 +1,9 @@
+node_modules/
+client-dist/
+client/public/visual/
+games/
+data/
+prototype/
+package-lock.json
+*.min.js
+scripts/archive/

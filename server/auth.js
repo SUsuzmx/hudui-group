@@ -224,6 +224,37 @@ export function verifyToken(token) {
   };
 }
 
+/** 从 Authorization 头提取 Bearer token */
+export function extractBearerToken(req) {
+  return req.get('Authorization')?.replace(/^Bearer /, '') || null;
+}
+
+/** Express 中间件：校验登录并挂载 req.user */
+export function requireAuth(req, res, next) {
+  const user = verifyToken(extractBearerToken(req));
+  if (!user) {
+    res.status(401).json({ error: '未登录' });
+    return;
+  }
+  req.user = user;
+  next();
+}
+
+/**
+ * 过程式取用户（兼容旧 handler 写法）。
+ * 成功返回 user 并挂到 req.user；失败写 401 并返回 null。
+ */
+export function userFromRequest(req, res) {
+  if (req.user) return req.user;
+  const user = verifyToken(extractBearerToken(req));
+  if (!user) {
+    res.status(401).json({ error: '未登录' });
+    return null;
+  }
+  req.user = user;
+  return user;
+}
+
 export function updateProfile(userId, { nickname, avatar, wxid, region, signature, gender, momentsCover, status }) {
   const user = stmts.userById.get(userId);
   if (!user) return { error: '用户不存在' };

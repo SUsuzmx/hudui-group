@@ -2,6 +2,19 @@
 import { ref, nextTick, onMounted, onBeforeUnmount, computed } from 'vue';
 import { api, compressImage } from '../api.js';
 import { EMOJI_LIST, EMOJI_PACKS, loadRecentEmojis, pushRecentEmoji, renderContent } from '../chat-shared.js';
+import {
+  fmtTime as fmtTimeShared,
+  fmtDayLabel as fmtDayLabelShared,
+  parseExt as parseExtShared,
+  isMineMessage,
+  shouldShowTime as shouldShowTimeShared,
+  isSameSenderAsPrev as isSameSenderShared,
+  shouldShowDateSep as shouldShowDateSepShared,
+  avatarFromMessage,
+  voiceBarWidth,
+} from '../chat-format.js';
+import { useChatViewport } from '../composables/useChatViewport.js';
+import { useChatPreview } from '../composables/useChatPreview.js';
 import FilePreview from './FilePreview.vue';
 import {
   useVoicePlayer,
@@ -66,7 +79,13 @@ const textareaRef = ref(null);
 // 0=none 1=emoji 2=plus 3=voice
 const dockMode = ref(0);
 const showChatMore = ref(false);
-const previewSrc = ref(null);
+const {
+  previewSrc,
+  filePreview,
+  previewImages,
+  previewIndex,
+  showImagePreview,
+} = useChatPreview();
 const actionMsg = ref(null);
 const actionPressed = ref(false);
 const actionMenuEl = ref(null);
@@ -87,7 +106,7 @@ const favEmojis = (() => {
   try { return JSON.parse(localStorage.getItem('hudui_stickers') || '[]'); }
   catch { return []; }
 })();
-const filePreview = ref(null); // { name, url, sender }
+// filePreview 由 useChatPreview 提供
 
 const emojiTabs = computed(() => [
   { key: 'recent', label: '最近', icons: recentEmojis.value },
@@ -140,9 +159,9 @@ const {
   transcribingKey,
 } = useVoicePlayer();
 const hasVoiceMsgs = computed(() => messages.value.some((m) => m.mediaType === 'voice'));
-const previewImages = ref([]);
-const previewIndex = ref(0);
-const showImagePreview = ref(false);
+// previewImages 由 useChatPreview 提供
+// previewIndex 由 useChatPreview 提供
+// showImagePreview 由 useChatPreview 提供
 const groupNotice = ref('');
 const groupReadCount = ref(0);
 const groupMemberCount = ref(0);
@@ -238,80 +257,39 @@ const filteredMentions = computed(() => {
 });
 
 function avatarProps(m) {
-  if (m.senderType === 'ai') {
-    const a = aiAvatarMap.value[m.senderName];
-    return { name: m.senderName, avatar: a?.avatar ?? null, emoji: a?.emoji ?? '😊', color: '#07c160', size: 40 };
-  }
-  const av = m.avatar;
-  const isFile = av && (av.startsWith('/') || /\.(png|jpe?g|webp|gif)$/i.test(av));
-  return {
-    name: m.senderName,
-    avatar: isFile ? av : null,
-    emoji: null,
-    color: isFile ? '#4f6ef7' : (av || '#4f6ef7'),
-    size: 40,
-  };
+  return avatarFromMessage(m, aiAvatarMap.value);
 }
 
 function fmtTime(ts) {
-  const d = new Date(ts);
-  const now = new Date();
-  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  const sameDay = d.toDateString() === now.toDateString();
-  if (sameDay) return hm;
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  if (d.toDateString() === yesterday.toDateString()) return `昨天 ${hm}`;
-  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
+  return fmtTimeShared(ts);
 }
 
 function showTime(i) {
-  if (i === 0) return true;
-  const prev = messages.value[i - 1];
-  const cur = messages.value[i];
-  if (!prev?.createdAt || !cur?.createdAt) return false;
-  return cur.createdAt - prev.createdAt > 5 * 60_000;
+  return shouldShowTimeShared(messages.value, i);
 }
 
 function sameSenderAsPrev(i) {
-  if (i === 0) return false;
-  const prev = messages.value[i - 1];
-  const cur = messages.value[i];
-  if (prev.senderType === 'system' || cur.senderType === 'system') return false;
-  if (showTime(i)) return false;
-  return prev.senderName === cur.senderName && prev.senderType === cur.senderType;
+  return isSameSenderShared(messages.value, i);
 }
 
 function isMine(m) {
-  if (m?.localPending) return true;
-  return m.senderType === 'user' && m.senderName === props.me.nickname;
+  return isMineMessage(m, props.me.nickname);
 }
 
-function scrollToBottom(smooth = true) {
-  nextTick(() => {
-    const el = listEl.value;
-    if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
-  });
-}
-
-function autoSizeInput() {
-  const ta = textareaRef.value;
-  if (!ta) return;
-  ta.style.height = 'auto';
-  ta.style.height = Math.min(96, Math.max(22, ta.scrollHeight)) + 'px';
-}
+const { scrollToBottom, autoSizeInput, onScroll: onScrollViewport } = useChatViewport({
+  listEl,
+  textareaRef,
+  messages,
+  noMoreHistory,
+  loadOlder: (beforeId) => loadHistoryNow(beforeId),
+});
 
 async function loadHistory(beforeId = null) {
   return loadHistoryNow(beforeId);
 }
 
 function onScroll() {
-  const el = listEl.value;
-  if (!el) return;
-  if (el.scrollTop < 60 && !noMoreHistory.value && messages.value.length) {
-    loadHistoryNow(messages.value[0].id);
-  }
+  onScrollViewport();
 }
 
 function onDraftInput() {
@@ -867,6 +845,7 @@ function mockTranslate(text) {
     if (out.includes(k)) out = out.replace(k, v);
   }
   // 已是英文则做简单中英互换提示
+  // eslint-disable-next-line no-control-regex -- 匹配 ASCII 范围
   if (/^[\x00-\x7F\s]+$/.test(out) && out.length > 1) {
     return out; // 英文原文保留，标注方向
   }
@@ -941,27 +920,11 @@ function onVoiceBubbleClick(m) {
 }
 
 function fmtDayLabel(ts) {
-  const d = new Date(ts);
-  const now = new Date();
-  const sameDay = d.toDateString() === now.toDateString();
-  if (sameDay) return '今天';
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  if (d.toDateString() === yesterday.toDateString()) return '昨天';
-  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+  return fmtDayLabelShared(ts);
 }
 
 function showDateSep(i) {
-  if (i === 0) return true;
-  const prev = messages.value[i - 1];
-  const cur = messages.value[i];
-  if (!prev?.createdAt || !cur?.createdAt) return false;
-  // 只比日历日，避免 toDateString 分配
-  const a = new Date(prev.createdAt);
-  const b = new Date(cur.createdAt);
-  return a.getFullYear() !== b.getFullYear()
-    || a.getMonth() !== b.getMonth()
-    || a.getDate() !== b.getDate();
+  return shouldShowDateSepShared(messages.value, i);
 }
 
 async function onChatPhoto(e) {
@@ -1453,16 +1416,11 @@ function confirmTransfer() {
 }
 
 function parseExt(m) {
-  if (!m) return {};
-  if (m.ext && typeof m.ext === 'object') return m.ext;
-  if (typeof m.ext === 'string') {
-    try { return JSON.parse(m.ext) || {}; } catch { return {}; }
-  }
-  return {};
+  return parseExtShared(m);
 }
 
 function isMineMsg(m) {
-  return m?.senderType === 'user' && m?.senderName === props.me?.nickname;
+  return isMineMessage(m, props.me?.nickname);
 }
 
 const rpModal = ref({ open: false });

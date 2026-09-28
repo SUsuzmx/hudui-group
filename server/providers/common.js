@@ -194,9 +194,9 @@ export function serializeCookieObject(obj) {
 export function joinCookiePairs(map) {
   return Object.entries(map || {}).filter(([, v]) => v != null && v !== '').map(([k, v]) => `${k}=${v}`).join('; ');
 }
-export function normalizeTitle(s) { return String(s || '').toLowerCase().replace(/[\s\[\]()（）]/g, ''); }
+export function normalizeTitle(s) { return String(s || '').toLowerCase().replace(/[\s[\]()（）]/g, ''); }
 export function normalizeArtistSet(artists) {
-  return new Set((Array.isArray(artists) ? artists : String(artists || '').split(/[\/,]/)).map((a) => normalizeTitle(typeof a === 'object' ? a.name : a)).filter(Boolean));
+  return new Set((Array.isArray(artists) ? artists : String(artists || '').split(/[/,]/)).map((a) => normalizeTitle(typeof a === 'object' ? a.name : a)).filter(Boolean));
 }
 export function isSameRecording(target, cand) {
   if (!cand) return false;

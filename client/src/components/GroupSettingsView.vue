@@ -22,7 +22,7 @@ const noticeDraft = ref('');
 const savingNotice = ref(false);
 const renaming = ref(false);
 const nameDraft = ref('');
-const members = ref([]);
+const memberList = ref([]);
 const friends = ref([]);
 const aiList = ref([]);
 const picked = ref({});
@@ -55,16 +55,16 @@ async function loadAll() {
     } catch { /* ignore */ }
     try {
       const d = await api.groupMembers(gid);
-      members.value = (d.members || []).map((m) => ({
+      memberList.value = (d.members || []).map((m) => ({
         ...m,
         color: m.color || (m.isAI ? '#07c160' : '#4f6ef7'),
         avatar: m.avatar || null,
         emoji: m.emoji || (m.isAI ? '🤖' : null),
       }));
-    } catch { members.value = []; }
+    } catch { memberList.value = []; }
   }
   // 回退: socket 成员 + AI 联系人, 保证头像墙非空
-  if (!members.value.length) {
+  if (!memberList.value.length) {
     const seen = new Set();
     const list = [];
     const push = (m) => {
@@ -110,7 +110,7 @@ async function loadAll() {
         role: 'owner',
       });
     }
-    members.value = list;
+    memberList.value = list;
   }
 
   try {
@@ -354,7 +354,7 @@ async function doInvite() {
   busy.value = true;
   try {
     const d = await api.inviteGroupMembers(gid, userIds, aiNames);
-    members.value = (d.members || []).map((m) => ({ ...m, color: m.isAI ? '#07c160' : (m.color || '#4f6ef7') }));
+    memberList.value = (d.members || []).map((m) => ({ ...m, color: m.isAI ? '#07c160' : (m.color || '#4f6ef7') }));
     picked.value = {};
     showInvite.value = false;
     toast(`已邀请 ${d.added?.length || 0} 人`);
@@ -410,7 +410,7 @@ onMounted(loadAll);
         <svg viewBox="0 0 24 24" width="22" height="22"><path d="M15 4.5L7.5 12 15 19.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <div class="nav-title">
-        <span>聊天信息({{ members.length || 0 }})</span>
+        <span>聊天信息({{ memberList.length || 0 }})</span>
         <span v-if="prefs.muted" class="nav-mute">🔕</span>
       </div>
       <button class="nav-right icon-btn" type="button" aria-label="搜索">

@@ -2,7 +2,7 @@
 import { ref, onMounted, computed } from 'vue';
 import { api } from '../api.js';
 import { toast } from '../toast.js';
-import { loadFriendExtras, isStarFriend, setStarFriend } from '../profile-extras.js';
+import { loadFriendExtras, saveFriendExtras, isStarFriend, setStarFriend } from '../profile-extras.js';
 
 const props = defineProps({
   user: { type: Object, required: true },

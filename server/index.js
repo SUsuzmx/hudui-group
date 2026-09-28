@@ -5,7 +5,7 @@ import http from 'node:http';
 import express from 'express';
 import { Server } from 'socket.io';
 import { ROOT, stmts, db } from './db.js';
-import { register, login, verifyToken, publicUser, listAvatars, updateProfile, IMG_DIR, loginRateLimited, registerRateLimited, publicProfile, parseUserStatus, changePassword, keepOnlyCurrentSession } from './auth.js';
+import { register, login, verifyToken, publicUser, listAvatars, updateProfile, IMG_DIR, loginRateLimited, registerRateLimited, publicProfile, parseUserStatus, changePassword, keepOnlyCurrentSession, requireAuth, userFromRequest, extractBearerToken } from './auth.js';
 import { initChat } from './chat.js';
 import { createEngine } from './ai/engine.js';
 import { isAiEnabled } from './ai/provider.js';
@@ -25,6 +25,16 @@ import { getBalance, listTx, debit } from './wallet.js';
 import { expirePendingPayments, RP_COVERS, redPacketPayload } from './rp.js';
 
 const LOG_FILE = path.join(ROOT, 'data', 'app.log');
+const LOG_MAX_BYTES = 5 * 1024 * 1024;
+function rotateLogIfNeeded(file, maxBytes = LOG_MAX_BYTES) {
+  try {
+    const st = fs.statSync(file);
+    if (st.size < maxBytes) return;
+    const bak = `${file}.1`;
+    try { fs.rmSync(bak, { force: true }); } catch { /* ignore */ }
+    fs.renameSync(file, bak);
+  } catch { /* 文件不存在时忽略 */ }
+}
 let logQueue = [];
 let logFlushing = false;
 function flushLog() {
@@ -32,6 +42,7 @@ function flushLog() {
   logFlushing = true;
   const chunk = logQueue.join('');
   logQueue = [];
+  rotateLogIfNeeded(LOG_FILE);
   fs.promises.appendFile(LOG_FILE, chunk)
     .catch(() => {})
     .finally(() => {
@@ -66,14 +77,7 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: '8mb' }));
 
-function requireUser(req, res) {
-  const user = verifyToken(req.get('Authorization')?.replace(/^Bearer /, ''));
-  if (!user) {
-    res.status(401).json({ error: '未登录' });
-    return null;
-  }
-  return user;
-}
+const requireUser = userFromRequest;
 
 // 聊天媒体上传: 优先 multipart / 原始二进制, 兼容旧 base64 JSON
 app.post('/api/chat/upload', express.raw({ type: () => true, limit: '9mb' }), (req, res) => {
@@ -335,8 +339,8 @@ app.get('/api/users/resolve', (req, res) => {
 
 // 聊天记录搜索 (仅本人可见范围: 群 + 本人私聊)
 app.get('/api/chat/search', (req, res) => {
-  const user = verifyToken(req.get('Authorization')?.replace(/^Bearer /, ''));
-  if (!user) return res.status(401).json({ error: '未登录' });
+  const user = userFromRequest(req, res);
+  if (!user) return;
   const q = String(req.query.q ?? '').trim();
   const conv = String(req.query.conversationId ?? '').trim();
   if (!q || q.length > 40) return res.json({ messages: [] });
@@ -397,15 +401,15 @@ app.post('/api/login', (req, res) => {
 });
 
 app.get('/api/me', (req, res) => {
-  const session = verifyToken(req.get('Authorization')?.replace(/^Bearer /, ''));
-  if (!session) return res.status(401).json({ error: '未登录' });
+  const session = userFromRequest(req, res);
+  if (!session) return;
   const full = stmts.userById.get(session.id);
   res.json({ user: publicUser(full || { ...session, avatar_color: session.avatarColor }) });
 });
 
 app.put('/api/me', (req, res) => {
-  const user = verifyToken(req.get('Authorization')?.replace(/^Bearer /, ''));
-  if (!user) return res.status(401).json({ error: '未登录' });
+  const user = userFromRequest(req, res);
+  if (!user) return;
   const r = updateProfile(user.id, req.body ?? {});
   if (r.error) return res.status(400).json({ error: r.error });
   log(`用户更新资料: ${r.user.nickname}`);
@@ -414,8 +418,8 @@ app.put('/api/me', (req, res) => {
 
 // 修改密码（成功后返回新 token，旧会话挤下线）
 app.put('/api/password', (req, res) => {
-  const session = verifyToken(req.get('Authorization')?.replace(/^Bearer /, ''));
-  if (!session) return res.status(401).json({ error: '未登录' });
+  const session = userFromRequest(req, res);
+  if (!session) return;
   const r = changePassword(session.id, req.body?.oldPassword, req.body?.newPassword);
   if (r.error) return res.status(400).json({ error: r.error });
   kickOtherSessions(session.id, r.kickedTokens);
@@ -427,15 +431,15 @@ app.put('/api/password', (req, res) => {
 app.post('/api/auth/kick-others', (req, res) => {
   const token = req.get('Authorization')?.replace(/^Bearer /, '');
   const session = verifyToken(token);
-  if (!session) return res.status(401).json({ error: '未登录' });
+  if (!session) return;
   const r = keepOnlyCurrentSession(session.id, token);
   kickOtherSessions(session.id, r.kickedTokens);
   res.json({ ok: true, kicked: r.kickedTokens.length });
 });
 
 app.get('/api/users/:id', (req, res) => {
-  const user = verifyToken(req.get('Authorization')?.replace(/^Bearer /, ''));
-  if (!user) return res.status(401).json({ error: '未登录' });
+  const user = userFromRequest(req, res);
+  if (!user) return;
   const target = stmts.userById.get(Number(req.params.id));
   if (!target) return res.status(404).json({ error: '用户不存在' });
   const fr = stmts.getFriend.get(user.id, target.id);
@@ -479,7 +483,6 @@ app.get('/api/users/:id', (req, res) => {
       friendSince: fr?.created_at || null,
       tags,
       commonGroupCount,
-      status: target.signature || '',
     },
   });
 });
@@ -521,28 +524,27 @@ function kickOtherSessions(userId, kickedTokens) {
 }
 
 const metaApi = createMetaRouter({
-  verifyToken,
   notify: (userId, payload) => {
     ioRef?.to(`user_${userId}`).emit('chat:sync', payload);
   },
 });
-const friendsApi = createFriendsRouter({ verifyToken });
-app.get('/api/friends', friendsApi.requireAuth, friendsApi.list);
-app.post('/api/friends', friendsApi.requireAuth, friendsApi.add);
-app.delete('/api/friends/:friendId', friendsApi.requireAuth, friendsApi.remove);
-app.get('/api/friends/search', friendsApi.requireAuth, friendsApi.search);
-app.post('/api/friends/remark', friendsApi.requireAuth, friendsApi.setRemark);
-app.post('/api/friends/blacklist', friendsApi.requireAuth, friendsApi.setBlacklist);
-app.get('/api/friends/blacklist', friendsApi.requireAuth, friendsApi.blacklist);
-app.post('/api/friends/tags', friendsApi.requireAuth, friendsApi.setFriendTags);
-app.post('/api/friends/permission', friendsApi.requireAuth, friendsApi.setPermission);
-app.post('/api/chat/private-read', friendsApi.requireAuth, friendsApi.privateRead);
-app.get('/api/chat/private-peer-read', friendsApi.requireAuth, friendsApi.privatePeerRead);
-app.post('/api/chat/group-read', friendsApi.requireAuth, friendsApi.groupRead);
-app.get('/api/chat/group-peer-read', friendsApi.requireAuth, friendsApi.groupPeerRead);
-app.post('/api/friends/request', metaApi.requireAuth, metaApi.sendFriendRequest);
-app.get('/api/friends/requests', metaApi.requireAuth, metaApi.friendRequests);
-app.post('/api/friends/request/handle', metaApi.requireAuth, metaApi.handleFriendRequest);
+const friendsApi = createFriendsRouter();
+app.get('/api/friends', requireAuth, friendsApi.list);
+app.post('/api/friends', requireAuth, friendsApi.add);
+app.delete('/api/friends/:friendId', requireAuth, friendsApi.remove);
+app.get('/api/friends/search', requireAuth, friendsApi.search);
+app.post('/api/friends/remark', requireAuth, friendsApi.setRemark);
+app.post('/api/friends/blacklist', requireAuth, friendsApi.setBlacklist);
+app.get('/api/friends/blacklist', requireAuth, friendsApi.blacklist);
+app.post('/api/friends/tags', requireAuth, friendsApi.setFriendTags);
+app.post('/api/friends/permission', requireAuth, friendsApi.setPermission);
+app.post('/api/chat/private-read', requireAuth, friendsApi.privateRead);
+app.get('/api/chat/private-peer-read', requireAuth, friendsApi.privatePeerRead);
+app.post('/api/chat/group-read', requireAuth, friendsApi.groupRead);
+app.get('/api/chat/group-peer-read', requireAuth, friendsApi.groupPeerRead);
+app.post('/api/friends/request', requireAuth, metaApi.sendFriendRequest);
+app.get('/api/friends/requests', requireAuth, metaApi.friendRequests);
+app.post('/api/friends/request/handle', requireAuth, metaApi.handleFriendRequest);
 
 // 状态墙：好友状态
 app.get('/api/status/friends', (req, res) => {
@@ -592,56 +594,49 @@ app.get('/api/status/friends', (req, res) => {
 });
 
 // 会话偏好/未读/清空
-app.get('/api/chats', metaApi.requireAuth, metaApi.chats);
-app.get('/api/chat/pref', metaApi.requireAuth, metaApi.getPref);
-app.post('/api/chat/pref', metaApi.requireAuth, metaApi.upsertPref);
-app.post('/api/chat/read', metaApi.requireAuth, metaApi.markRead);
-app.post('/api/chat/unread', metaApi.requireAuth, metaApi.markUnread);
-app.post('/api/chat/clear', metaApi.requireAuth, metaApi.clearHistory);
+app.get('/api/chats', requireAuth, metaApi.chats);
+app.get('/api/chat/pref', requireAuth, metaApi.getPref);
+app.post('/api/chat/pref', requireAuth, metaApi.upsertPref);
+app.post('/api/chat/read', requireAuth, metaApi.markRead);
+app.post('/api/chat/unread', requireAuth, metaApi.markUnread);
+app.post('/api/chat/clear', requireAuth, metaApi.clearHistory);
 
 // 标签
-app.get('/api/tags', metaApi.requireAuth, metaApi.tags);
-app.post('/api/tags', metaApi.requireAuth, metaApi.createTag);
-app.post('/api/tags/delete', metaApi.requireAuth, metaApi.deleteTag);
-app.post('/api/tags/members', metaApi.requireAuth, metaApi.setTagMembers);
+app.get('/api/tags', requireAuth, metaApi.tags);
+app.post('/api/tags', requireAuth, metaApi.createTag);
+app.post('/api/tags/delete', requireAuth, metaApi.deleteTag);
+app.post('/api/tags/members', requireAuth, metaApi.setTagMembers);
 
 // 收藏
-app.get('/api/favorites', metaApi.requireAuth, metaApi.favorites);
-app.post('/api/favorites', metaApi.requireAuth, metaApi.addFavorite);
-app.post('/api/favorites/delete', metaApi.requireAuth, metaApi.removeFavorite);
+app.get('/api/favorites', requireAuth, metaApi.favorites);
+app.post('/api/favorites', requireAuth, metaApi.addFavorite);
+app.post('/api/favorites/delete', requireAuth, metaApi.removeFavorite);
 
 // 公众号
-app.get('/api/official', metaApi.requireAuth, metaApi.official);
-app.post('/api/official/follow', metaApi.requireAuth, metaApi.followOfficial);
-app.post('/api/official/unfollow', metaApi.requireAuth, metaApi.unfollowOfficial);
+app.get('/api/official', requireAuth, metaApi.official);
+app.post('/api/official/follow', requireAuth, metaApi.followOfficial);
+app.post('/api/official/unfollow', requireAuth, metaApi.unfollowOfficial);
 
 // 朋友圈
 const momentsApi = createMomentsRouter({
-  verifyToken,
   notify: (payload) => {
     ioRef?.emit('moments:update', payload);
   },
 });
-app.get('/api/moments', momentsApi.requireAuth, momentsApi.list);
-app.get('/api/moments/mine', momentsApi.requireAuth, momentsApi.mine);
-app.get('/api/moments/user/:userId', momentsApi.requireAuth, momentsApi.userMoments);
+app.get('/api/moments', requireAuth, momentsApi.list);
+app.get('/api/moments/mine', requireAuth, momentsApi.mine);
+app.get('/api/moments/user/:userId', requireAuth, momentsApi.userMoments);
 
 // 发现页媒体: 听一听 / 看一看
 const mediaApi = createMediaApi();
-function mediaAuth(req, res, next) {
-  const user = verifyToken(req.get('Authorization')?.replace(/^Bearer /, ''));
-  if (!user) return res.status(401).json({ error: '未登录' });
-  req.user = user;
-  next();
-}
-app.use('/api/netease', createMusicProviderRouter({ requireAuth: mediaAuth, provider: 'netease' }));
-app.use('/api/qq', createMusicProviderRouter({ requireAuth: mediaAuth, provider: 'qq' }));
-app.use('/api/kugou', createKugouRouter({ requireAuth: mediaAuth }));
-app.get('/api/music/list', mediaAuth, (req, res) => mediaApi.musicList(req, res));
-app.get('/api/music/stream/:source/:id', mediaAuth, (req, res) => mediaApi.musicStreamInfo(req, res));
-app.get('/api/music/proxy', mediaAuth, (req, res) => mediaApi.musicProxy(req, res));
-app.get('/api/videos/look', mediaAuth, (req, res) => mediaApi.lookFeed(req, res));
-app.get('/api/media/demo-catalog', mediaAuth, (req, res) => mediaApi.demoCatalog(req, res));
+app.use('/api/netease', createMusicProviderRouter({ requireAuth, provider: 'netease' }));
+app.use('/api/qq', createMusicProviderRouter({ requireAuth, provider: 'qq' }));
+app.use('/api/kugou', createKugouRouter({ requireAuth }));
+app.get('/api/music/list', requireAuth, (req, res) => mediaApi.musicList(req, res));
+app.get('/api/music/stream/:source/:id', requireAuth, (req, res) => mediaApi.musicStreamInfo(req, res));
+app.get('/api/music/proxy', requireAuth, (req, res) => mediaApi.musicProxy(req, res));
+app.get('/api/videos/look', requireAuth, (req, res) => mediaApi.lookFeed(req, res));
+app.get('/api/media/demo-catalog', requireAuth, (req, res) => mediaApi.demoCatalog(req, res));
 
 // 看一看 UGC：上传视频 + 发布/删除（仅本地 /media 源）
 const lookApi = createLookApi();
@@ -666,17 +661,17 @@ app.post('/api/look/upload', express.raw({ type: () => true, limit: '45mb' }), (
   if (result.error) return res.status(400).json({ error: result.error });
   res.json(result);
 });
-app.get('/api/look/posts', mediaAuth, (req, res) => lookApi.list(req, res));
-app.post('/api/look/posts', mediaAuth, (req, res) => lookApi.create(req, res));
-app.post('/api/look/posts/delete', mediaAuth, (req, res) => lookApi.remove(req, res));
-app.delete('/api/look/posts/:id', mediaAuth, (req, res) => lookApi.remove(req, res));
-app.post('/api/moments', momentsApi.requireAuth, momentsApi.create);
-app.delete('/api/moments/:id', momentsApi.requireAuth, momentsApi.remove);
-app.post('/api/moments/visibility', momentsApi.requireAuth, momentsApi.updateVisibility);
-app.post('/api/moments/like', momentsApi.requireAuth, momentsApi.like);
-app.post('/api/moments/unlike', momentsApi.requireAuth, momentsApi.unlike);
-app.post('/api/moments/comment', momentsApi.requireAuth, momentsApi.comment);
-app.post('/api/moments/comment/delete', momentsApi.requireAuth, momentsApi.deleteComment);
+app.get('/api/look/posts', requireAuth, (req, res) => lookApi.list(req, res));
+app.post('/api/look/posts', requireAuth, (req, res) => lookApi.create(req, res));
+app.post('/api/look/posts/delete', requireAuth, (req, res) => lookApi.remove(req, res));
+app.delete('/api/look/posts/:id', requireAuth, (req, res) => lookApi.remove(req, res));
+app.post('/api/moments', requireAuth, momentsApi.create);
+app.delete('/api/moments/:id', requireAuth, momentsApi.remove);
+app.post('/api/moments/visibility', requireAuth, momentsApi.updateVisibility);
+app.post('/api/moments/like', requireAuth, momentsApi.like);
+app.post('/api/moments/unlike', requireAuth, momentsApi.unlike);
+app.post('/api/moments/comment', requireAuth, momentsApi.comment);
+app.post('/api/moments/comment/delete', requireAuth, momentsApi.deleteComment);
 
 // 创建群聊
 app.post('/api/groups', (req, res) => {
@@ -715,8 +710,8 @@ app.post('/api/groups', (req, res) => {
 });
 
 app.get('/api/groups/:id', (req, res) => {
-  const user = verifyToken(req.get('Authorization')?.replace(/^Bearer /, ''));
-  if (!user) return res.status(401).json({ error: '未登录' });
+  const user = userFromRequest(req, res);
+  if (!user) return;
   const g = getGroup(req.params.id);
   if (!g) return res.status(404).json({ error: '群不存在' });
   res.json({ group: g });
@@ -794,8 +789,8 @@ app.post('/api/groups/:id/members/remove', (req, res) => {
 
 // 群公告 (在 chatApi 就绪后由下方补挂广播)
 app.post('/api/groups/:id/notice', (req, res) => {
-  const user = verifyToken(req.get('Authorization')?.replace(/^Bearer /, ''));
-  if (!user) return res.status(401).json({ error: '未登录' });
+  const user = userFromRequest(req, res);
+  if (!user) return;
   const g = getGroup(req.params.id);
   if (!g) return res.status(404).json({ error: '群不存在' });
   const notice = setGroupNotice(g.id, req.body?.notice);
@@ -808,8 +803,8 @@ app.post('/api/groups/:id/notice', (req, res) => {
 });
 
 app.post('/api/search/global', (req, res) => {
-  const user = verifyToken(req.get('Authorization')?.replace(/^Bearer /, ''));
-  if (!user) return res.status(401).json({ error: '未登录' });
+  const user = userFromRequest(req, res);
+  if (!user) return;
   const q = String(req.body?.q ?? '').trim().slice(0, 40);
   if (!q) return res.json({ contacts: [], groups: [], messages: [] });
   const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;

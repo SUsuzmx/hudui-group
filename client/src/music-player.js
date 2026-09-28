@@ -190,7 +190,7 @@ function bindMediaSessionHandlers() {
   const actions = {
     play: safe(() => { const el = ensureAudio(); if (el.paused) togglePlay(); }),
     pause: safe(() => { const el = ensureAudio(); if (!el.paused) togglePlay(); }),
-    stop: safe(() => stopAll()),
+    stop: safe(() => stopAllPlayback()),
     previoustrack: safe(() => prevTrack()),
     nexttrack: safe(() => nextTrack()),
     seekbackward: safe((d) => {
@@ -254,6 +254,15 @@ function isPlayableInfo(info) {
   return Boolean(info.url);
 }
 
+function toFetchableStreamUrl(info) {
+  if (!info) return '';
+  if (info.proxyUrl) return info.proxyUrl;
+  if (info.cdnUrl) return '/api/audio?url=' + encodeURIComponent(info.cdnUrl);
+  const url = info.url || '';
+  if (/^https?:/i.test(url)) return '/api/audio?url=' + encodeURIComponent(url);
+  return url;
+}
+
 async function resolveStreamUrl(track) {
   const key = trackKey(track);
   if (nextUrlCache.key === key && nextUrlCache.url) {
@@ -273,6 +282,25 @@ async function resolveStreamUrl(track) {
   if (info.proxyUrl) return info.proxyUrl;
   if (info.cdnUrl) return '/api/audio?url=' + encodeURIComponent(info.cdnUrl);
   return info.url;
+}
+
+/**
+ * 节拍分析等旁路取流：只请求新直链，绝不改 audio.src / 预取缓存 / 播放状态。
+ */
+export async function resolveStreamUrlForAnalysis(track) {
+  if (!track) return '';
+  if (track.type === 'local' || track.localUrl) {
+    return track.localUrl || track.url || '';
+  }
+  try {
+    const streamSource = streamSourceOf(track);
+    const extra = trackExtra(track);
+    const info = await api.musicStreamInfo(streamSource, track.id || track.hash, extra);
+    if (!isPlayableInfo(info)) return '';
+    return toFetchableStreamUrl(info);
+  } catch {
+    return '';
+  }
 }
 
 async function preloadNextUrl() {
@@ -431,12 +459,31 @@ function cyclePlayMode() {
   toast(label);
 }
 
+function stopAllPlayback() {
+  loadToken += 1;
+  suppressAudioError = true;
+  if (preloadTimer) { clearTimeout(preloadTimer); preloadTimer = 0; }
+  nextUrlCache = { key: '', url: '' };
+  try { audio?.pause(); } catch { /* ignore */ }
+  if (audio) { try { audio.removeAttribute('src'); audio.load(); } catch { /* ignore */ } }
+  state.playing = false;
+  state.current = null;
+  state.progress = 0;
+  state.duration = 0;
+  state.ready = false;
+  state.restriction = null;
+  setMediaPlaybackState('none');
+  syncMediaMetadata(null);
+  try { if ('mediaSession' in navigator) navigator.mediaSession.metadata = null; } catch { /* ignore */ }
+}
+
 export const musicPlayer = {
   state,
   ensureAudio,
   getAudioElement() { return ensureAudio(); },
   setTracks,
   playTrack,
+  resolveStreamUrlForAnalysis,
   togglePlay,
   nextTrack,
   prevTrack,
@@ -444,23 +491,7 @@ export const musicPlayer = {
   setMusicRestrictionHandler,
   setPlayMode,
   cyclePlayMode,
-  stopAll() {
-    loadToken += 1;
-    suppressAudioError = true;
-    if (preloadTimer) { clearTimeout(preloadTimer); preloadTimer = 0; }
-    nextUrlCache = { key: '', url: '' };
-    try { audio?.pause(); } catch { /* ignore */ }
-    if (audio) { try { audio.removeAttribute('src'); audio.load(); } catch { /* ignore */ } }
-    state.playing = false;
-    state.current = null;
-    state.progress = 0;
-    state.duration = 0;
-    state.ready = false;
-    state.restriction = null;
-    setMediaPlaybackState('none');
-    syncMediaMetadata(null);
-    try { if ('mediaSession' in navigator) navigator.mediaSession.metadata = null; } catch { /* ignore */ }
-  },
+  stopAll: stopAllPlayback,
 };
 
 export function fmtAudioTime(sec) {

@@ -1,6 +1,6 @@
 // 会话偏好 / 未读 / 好友申请 / 标签 / 收藏 / 公众号 API
 import { stmts } from './db.js';
-import { publicProfile } from './auth.js';
+import { publicProfile, requireAuth } from './auth.js';
 import { listGroups, groupConvId, getGroup } from './groups.js';
 import { personas } from './ai/personas.js';
 import { aiAvatarFile } from './ai/avatars.js';
@@ -73,13 +73,7 @@ function getUnread(userId, conv) {
   }
 }
 
-export function createMetaRouter({ verifyToken, notify } = {}) {
-  function requireAuth(req, res, next) {
-    const user = verifyToken(req.get('Authorization')?.replace(/^Bearer /, ''));
-    if (!user) return res.status(401).json({ error: '未登录' });
-    req.user = user;
-    next();
-  }
+export function createMetaRouter({ notify } = {}) {
 
   function mergeChatsWithMeta(userId) {
     const chats = [];

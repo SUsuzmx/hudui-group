@@ -9,6 +9,10 @@ if not exist "%NODE_EXE%" (
   )
 )
 :found
+rem 日志轮转（5MB），避免 service/boot 无限膨胀
+if exist "C:\perry\scripts\rotate-logs.mjs" (
+  "%NODE_EXE%" "C:\perry\scripts\rotate-logs.mjs" >nul 2>&1
+)
 echo [%date% %time%] watchdog start node=%NODE_EXE% >> C:\perry\data\boot.log
 :loop
 "%NODE_EXE%" server\index.js >> C:\perry\data\service.log 2>&1
