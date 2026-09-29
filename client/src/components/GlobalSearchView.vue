@@ -11,6 +11,7 @@ const emit = defineEmits(['back', 'open-chat', 'open-contact', 'open-private']);
 
 const q = ref(props.initialQuery || '');
 const loading = ref(false);
+const loadError = ref('');
 const contacts = ref([]);
 const groups = ref([]);
 const messages = ref([]);
@@ -24,9 +25,11 @@ async function runSearch() {
     groups.value = [];
     messages.value = [];
     localChats.value = [];
+    loadError.value = '';
     return;
   }
   loading.value = true;
+  loadError.value = '';
   try {
     const [data, chats] = await Promise.all([
       api.searchGlobal(key),
@@ -40,11 +43,12 @@ async function runSearch() {
       (c) => String(c.name || '').toLowerCase().includes(lower)
         || String(c.lastMessage || '').toLowerCase().includes(lower)
     ).slice(0, 10);
-  } catch {
+  } catch (e) {
     contacts.value = [];
     groups.value = [];
     messages.value = [];
     localChats.value = [];
+    loadError.value = e?.message || '搜索失败，请检查网络后重试';
   } finally {
     loading.value = false;
   }
@@ -173,6 +177,10 @@ const hasAny = () => contacts.value.length || groups.value.length || messages.va
     <main class="body scroll-y">
       <div v-if="!q.trim()" class="hint">输入关键词，搜索联系人 / 群 / 聊天内容</div>
       <div v-else-if="loading" class="hint">搜索中…</div>
+      <div v-else-if="loadError" class="hint error-hint">
+        <div>{{ loadError }}</div>
+        <button type="button" class="retry-btn" @click="runSearch">重试</button>
+      </div>
       <div v-else-if="!hasAny()" class="hint">无结果</div>
 
       <section v-if="contacts.length" class="sec">
@@ -245,6 +253,15 @@ const hasAny = () => contacts.value.length || groups.value.length || messages.va
 .cancel { border: 0; background: transparent; color: var(--green); font-size: 14px; padding: 8px 4px; }
 .body { flex: 1; min-height: 0; }
 .hint { padding: 40px 16px; text-align: center; color: var(--text-3); font-size: 13px; }
+.error-hint { color: var(--text-2); display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.retry-btn {
+  border: 0;
+  border-radius: 999px;
+  padding: 8px 18px;
+  background: var(--green, #07c160);
+  color: #fff;
+  font-size: 13px;
+}
 .sec { margin-bottom: 8px; background: var(--white); }
 .cat { padding: 8px 12px 4px; font-size: 12px; color: var(--text-2); }
 .item {

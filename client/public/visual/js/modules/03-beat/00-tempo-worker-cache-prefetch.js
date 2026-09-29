@@ -239,7 +239,15 @@ function scheduleBeatAnalysis(songId, audioUrl, token, song) {
       }
       analysisAttempts++;
       beatAnalysisStartedAt = performance.now();
-      analyzeAudioBeats(audioUrl, null, token, {
+      // 析前再刷一次直链（旁路，不改播放 audio）；失败仍用旧址，由 fetch 内重试兜底
+      var analysisUrl = audioUrl;
+      try {
+        if (song && typeof window.__beatRefreshAudioUrl === 'function') {
+          var refreshed = await window.__beatRefreshAudioUrl(song);
+          if (refreshed) analysisUrl = refreshed;
+        }
+      } catch (e) { /* keep audioUrl */ }
+      analyzeAudioBeats(analysisUrl, null, token, {
         skipMusicTempo: beatAnalysisConfig.skipMusicTempoWhilePlaying && !audio.paused,
         background: true,
         song: song || null
@@ -379,6 +387,13 @@ function normalizeBeatPrefetchState(state) {
 
 async function fetchBeatPrefetchAudioUrl(song) {
   if (!song) return null;
+  // 优先走宿主刷新（听一听：/api/music/stream），拿到的是可 fetch 的同源代理
+  try {
+    if (typeof window.__beatRefreshAudioUrl === 'function') {
+      var hostUrl = await window.__beatRefreshAudioUrl(song);
+      if (hostUrl) return hostUrl;
+    }
+  } catch (e) { /* fall through */ }
   if (typeof resolveAlbumGaplessPlaybackData === 'function') {
     var resolved = await resolveAlbumGaplessPlaybackData(song);
     if (!resolved || !resolved.url || resolved.trial) return null;

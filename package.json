@@ -17,6 +17,8 @@
     "test:listen": "node scripts/test-listen-together.mjs",
     "test:private-listen": "node scripts/test-private-listen.mjs",
     "test:invite-card": "node scripts/test-invite-card.mjs",
+    "test:tower": "node --test server/tests/tower-battle.test.mjs && node scripts/test-tower-battle.mjs",
+    "test:guess": "node --test server/tests/guess-song.test.mjs && node scripts/test-guess-song.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",

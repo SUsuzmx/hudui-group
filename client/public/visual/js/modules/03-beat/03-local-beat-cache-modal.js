@@ -338,7 +338,14 @@ async function startLocalBeatAnalysis(mode) {
       beatMapNextIdx = 0;
       resetBeatCameraSync(audio ? audio.currentTime : 0);
       var mrToken = beatMapToken;
-      map = await analyzeAudioBeats(audioUrl, audio && isFinite(audio.duration) ? audio.duration : 0, mrToken, { background: false, song: song });
+      var mrUrl = audioUrl;
+      try {
+        if (song && typeof window.__beatRefreshAudioUrl === 'function') {
+          var freshMr = await window.__beatRefreshAudioUrl(song);
+          if (freshMr) mrUrl = freshMr;
+        }
+      } catch (e) { /* keep audioUrl */ }
+      map = await analyzeAudioBeats(mrUrl, audio && isFinite(audio.duration) ? audio.duration : 0, mrToken, { background: false, song: song });
       if (localToken !== localBeatAnalysis.token || mrToken !== beatMapToken) return;
       if (!map) throw new Error('MR analysis returned empty map');
     }

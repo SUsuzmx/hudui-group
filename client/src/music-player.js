@@ -86,6 +86,52 @@ function pickNextIndex(fromIdx, { previous = false, auto = false } = {}) {
   return (cur + (previous ? -1 : 1) + n) % n;
 }
 
+/** 移动端：在用户手势里解锁 audio，否则后续 play() 会被系统拒掉 */
+function unlockAudio() {
+  try {
+    if (window.audioCtx && window.audioCtx.state === 'suspended') {
+      window.audioCtx.resume().catch(() => {});
+    }
+  } catch { /* ignore */ }
+  const el = ensureAudio();
+  if (!el || !el.paused) return;
+  // 该出声就直接起播；不该出声则 play+pause 仅作解锁
+  try {
+    const shouldKeep = Boolean(el.src) && (state.playing || (state.listenMode && state.ready && state.current));
+    const p = el.play();
+    if (p && typeof p.then === 'function') {
+      p.then(() => {
+        if (!shouldKeep) {
+          try { el.pause(); } catch { /* ignore */ }
+        }
+      }).catch(() => {});
+    }
+  } catch { /* ignore */ }
+}
+
+/** 尽量出声；失败则标记需要用户点击，不抛给「音源失败」 */
+function tryPlay({ silent = false } = {}) {
+  const el = ensureAudio();
+  if (!el || !el.src) return Promise.resolve(false);
+  suppressAudioError = true;
+  return el.play().then(() => {
+    state.playing = true;
+    setMediaPlaybackState('playing');
+    if (state.listenMode) state.playing = true;
+    setTimeout(() => { suppressAudioError = false; }, 300);
+    return true;
+  }).catch((err) => {
+    suppressAudioError = false;
+    const name = String(err?.name || '');
+    const blocked = name === 'NotAllowedError' || name === 'AbortError';
+    if (state.listenMode || silent || blocked) {
+      state.playing = false;
+      try { onListenPlayFail?.(); } catch { /* ignore */ }
+    }
+    return false;
+  });
+}
+
 function ensureAudio() {
   if (audio) return audio;
   audio = new Audio();
@@ -100,7 +146,10 @@ function ensureAudio() {
   });
   audio.addEventListener('ended', () => {
     // 一起听模式由房间服务器决定下一首，避免本地连播抢跑
-    if (state.listenMode) return;
+    if (state.listenMode) {
+      notifyListenTrackEnded('ended');
+      return;
+    }
     // 息屏/后台也尽量立即切歌；one 模式重播当前
     nextTrack({ auto: true });
   });
@@ -122,6 +171,13 @@ function ensureAudio() {
     if (suppressAudioError || state.restriction?.message) return;
     const code = audio?.error?.code;
     if (code === 1) return;
+    // 一起听：交给房间 skip，不要走本地连播
+    if (state.listenMode) {
+      toast('当前音源加载失败');
+      try { onListenPlayFail?.(); } catch { /* ignore */ }
+      notifyListenTrackEnded('error');
+      return;
+    }
     // 自动连播失败时跳过，而不是卡死
     if (state.playing || state.current) {
       toast('当前音源加载失败，自动切下一首');
@@ -353,6 +409,12 @@ async function playTrack(track, opts = {}) {
   state.playing = false;
   state.ready = true;
   state.restriction = null;
+  listenEndNotifiedKey = '';
+  // 换歌装载中：旧 media 的 ended/进度不得再当作新曲状态
+  mediaTrackKey = '';
+  try {
+    if (el && !el.paused) el.pause();
+  } catch { /* ignore */ }
   syncMediaMetadata(track);
   setMediaPlaybackState('playing');
   try {
@@ -362,6 +424,7 @@ async function playTrack(track, opts = {}) {
     if (!el2 || typeof el2 !== 'object') return;
     try {
       el2.src = (/^https?:/i.test(url) ? '/api/audio?url=' + encodeURIComponent(url) : url);
+      mediaTrackKey = trackKey(track);
     } catch (srcErr) {
       console.warn('[player] set src failed', srcErr);
       return;
@@ -387,14 +450,26 @@ async function playTrack(track, opts = {}) {
       setTimeout(() => { if (token === loadToken) suppressAudioError = false; }, 500);
       return;
     }
-    await el2.play();
-    if (token === loadToken) {
-      state.playing = true;
-      autoFailStreak = 0;
-      suppressAudioError = false;
-      maybeUpdatePositionState(true);
-      if (!listenSync) schedulePreloadNext();
-      setTimeout(() => { if (token === loadToken) suppressAudioError = false; }, 500);
+    try {
+      await el2.play();
+      if (token === loadToken) {
+        state.playing = true;
+        autoFailStreak = 0;
+        suppressAudioError = false;
+        maybeUpdatePositionState(true);
+        if (!listenSync) schedulePreloadNext();
+        setTimeout(() => { if (token === loadToken) suppressAudioError = false; }, 500);
+      }
+    } catch (playErr) {
+      // 移动端自动播放被拦：不是音源问题，等用户点一下
+      const name = String(playErr?.name || '');
+      if (name === 'NotAllowedError' || name === 'AbortError' || name === 'NotSupportedError') {
+        state.playing = false;
+        suppressAudioError = false;
+        try { onListenPlayFail?.(); } catch { /* ignore */ }
+        return;
+      }
+      throw playErr;
     }
   } catch (err) {
     if (token !== loadToken) return;
@@ -435,21 +510,8 @@ function togglePlay() {
 
 /** 明确播放（一起听远程命令用，避免 toggle 语义） */
 function playPlayback() {
-  const el = ensureAudio();
-  suppressAudioError = true;
-  const p = el.play();
-  if (p?.then) {
-    p.then(() => {
-      state.playing = true;
-      setMediaPlaybackState('playing');
-      setTimeout(() => { suppressAudioError = false; }, 300);
-    }).catch(() => {
-      suppressAudioError = false;
-      if (state.listenMode) {
-        try { onListenPlayFail?.(); } catch { /* ignore */ }
-      }
-    });
-  }
+  ensureAudio();
+  return tryPlay();
 }
 
 function pausePlayback() {
@@ -467,6 +529,38 @@ function loadTrackAt(track, { startAt = 0, autoplay = true, listenSync = true } 
 let onListenPlayFail = null;
 function setListenPlayFailHandler(fn) {
   onListenPlayFail = typeof fn === 'function' ? fn : null;
+}
+
+let onListenTrackEnded = null;
+let listenEndNotifiedKey = '';
+/** 当前 audio.src 实际装载的曲目 key（loading 中为 ''，避免旧 ended 误伤新曲） */
+let mediaTrackKey = '';
+
+function setListenTrackEndedHandler(fn) {
+  onListenTrackEnded = typeof fn === 'function' ? fn : null;
+}
+
+/** audio 是否已装载「指定曲目」（未指定则看 state.current） */
+function isMediaLoadedFor(track) {
+  if (!mediaTrackKey) return false;
+  return mediaTrackKey === trackKey(track || state.current);
+}
+
+/** 一起听曲终上报（去重；看门狗/sync 必须确认 media 就是当前曲） */
+function notifyListenTrackEnded(reason = 'ended') {
+  if (!state.listenMode) return;
+  let key = mediaTrackKey;
+  // 取流失败还没挂上 src：按 state.current 认
+  if (!key && reason === 'error') key = trackKey(state.current);
+  if (!key) return;
+  // 看门狗/同步触发时，必须是「当前曲目」的 media 真的 ended
+  if (reason === 'watchdog' || reason === 'sync') {
+    if (!audio?.ended || !isMediaLoadedFor(state.current)) return;
+    key = trackKey(state.current);
+  }
+  if (key === listenEndNotifiedKey) return;
+  listenEndNotifiedKey = key;
+  try { onListenTrackEnded?.(reason, key); } catch { /* ignore */ }
 }
 
 function nextTrack(opts = {}) {
@@ -541,6 +635,8 @@ function stopAllPlayback() {
   state.ready = false;
   state.restriction = null;
   state.listenMode = false;
+  mediaTrackKey = '';
+  listenEndNotifiedKey = '';
   setMediaPlaybackState('none');
   syncMediaMetadata(null);
   try { if ('mediaSession' in navigator) navigator.mediaSession.metadata = null; } catch { /* ignore */ }
@@ -571,6 +667,11 @@ export const musicPlayer = {
   seek,
   setMusicRestrictionHandler,
   setListenPlayFailHandler,
+  setListenTrackEndedHandler,
+  notifyListenTrackEnded,
+  isMediaLoadedFor,
+  unlockAudio,
+  tryPlay,
   setPlayMode,
   cyclePlayMode,
   setListenMode,
@@ -580,4 +681,12 @@ export const musicPlayer = {
 export function fmtAudioTime(sec) {
   const s = Math.max(0, Math.floor(sec || 0));
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
+
+// 移动端首次手势解锁音频（捕获阶段，早于业务 click）
+if (typeof document !== 'undefined') {
+  const onUserGesture = () => { unlockAudio(); };
+  document.addEventListener('touchend', onUserGesture, { capture: true, passive: true });
+  document.addEventListener('pointerdown', onUserGesture, { capture: true, passive: true });
+  document.addEventListener('click', onUserGesture, { capture: true, passive: true });
 }

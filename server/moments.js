@@ -4,6 +4,13 @@ import { requireAuth } from './auth.js';
 import { scheduleAiMomentReact, personaByDbId, personaByKey } from './moments-ai.js';
 import { aiAvatarFile } from './ai/avatars.js';
 import { isBlockedEither } from './friends.js';
+import {
+  areFriends,
+  authorHidesFrom,
+  viewerHidesThem,
+  strangerCanSeeAuthorMoments,
+  withinMomentsRange,
+} from './privacy.js';
 
 function parseImages(raw) {
   try {
@@ -97,29 +104,31 @@ function rowToMoment(r, viewerId = null) {
 
 function canView(moment, userId) {
   const vis = moment.visibility || 'public';
-  if (moment.user_id === userId) return true;
-  if (isBlockedEither(moment.user_id, userId)) return false;
+  const authorId = moment.user_id;
+  if (authorId === userId) return true;
+  if (isBlockedEither(authorId, userId)) return false;
+  // 「不让他看我 / 仅聊天」以及隐私设置里的屏蔽名单
+  if (authorHidesFrom(authorId, userId)) return false;
+  if (viewerHidesThem(userId, authorId)) return false;
   // 不给谁看
   if (vis === 'except') {
     const blocked = parseVisibleTo(moment.visible_to);
     if (blocked.includes(userId)) return false;
-    // 其余按公开处理
-    return true;
   }
-  if (vis === 'public') return true;
   if (vis === 'private') return false;
-  // friends / partial
-  if (vis === 'friends') {
-    try {
-      return Boolean(stmts.getFriend.get(userId, moment.user_id) || stmts.getFriend.get(moment.user_id, userId));
-    } catch {
-      return false;
-    }
-  }
   if (vis === 'partial') {
     return parseVisibleTo(moment.visible_to).includes(userId);
   }
-  return true;
+  const isFriend = areFriends(authorId, userId);
+  // friends / except / public：好友受可见天数约束
+  if (isFriend) {
+    return withinMomentsRange(authorId, moment.created_at);
+  }
+  // 非好友：仅当作者允许陌生人查看时，才可能看到公开/except 内容
+  if (vis === 'public' || vis === 'except') {
+    return strangerCanSeeAuthorMoments(authorId);
+  }
+  return false;
 }
 
 export function createMomentsRouter({ notify } = {}) {
@@ -169,9 +178,13 @@ export function createMomentsRouter({ notify } = {}) {
           user: baseUser,
         });
       }
-      // 好友或公开动态均可进入主页；非好友仅能看到公开内容
+      // 好友或公开动态均可进入主页；非好友仅能看到公开内容（受「允许陌生人查看十条」约束）
       const rows = stmts.listUserMoments.all(uid, 50) || [];
-      const visible = rows.filter((r) => canView(r, req.user.id));
+      let visible = rows.filter((r) => canView(r, req.user.id));
+      if (!areFriends(uid, req.user.id)) {
+        const limit = strangerCanSeeAuthorMoments(uid) ? 10 : 0;
+        visible = visible.slice(0, limit);
+      }
       // 非好友：公开封面/状态仍可见（对齐微信「公开资料」）
       const cover = profile?.moments_cover || null;
       const sig = profile?.signature || '';

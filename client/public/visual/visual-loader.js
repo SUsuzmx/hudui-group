@@ -15,8 +15,9 @@
       var s = document.createElement('script');
       var done = false;
       var timer = setTimeout(function () { if (!done) { done = true; reject(new Error('script timeout: ' + src)); } }, timeoutMs || 30000);
-      // vendor 资源内容稳定，避免 Date.now() 每次绕过缓存；失败重试时再换戳
-      s.src = src + (src.indexOf('?') >= 0 ? '&' : '?') + 'v=1';
+      // vendor 内容稳定走缓存；bundle/loader 需能热更，带时间戳避免旧包
+      var isHot = /mineradio-bundle\.js|visual-loader\.js/.test(src);
+      s.src = src + (src.indexOf('?') >= 0 ? '&' : '?') + (isHot ? ('t=' + Date.now()) : 'v=1');
       s.async = false;
       s.onload = function () { if (!done) { done = true; clearTimeout(timer); resolve(src); } };
       s.onerror = function () { if (!done) { done = true; clearTimeout(timer); reject(new Error('script failed: ' + src)); } };

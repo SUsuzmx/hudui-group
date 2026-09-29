@@ -142,6 +142,15 @@ async function requestJson(targetUrl, opts, body) {
   return JSON.parse(text);
 }
 
+// 酷狗接口全局限速：避免猜歌攒曲库把歌单/播放一起打挂（20017/操作频繁）
+let kugouNextAllowedAt = 0;
+async function kugouThrottle(minGapMs = 280) {
+  const now = Date.now();
+  const wait = kugouNextAllowedAt - now;
+  kugouNextAllowedAt = Math.max(now, kugouNextAllowedAt) + minGapMs;
+  if (wait > 0) await new Promise((r) => setTimeout(r, Math.min(wait, 3000)));
+}
+
 function createKugouMid(seed) {
   const raw = String(seed || Date.now()) + Math.random();
   return crypto.createHash('md5').update(raw).digest('hex');
@@ -820,6 +829,7 @@ function buildKugouH5Params(auth, extra) {
 
 async function kugouH5GatewayRequest(path, opts) {
   opts = opts || {};
+  await kugouThrottle(opts.minGapMs || 280);
   const auth = extractKugouAuth(opts.cookie || '');
   if (!auth.playbackReady) throw new Error('KUGOU_AUTH_REQUIRED');
   const bodyObj = opts.body == null ? null : (typeof opts.body === 'string' ? JSON.parse(opts.body) : opts.body);
@@ -877,6 +887,7 @@ function buildKugouGatewayParams(auth, extra) {
 
 async function kugouGatewayRequest(path, opts) {
   opts = opts || {};
+  await kugouThrottle(opts.minGapMs || 280);
   const auth = extractKugouAuth(opts.cookie || '');
   if (!auth.playbackReady) throw new Error('KUGOU_AUTH_REQUIRED');
   const body = opts.body == null ? '' : (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body));
@@ -1749,56 +1760,88 @@ function mapKugouPlaylistTrack(item) {
   return mapped;
 }
 
+async function fetchKugouAllList(cookie, auth) {
+  const body = {
+    userid: Number(auth.userid) || 0,
+    token: auth.token,
+    total_ver: 979,
+    type: 2,
+    page: 1,
+    pagesize: 50,
+  };
+  // 优先 H5 网关；失败再试安卓网关（token/签名差异有时只过其中一个）
+  try {
+    return await kugouH5GatewayRequest('/v7/get_all_list', {
+      method: 'POST',
+      cookie,
+      router: 'cloudlist.service.kugou.com',
+      params: { plat: 1 },
+      body,
+    });
+  } catch (e1) {
+    try {
+      return await kugouGatewayRequest('/v7/get_all_list', {
+        method: 'POST',
+        cookie,
+        router: 'cloudlist.service.kugou.com',
+        params: { plat: 1 },
+        body,
+      });
+    } catch (e2) {
+      const err = e1;
+      err.altError = e2 && e2.message;
+      throw err;
+    }
+  }
+}
+
 async function handleKugouUserPlaylists(cookie) {
   const auth = extractKugouAuth(cookie);
   if (!auth.playbackReady) {
     return { provider: 'kugou', loggedIn: auth.loggedIn, playbackReady: false, playlists: [], error: 'KUGOU_AUTH_REQUIRED', message: '酷狗登录未完成，请重新网页登录' };
   }
-  try {
-    const json = await kugouH5GatewayRequest('/v7/get_all_list', {
-      method: 'POST',
-      cookie,
-      router: 'cloudlist.service.kugou.com',
-      params: { plat: 1 },
-      body: {
-        userid: Number(auth.userid),
-        token: auth.token,
-        total_ver: 979,
-        type: 2,
-        page: 1,
-        pagesize: 50,
-      },
-    });
-    const data = (json && json.data) || {};
-    const info = data.info || data;
-    const hasListShape = [data.info, data.list, info.collect, info.love, info.self, info.list].some(Array.isArray);
-    if (Number(json && json.status) !== 1 || !hasListShape) throw new Error('KUGOU_PLAYLIST_RESPONSE_INVALID');
-    const lists = extractKugouGatewayPlaylistLists(data);
-    const profile = pickKugouProfileFromLists(lists, auth);
-    if (profile.nickname || profile.avatar) kugouProfileCache.set(kugouProfileCacheKey(auth), profile, 5 * 60 * 1000);
-    const playlists = lists.map(mapKugouPlaylistItem).filter(pl => pl.id && pl.name);
-    return {
-      provider: 'kugou',
-      loggedIn: true,
-      playbackReady: true,
-      libraryReady: true,
-      userId: auth.userid,
-      nickname: auth.nickname || profile.nickname || '',
-      avatar: auth.avatar || profile.avatar || '',
-      playlists,
-    };
-  } catch (err) {
-    return {
-      provider: 'kugou',
-      loggedIn: true,
-      playbackReady: true,
-      libraryReady: false,
-      playlists: [],
-      error: err.message || 'KUGOU_PLAYLIST_FAILED',
-      upstreamCode: err.upstreamCode,
-      message: '酷狗歌单加载失败，请稍后重试',
-    };
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const json = await fetchKugouAllList(cookie, auth);
+      const data = (json && json.data) || {};
+      const info = data.info || data;
+      const hasListShape = [data.info, data.list, info.collect, info.love, info.self, info.list].some(Array.isArray);
+      if (Number(json && json.status) !== 1 || !hasListShape) throw new Error('KUGOU_PLAYLIST_RESPONSE_INVALID');
+      const lists = extractKugouGatewayPlaylistLists(data);
+      const profile = pickKugouProfileFromLists(lists, auth);
+      if (profile.nickname || profile.avatar) kugouProfileCache.set(kugouProfileCacheKey(auth), profile, 5 * 60 * 1000);
+      const playlists = lists.map(mapKugouPlaylistItem).filter(pl => pl.id && pl.name);
+      return {
+        provider: 'kugou',
+        loggedIn: true,
+        playbackReady: true,
+        libraryReady: true,
+        userId: auth.userid,
+        nickname: auth.nickname || profile.nickname || '',
+        avatar: auth.avatar || profile.avatar || '',
+        playlists,
+      };
+    } catch (err) {
+      lastErr = err;
+      const code = Number(err && err.upstreamCode) || 0;
+      if (code === 20017 || code === 20105 || /频繁|RATE|TIMEOUT/i.test(String(err && err.message))) {
+        await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+        continue;
+      }
+      break;
+    }
   }
+  return {
+    provider: 'kugou',
+    loggedIn: true,
+    playbackReady: true,
+    libraryReady: false,
+    playlists: [],
+    error: (lastErr && lastErr.message) || 'KUGOU_PLAYLIST_FAILED',
+    upstreamCode: lastErr && lastErr.upstreamCode,
+    message: '酷狗歌单加载失败，请稍后重试',
+  };
 }
 
 async function handleKugouPlaylistTracks(playlistId, cookie, opts = {}) {

@@ -1,7 +1,7 @@
 <script setup>
 // 聊天页迷你「一起听」状态条
 import { computed } from 'vue';
-import { listenTogether, control, leaveRoom } from '../listen-together.js';
+import { listenTogether, control, leaveRoom, resumePlaybackFromGesture } from '../listen-together.js';
 
 const emit = defineEmits(['open-room']);
 
@@ -14,7 +14,9 @@ const canControl = computed(() => listenTogether.canControl);
 
 function onToggle() {
   if (!canControl.value) return;
-  control(playing.value ? 'pause' : 'play');
+  const fail = Boolean(listenTogether.state.playFail);
+  if (!playing.value || fail) resumePlaybackFromGesture();
+  control(playing.value && !fail ? 'pause' : 'play');
 }
 </script>
 

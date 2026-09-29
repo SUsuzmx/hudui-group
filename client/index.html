@@ -13,13 +13,26 @@
   <link rel="apple-touch-icon" href="/icon-192.png" />
   <link rel="manifest" href="/manifest.json" />
   <title>WeChat</title>
+  <style>
+    /* 首屏骨架：JS 解析/执行期间避免白屏 */
+    html, body, #app { height: 100%; margin: 0; background: #ededed; }
+    .boot-splash {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #b2b2b2;
+      font: 14px/1.4 -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    }
+  </style>
 </head>
 <body>
-  <div id="app"></div>
+  <div id="app"><div class="boot-splash">加载中…</div></div>
   <script type="module" src="/src/main.js"></script>
   <script>
     if ('serviceWorker' in navigator) {
-      window.addEventListener('load', async () => {
+      // 空闲时注册，不抢首屏解析/网络
+      const registerSw = async () => {
         try {
           const reg = await navigator.serviceWorker.register('/sw.js');
           // 强制检查更新, 避免旧 SW 缓存导致游戏/页面打不开
@@ -28,7 +41,14 @@
             navigator.serviceWorker.ready.then((r) => r && r.update && r.update()).catch(() => {});
           }
         } catch (e) { /* ignore */ }
-      });
+      };
+      if ('requestIdleCallback' in window) {
+        window.addEventListener('load', () => {
+          window.requestIdleCallback(registerSw, { timeout: 2000 });
+        });
+      } else {
+        window.addEventListener('load', registerSw);
+      }
     }
   </script>
 </body>

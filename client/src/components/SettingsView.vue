@@ -373,12 +373,12 @@ onMounted(() => { appearance.value = getAppearance(); });
           <button class="switch" :class="{ on: privacy.addByCard }" @click="togglePrivacy('addByCard')"></button></div>
       </section>
       <section class="card">
-        <div class="row"><span class="label">朋友圈权限 · 允许陌生人查看十条</span>
-          <button class="switch" :class="{ on: privacy.strangerSee10 }" @click="togglePrivacy('strangerSee10')"></button></div>
-        <div class="row"><span class="label">朋友圈更新提醒</span>
+        <div class="row"><span class="label">允许陌生人查看我的朋友圈</span>
           <button class="switch" :class="{ on: privacy.momentsPublic }" @click="togglePrivacy('momentsPublic')"></button></div>
+        <div class="row"><span class="label">陌生人最多查看十条</span>
+          <button class="switch" :class="{ on: privacy.strangerSee10 }" @click="togglePrivacy('strangerSee10')"></button></div>
       </section>
-      <p class="hint">隐私开关已同步服务端：关闭「通过微信号搜索到我」后，扫码/搜索将无法找到你。</p>
+      <p class="hint">隐私开关已同步服务端并作用于真实展示：不让他看我、陌生人可见范围、状态仅自己可见等都会按设置过滤。关闭「通过微信号搜索到我」后，扫码/搜索将无法找到你。</p>
     </main>
 
     <main v-else-if="section === 'general'" class="content scroll-y">

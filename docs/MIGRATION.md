@@ -16,7 +16,7 @@
 | 媒体 | `data/media/`（上传图/语音/文件/视频） | 保留聊天媒体则必须 |
 | AI 配置 | `config/ai.json`（或新机用 `config/ai.example.json` + `DASHSCOPE_API_KEY`） | 要用 AI 则必须 |
 | 音乐 Cookie | 项目根 `.netease-cookie` `.qq-cookie` `.kugou-cookie`（**永不入库、永不回传前端**） | 听一听要继续用原账号则必须 |
-| 小游戏 | `games/`（第三方体积大，默认 gitignore） | 要用发现页游戏则必须 |
+| 小游戏 | `games/`（第三方体积大，默认 gitignore；**叠塔对战不需要**） | 只在要玩单人练习/第三方游戏时 |
 | 隧道 | Cloudflare Tunnel 凭证 / `cloudflared` 配置（隧道名如 `werewolf`） | 继续用域名则必须 |
 | 默认头像 | `img/amdin.png`（若被清理需补回） | 建议 |
 | 依赖 | Node.js **≥ 20**；可选 Python + openpyxl/docx/pptx/reportlab | 是 |
@@ -141,9 +141,20 @@ npm run check:ai
 
 详见 [MUSIC-VISUAL.md](./MUSIC-VISUAL.md)。
 
-### 3.4 小游戏（可选）
+### 3.4 叠塔对战与小游戏
 
-将第三方游戏放到 `games/<id>/index.html`，并在服务端 `GAME_APPS` 注册后可见 `/api/games`。
+**叠塔对战（推荐，随源码一起迁移）**
+
+- 入口：发现 → 游戏 →「叠塔对战 / 发起对战」
+- 2–6 人实时比拼，90 秒一局；邀请卡片一键加入，**无需房间码**
+- 房间状态在服务端内存：**重启 Node 会结束当前比赛**，历史邀请卡显示「邀请已经散场」
+- 个人统计写入 `data/chat.db` 的 `tower_stats`；邀请记录在 `tower_invites`
+- 本地存在 `games/tower_game` 时，游戏中心额外显示「叠塔练习」单人 iframe；不存在则只保留实时对战
+- 部署后验证：`PORT=3011 node scripts/tower-test-server.mjs`，再 `BASE=http://127.0.0.1:3011 node scripts/test-tower-battle.mjs`
+
+**第三方小游戏（可选）**
+
+将第三方游戏放到 `games/<id>/index.html`，并在服务端 `GAME_APPS` 注册后可见 `/api/games`。`games/` 默认 gitignore。
 
 ---
 
@@ -223,6 +234,7 @@ curl -I https://chat.supeiji.top/api/netease/playlists
 npm run test:smoke
 npm run test:security
 npm run check:ai
+npm run test:tower   # 需先 PORT=3011 node scripts/tower-test-server.mjs
 ```
 
 人工必点：
@@ -235,6 +247,7 @@ npm run check:ai
 - [ ] 音视频通话
 - [ ] **听一听**：搜索播放、Perry 歌单入口、「我喜欢」与自建/收藏曲目、底部播放台进度条
 - [ ] 音源 Cookie 导入后歌单可同步
+- [ ] **叠塔对战**：发起 → 邀请卡 → 点卡加入 → 准备开局 → 90 秒对局 → 结算再来一局
 - [ ] 发现页游戏（若已部署）
 - [ ] PWA / Service Worker 强刷后正常
 

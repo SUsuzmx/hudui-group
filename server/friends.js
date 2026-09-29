@@ -1,6 +1,7 @@
 // 好友关系 API: 列表/添加/删除/备注/黑名单/权限
 import { stmts } from './db.js';
-import { publicProfile, requireAuth } from './auth.js';
+import { publicProfile, requireAuth, parseUserStatus } from './auth.js';
+import { filterStatusForViewer } from './privacy.js';
 
 /** 任一方拉黑即视为双向受限（微信黑名单语义） */
 export function isBlockedEither(a, b) {
@@ -42,15 +43,19 @@ export function createFriendsRouter() {
       const rows = stmts.listFriends.all(req.user.id);
       const tagMap = tagsOfUserMap(req.user.id);
       res.json({
-        friends: rows.map((r) => ({
-          ...publicProfile(r),
+        friends: rows.map((r) => {
+          const base = publicProfile(r);
+          return {
+          ...base,
+          status: filterStatusForViewer(r.id, parseUserStatus(r.status_json), req.user.id),
           remark: r.remark || null,
           displayName: r.remark || r.nickname,
           blacklisted: Boolean(r.blacklisted),
           permission: r.permission || null,
           friendSince: r.created_at,
           tags: tagMap.get(r.id) || [],
-        })),
+          };
+        }),
       });
     },
     add(req, res) {

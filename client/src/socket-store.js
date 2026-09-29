@@ -12,7 +12,8 @@ export function getSocket() {
       // Cloudflare Tunnel 下先 polling 建立会话，再升级 websocket，减少握手被掐断
       transports: ['polling', 'websocket'],
       upgrade: true,
-      rememberUpgrade: true,
+      // 不要记住升级结果：WS 被代理掐断时始终从 polling 起步，避免整条连接失败
+      rememberUpgrade: false,
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 500,

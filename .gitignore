@@ -18,6 +18,9 @@ config/ai.local.json
 
 # logs / local artifacts
 *.log
+*.err
+lt-test-server.err
+server.pid
 img/*.png
 img/*.jpg
 img/*.jpeg

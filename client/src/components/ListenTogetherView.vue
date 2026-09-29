@@ -10,6 +10,7 @@ import {
   leaveRoom,
   syncNow,
   currentPosMs,
+  resumePlaybackFromGesture,
 } from '../listen-together.js';
 import { musicPlayer, fmtAudioTime } from '../music-player.js';
 import { api } from '../api.js';
@@ -129,7 +130,17 @@ function onTogglePlay() {
     flash('现在由主持人控制播放。');
     return;
   }
-  control(playing.value ? 'pause' : 'play');
+  // 先在用户手势里解锁/起播，再发房间命令（移动端 autoplay 需要）
+  if (!playing.value || state.playFail) {
+    resumePlaybackFromGesture();
+  }
+  control(playing.value && !state.playFail ? 'pause' : 'play');
+}
+
+function onTapResume() {
+  resumePlaybackFromGesture().then((ok) => {
+    if (ok) flash('已恢复播放');
+  });
 }
 
 function onNext() {
@@ -355,7 +366,20 @@ onBeforeUnmount(() => {
           {{ localError || state.error }}
         </div>
       </transition>
+      <transition name="lt-toast">
+        <div
+          v-if="state.playFail && room?.playing"
+          class="lt-toast lt-toast-action"
+          role="status"
+          @click="onTapResume"
+        >
+          系统拦了声音，轻触恢复播放
+        </div>
+      </transition>
 
+      <!-- 主区：手机纵向 / 平板双栏 -->
+      <div class="lt-main">
+        <div class="lt-hero">
       <!-- 专辑封面：两侧斜置头像 + 耳机线 -->
       <div class="lt-cover-zone">
         <div class="lt-cover">
@@ -427,7 +451,9 @@ onBeforeUnmount(() => {
         <button class="lt-ctrl-ghost" type="button" aria-label="下一首" :disabled="!canControl" @click="onNext">⏭</button>
         <button class="lt-ctrl-ghost" type="button" aria-label="循环" @click="onShuffleOrRepeat">↻</button>
       </div>
+        </div><!-- /.lt-hero -->
 
+        <div class="lt-body">
       <!-- 音源 Tab -->
       <div class="lt-tabs">
         <button
@@ -438,6 +464,13 @@ onBeforeUnmount(() => {
           :class="{ on: sourceTab === t.key }"
           @click="sourceTab = t.key"
         >{{ t.label }}</button>
+      </div>
+
+      <!-- 搜索框（在列表上方，手机上更好点） -->
+      <div class="lt-search">
+        <span class="lt-search-icon">⌕</span>
+        <input v-model="searchQ" type="search" placeholder="搜索歌曲，点「点歌」加入" @keyup.enter="doSearch" />
+        <button class="lt-search-go" type="button" @click="doSearch">搜索</button>
       </div>
 
       <!-- 搜索列表 -->
@@ -461,15 +494,9 @@ onBeforeUnmount(() => {
           >{{ addBusyKey === `${t.source || sourceTab}:${t.id}` ? '…' : '点歌' }}</button>
         </div>
       </div>
+        </div><!-- /.lt-body -->
+      </div><!-- /.lt-main -->
 
-      <!-- 搜索框 -->
-      <div class="lt-search">
-        <span class="lt-search-icon">⌕</span>
-        <input v-model="searchQ" type="search" placeholder="搜索歌曲" @keyup.enter="doSearch" />
-        <button class="lt-search-go" type="button" @click="doSearch">搜索</button>
-      </div>
-
-      <!-- 底部收起 -->
       <!-- 底部折叠：明显可点 -->
       <button class="lt-collapse" type="button" aria-label="收起一起听面板" @click="collapsePanel">
         <span class="lt-collapse-bar">
@@ -491,7 +518,7 @@ onBeforeUnmount(() => {
           <input type="checkbox" :checked="room?.allowAllControl" @change="setAllowAllControl($event.target.checked)" />
           <span>所有人都可以控制</span>
         </label>
-        <div v-if="!queue.length" class="lt-list-empty">下一首听什么？去下方搜索点歌吧</div>
+        <div v-if="!queue.length" class="lt-list-empty">下一首听什么？去搜索里点歌吧</div>
         <div v-for="(t, i) in queue" :key="`${t.source}:${t.id}`" class="lt-row">
           <div class="lt-row-main" @click="playQueueIndex(i)">
             <div class="lt-row-title">{{ i + 1 }}. {{ t.title }}</div>
@@ -530,6 +557,29 @@ onBeforeUnmount(() => {
   flex-direction: column;
   background: linear-gradient(165deg, #e0f7fa 0%, #b8efe0 48%, #a7f3d0 100%);
   padding-bottom: env(safe-area-inset-bottom, 0px);
+  /* 移动端地址栏：用动态视口，避免列表被裁掉 */
+  min-height: 0;
+}
+.lt-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.lt-hero {
+  flex-shrink: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.lt-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 .lt-top {
   display: flex;
@@ -574,6 +624,10 @@ onBeforeUnmount(() => {
   pointer-events: auto;
   box-shadow: 0 10px 28px rgba(15, 80, 70, 0.28);
 }
+.lt-toast-action {
+  cursor: pointer;
+  background: rgba(180, 80, 20, 0.92);
+}
 .lt-toast-enter-active,
 .lt-toast-leave-active {
   transition: opacity 0.18s ease, transform 0.18s ease;
@@ -586,9 +640,9 @@ onBeforeUnmount(() => {
 
 .lt-cover-zone {
   position: relative;
-  width: min(230px, 56vw);
-  height: min(230px, 56vw);
-  margin: 14px auto 0;
+  width: min(230px, 56vw, 32vh);
+  height: min(230px, 56vw, 32vh);
+  margin: 8px auto 0;
   flex-shrink: 0;
 }
 .lt-cover {
@@ -670,27 +724,37 @@ onBeforeUnmount(() => {
 
 .lt-song-meta {
   text-align: center;
-  margin-top: 26px;
-  padding: 0 20px;
+  margin-top: 12px;
+  padding: 0 16px;
   flex-shrink: 0;
+  width: 100%;
+  max-width: 520px;
 }
 .lt-song-title {
-  font-size: 22px;
+  font-size: clamp(17px, 4.2vw, 22px);
   font-weight: 800;
   color: #0b1f1c;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .lt-song-artist {
-  margin-top: 6px;
+  margin-top: 4px;
   font-size: 13px;
   color: #5b756f;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .lt-progress {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 18px 22px 0;
+  padding: 10px 18px 0;
   flex-shrink: 0;
+  width: 100%;
+  max-width: 560px;
 }
 .lt-time {
   width: 40px;
@@ -736,8 +800,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 18px;
-  padding: 14px 20px 10px;
+  gap: 14px;
+  padding: 10px 16px 8px;
   flex-shrink: 0;
 }
 .lt-ctrl-ghost {
@@ -751,8 +815,8 @@ onBeforeUnmount(() => {
 }
 .lt-ctrl-ghost:disabled { opacity: 0.35; }
 .lt-ctrl-play {
-  width: 64px;
-  height: 64px;
+  width: 56px;
+  height: 56px;
   border: 0;
   border-radius: 50%;
   background: linear-gradient(145deg, #22d3ee, #4fd1c5);
@@ -765,7 +829,7 @@ onBeforeUnmount(() => {
 .lt-tabs {
   display: flex;
   gap: 8px;
-  padding: 8px 16px 4px;
+  padding: 6px 12px 4px;
   flex-shrink: 0;
 }
 .lt-tab {
@@ -786,8 +850,10 @@ onBeforeUnmount(() => {
 
 .lt-list {
   flex: 1;
-  min-height: 0;
+  min-height: 140px;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   margin: 0 12px;
   border-radius: 16px 16px 0 0;
   background: rgba(255, 255, 255, 0.82);
@@ -848,8 +914,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 10px 12px 4px;
-  padding: 10px 12px;
+  margin: 6px 12px 6px;
+  padding: 8px 12px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.9);
   box-shadow: 0 4px 14px rgba(20, 120, 110, 0.1);
@@ -976,8 +1042,95 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 
+/* 矮屏（手机横屏 / 带地址栏的小窗）：压缩英雄区，保证点歌列表可见 */
+@media (max-height: 740px) {
+  .lt-top { height: 46px; }
+  .lt-cover-zone {
+    width: min(170px, 42vw, 28vh);
+    height: min(170px, 42vw, 28vh);
+    margin-top: 4px;
+  }
+  .lt-song-meta { margin-top: 8px; }
+  .lt-progress { padding-top: 6px; }
+  .lt-controls { padding: 6px 12px 4px; gap: 10px; }
+  .lt-ctrl-play { width: 48px; height: 48px; font-size: 16px; }
+  .lt-ctrl-ghost { width: 38px; height: 38px; font-size: 15px; }
+  .lt-list { min-height: 120px; }
+  .lt-collapse { padding: 4px 12px calc(6px + env(safe-area-inset-bottom, 0px)); }
+  .lt-collapse-bar { padding: 8px 14px; min-width: 140px; }
+}
+
+@media (max-height: 560px) {
+  .lt-cover-zone {
+    width: min(120px, 34vw, 22vh);
+    height: min(120px, 34vw, 22vh);
+  }
+  .lt-avatar-ph { width: 42px; height: 42px; font-size: 14px; }
+  .lt-song-title { font-size: 15px; }
+  .lt-song-artist { font-size: 11px; margin-top: 2px; }
+  .lt-song-meta { margin-top: 4px; }
+  .lt-tabs { padding: 4px 10px 2px; }
+  .lt-tab { padding: 7px 4px; font-size: 12px; }
+  .lt-list { min-height: 100px; margin: 0 8px; }
+  .lt-row { padding: 8px 6px; }
+  .lt-row-cover { width: 36px; height: 36px; border-radius: 8px; }
+  .lt-collapse { display: none; }
+}
+
+/* 小屏宽度 */
 @media (max-width: 360px) {
-  .lt-song-title { font-size: 18px; }
-  .lt-ctrl-play { width: 56px; height: 56px; }
+  .lt-song-title { font-size: 17px; }
+  .lt-ctrl-play { width: 48px; height: 48px; }
+  .lt-progress { padding-left: 12px; padding-right: 12px; }
+  .lt-time { width: 34px; font-size: 10px; }
+}
+
+/* iPad / 平板：左右双栏，点歌列表占满右列 */
+@media (min-width: 720px) and (min-height: 520px) {
+  .lt-main {
+    flex-direction: row;
+    align-items: stretch;
+    padding: 0 20px 8px;
+    gap: 18px;
+  }
+  .lt-hero {
+    flex: 0 0 42%;
+    max-width: 460px;
+    justify-content: center;
+    padding-bottom: 12px;
+  }
+  .lt-body {
+    flex: 1;
+    min-width: 0;
+    margin: 8px 0;
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.45);
+    padding: 8px 6px 0;
+  }
+  .lt-cover-zone {
+    width: min(280px, 36vw, 40vh);
+    height: min(280px, 36vw, 40vh);
+  }
+  .lt-list {
+    border-radius: 16px;
+    margin: 0 6px;
+    min-height: 200px;
+    box-shadow: 0 4px 18px rgba(20, 120, 110, 0.08);
+  }
+  .lt-song-title { font-size: 24px; }
+  .lt-ctrl-play { width: 64px; height: 64px; }
+  .lt-collapse {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: 8px;
+    z-index: 5;
+  }
+}
+
+/* 大平板横屏：列表更宽 */
+@media (min-width: 1024px) {
+  .lt-hero { flex-basis: 38%; }
+  .lt-list { min-height: 260px; }
 }
 </style>

@@ -30,6 +30,7 @@ const meta = computed(() => {
     status: { title: '设个状态', icon: '💬', empty: '未设置状态', tip: '心情/工作/活动状态，朋友24小时内可见' },
     album: { title: '相册', icon: '🖼', empty: '暂无照片', tip: '朋友圈图片会汇总到这里' },
     wallet: { title: '钱包', icon: '💰', empty: '¥ 0.00 · 演示钱包', tip: '演示环境无真实支付' },
+    'chat-only': { title: '仅聊天的朋友', icon: '💬', empty: '暂无「仅聊天」好友', tip: '在好友资料页可设置「仅聊天」权限' },
   };
   return map[props.type] || { title: '功能页', icon: '💬', empty: '建设中', tip: '' };
 });
@@ -67,6 +68,21 @@ let scanTimer = null;
 async function refresh() {
   status.value = 'loading';
   try {
+    if (props.type === 'chat-only') {
+      const d = await api.friends();
+      demoList.value = (d.friends || [])
+        .filter((f) => f.permission === 'chat')
+        .map((f) => ({
+          key: 'chat-' + f.id,
+          title: f.displayName || f.nickname,
+          sub: f.remark || f.signature || '仅聊天',
+          avatar: f.avatar,
+          avatarColor: f.avatarColor,
+          userId: f.id,
+        }));
+      status.value = 'ready';
+      return;
+    }
     if (props.type === 'newfriends') {
       const data = await api.friendRequests();
       const list = [];

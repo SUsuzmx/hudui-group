@@ -56,6 +56,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
   const suffix = Date.now().toString(36).slice(-5);
+  const cmd = (name) => `${name}-${suffix}`;
   const u1n = `lt_a_${suffix}`;
   const u2n = `lt_b_${suffix}`;
   const u3n = `lt_c_${suffix}`;
@@ -89,7 +90,9 @@ async function main() {
   ok('create room', create1.ok && (create1.room?.id || create1.room?.sessionId), create1.error || '');
   const roomId = create1.room?.id || create1.room?.sessionId;
   ok('host is creator', create1.room?.hostId === id1);
-  ok('room playing paused', create1.room?.playing === false);
+  ok('room playing on create', create1.room?.playing === true);
+  ok('create has viewerId', create1.room?.viewerId != null, `viewerId=${create1.room?.viewerId}`);
+  ok('create host can control', create1.room?.canControl === true || create1.room?.allowAllControl === true);
 
   // 同会话已有房间
   const createDup = await emitAck(s1, 'listen:create', { conversationId: 'default', track });
@@ -98,6 +101,7 @@ async function main() {
   // 2. 加入
   const join2 = await emitAck(s2, 'listen:join', { sessionId: roomId, roomId });
   ok('u2 join', join2.ok && join2.room?.members?.some((m) => m.userId === id2));
+  ok('join keeps viewerId', join2.room?.viewerId === id2, `viewerId=${join2.room?.viewerId} id2=${id2}`);
   const join3 = await emitAck(s3, 'listen:join', { sessionId: roomId, roomId });
   ok('u3 join', join3.ok);
 
@@ -132,7 +136,7 @@ async function main() {
     sessionId: roomId,
     action: 'play',
     positionMs: 12000,
-    commandId: 'cmd-play-1',
+    commandId: cmd('cmd-play-1'),
     baseRevision: create1.room?.revision || 1,
   });
   ok('host play', play.ok && (play.room?.playing === true || play.room?.playbackState === 'playing'));
@@ -143,7 +147,7 @@ async function main() {
   const playDup = await emitAck(s1, 'listen:command', {
     sessionId: roomId,
     action: 'pause',
-    commandId: 'cmd-play-1',
+    commandId: cmd('cmd-play-1'),
     baseRevision: play.room?.revision || 1,
   });
   ok('commandId dedupe', playDup.duplicate === true || playDup.ok, JSON.stringify(playDup).slice(0, 80));
@@ -156,7 +160,7 @@ async function main() {
   const pause = await emitAck(s1, 'listen:command', {
     sessionId: roomId,
     action: 'pause',
-    commandId: 'cmd-pause-1',
+    commandId: cmd('cmd-pause-1'),
     baseRevision: rejoin.room?.revision || 1,
   });
   ok('host pause', pause.ok && (pause.room?.playing === false || pause.room?.playbackState === 'paused'));
@@ -170,7 +174,7 @@ async function main() {
   const memberPlay2 = await emitAck(s2, 'listen:command', {
     sessionId: roomId,
     action: 'play',
-    commandId: 'cmd-member-play',
+    commandId: cmd('cmd-member-play'),
     baseRevision: setAll.room?.revision || 1,
   });
   ok('member play after allow', memberPlay2.ok && (memberPlay2.room?.playing === true || memberPlay2.room?.playbackState === 'playing'));
@@ -179,10 +183,50 @@ async function main() {
   const next = await emitAck(s1, 'listen:command', {
     sessionId: roomId,
     action: 'next',
-    commandId: 'cmd-next-1',
+    commandId: cmd('cmd-next-1'),
     baseRevision: memberPlay2.room?.revision || 1,
   });
   ok('next to queue', next.ok && next.room?.current?.id === 'q-1', `cur=${next.room?.current?.id}`);
+
+  // 9b. 曲终自动续播：listen:track-ended
+  await sleep(120);
+  const q2 = await emitAck(s1, 'listen:queue', {
+    sessionId: roomId,
+    action: 'add',
+    track: { id: 'q-2', source: 'qq', title: '队列歌B', artist: 'B' },
+  });
+  ok('queue add q-2', q2.ok, q2.error || '');
+  const end1 = await emitAck(s2, 'listen:track-ended', {
+    sessionId: roomId,
+    trackKey: 'qq:q-1',
+  });
+  ok('track-ended auto next', end1.ok && end1.room?.current?.id === 'q-2', `cur=${end1.room?.current?.id}`);
+  // 重复 ended（多端）不应再切
+  const endDup = await emitAck(s3, 'listen:track-ended', {
+    sessionId: roomId,
+    trackKey: 'qq:q-1',
+  });
+  ok('track-ended dedupe', endDup.ok && endDup.room?.current?.id === 'q-2', `cur=${endDup.room?.current?.id}`);
+  // 有时长曲目：key 对上就切（时长元数据不可靠，不再用 pos 卡门槛）
+  const q3 = await emitAck(s1, 'listen:queue', {
+    sessionId: roomId,
+    action: 'add',
+    track: { id: 'q-3', source: 'qq', title: '队列歌C', artist: 'C', duration: 180 },
+  });
+  ok('queue add q-3', q3.ok, q3.error || '');
+  // 先切到 q-3，再上报 ended → 队列空，应停住
+  const toQ3 = await emitAck(s1, 'listen:command', {
+    sessionId: roomId,
+    action: 'next',
+    commandId: cmd('cmd-next-q3'),
+    baseRevision: endDup.room?.revision || 1,
+  });
+  ok('next to q-3', toQ3.ok && toQ3.room?.current?.id === 'q-3', `cur=${toQ3.room?.current?.id}`);
+  const endLast = await emitAck(s1, 'listen:track-ended', {
+    sessionId: roomId,
+    trackKey: 'qq:q-3',
+  });
+  ok('track-ended empty queue pauses', endLast.ok && endLast.room?.playing === false, `playing=${endLast.room?.playing} cur=${endLast.room?.current?.id}`);
 
   // 10. 主持人退出转移
   await emitAck(s1, 'listen:leave', { sessionId: roomId, roomId });

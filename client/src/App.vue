@@ -51,6 +51,8 @@ const LookView = asyncPage(() => import('./components/LookView.vue'));
 const MusicFloatBar = asyncPage(() => import('./components/MusicFloatBar.vue'));
 const ListenTogetherView = asyncPage(() => import('./components/ListenTogetherView.vue'));
 const ListenTogetherBar = asyncPage(() => import('./components/ListenTogetherBar.vue'));
+const TowerBattleView = asyncPage(() => import('./components/TowerBattleView.vue'));
+const GuessSongView = asyncPage(() => import('./components/GuessSongView.vue'));
 import { musicPlayer } from './music-player.js';
 import { listenTogether, leaveRoom, joinRoom, createRoom } from './listen-together.js';
 
@@ -71,9 +73,15 @@ const showMusicFloat = computed(() => {
   const onListenTogether = view.value === 'sub' && subView.value?.type === 'listen-together';
   return Boolean(musicPlayer.state.current) && !onListen && !onListenTogether;
 });
+const musicFloatForceShow = ref(false);
+function onFloatDismissed() {
+  musicFloatForceShow.value = false;
+}
 
 function openListenFromFloat() {
   // 悬浮条只进单人「听一听」，不进一起听房间
+  // 进入听一顿时清除「已收起」标记，退出后悬浮窗可再次出现
+  try { localStorage.removeItem('hudui_music_float_hidden'); } catch { /* ignore */ }
   if (listenTogether.inRoom) {
     openSub({ type: 'listen-together' });
     return;
@@ -274,6 +282,35 @@ function openListenTogether() {
     return;
   }
   openSub({ type: 'listen-together' });
+}
+
+function openTowerBattle(payload = {}) {
+  openSub({
+    type: 'tower-battle',
+    autoCreate: Boolean(payload.autoCreate),
+    inviteId: payload.inviteId || '',
+  });
+}
+
+function openGuessSong(payload = {}) {
+  openSub({
+    type: 'guess-song',
+    autoCreate: Boolean(payload.autoCreate),
+    inviteId: payload.inviteId || '',
+  });
+}
+
+async function handleOpenTowerInvite(payload = {}) {
+  const inviteId = payload.inviteId;
+  if (!inviteId) return;
+  // 一律带上 inviteId 进入对战页：同房恢复 / 新房加入都由 store 处理
+  openSub({ type: 'tower-battle', inviteId, joining: true });
+}
+
+async function handleOpenGuessInvite(payload = {}) {
+  const inviteId = payload.inviteId;
+  if (!inviteId) return;
+  openSub({ type: 'guess-song', inviteId, joining: true });
 }
 
 async function handleJoinListen(payload) {
@@ -671,6 +708,8 @@ async function onChatInfoToggle({ key, value }) {
         @search-used="pendingSearch = false"
         @open-video-call="openVideoCall"
         @open-view="openSub"
+        @open-tower-invite="handleOpenTowerInvite"
+        @open-guess-invite="handleOpenGuessInvite"
       />
       <PrivateChatView
         v-else-if="view === 'private-chat'"
@@ -684,6 +723,8 @@ async function onChatInfoToggle({ key, value }) {
         @search-used="pendingSearch = false"
         @open-video-call="openVideoCall"
         @open-view="openSub"
+        @open-tower-invite="handleOpenTowerInvite"
+        @open-guess-invite="handleOpenGuessInvite"
       />
       <GroupSettingsView
         v-else-if="view === 'sub' && subView?.type === 'group-settings'"
@@ -823,6 +864,8 @@ async function onChatInfoToggle({ key, value }) {
         @back="onFeatureBack"
         @open-chat="openChatFromSearch"
         @open-private="openPrivateChat"
+        @open-tower-battle="openTowerBattle"
+        @open-guess-song="openGuessSong"
       />
       <CreateGroupView
         v-else-if="view === 'sub' && subView?.type === 'create-group'"
@@ -838,6 +881,24 @@ async function onChatInfoToggle({ key, value }) {
         :pick-song="Boolean(subView.pickSong)"
         :host-name="subView.hostName || me?.nickname || ''"
         :conversation-name="subView.conversationName || ''"
+        @back="goBack"
+        @open-chat="goBack"
+      />
+      <TowerBattleView
+        v-else-if="view === 'sub' && subView?.type === 'tower-battle'"
+        key="tower-battle"
+        :me="me"
+        :auto-create="Boolean(subView.autoCreate)"
+        :pending-invite-id="String(subView.inviteId || '')"
+        @back="goBack"
+        @open-chat="goBack"
+      />
+      <GuessSongView
+        v-else-if="view === 'sub' && subView?.type === 'guess-song'"
+        key="guess-song"
+        :me="me"
+        :auto-create="Boolean(subView.autoCreate)"
+        :pending-invite-id="String(subView.inviteId || '')"
         @back="goBack"
         @open-chat="goBack"
       />
@@ -871,10 +932,12 @@ async function onChatInfoToggle({ key, value }) {
       @hangup="hangupFromFloat"
     />
 
-    <!-- 听一听：退出页面后音乐继续，侧边悬浮窗可拖拽/播放/回到列表 -->
+    <!-- 听一听：退出页面后音乐继续，侧边悬浮窗可拖拽/收起/停止 -->
     <MusicFloatBar
       :visible="showMusicFloat"
+      :force-show="musicFloatForceShow"
       @open-listen="openListenFromFloat"
+      @float-dismissed="onFloatDismissed"
     />
   </div>
 </template>

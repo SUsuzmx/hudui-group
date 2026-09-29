@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,minimal-ui">
+  <base href="/tower-game/">
+  <title>叠塔对战</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      background: #f95240 url(/tower-game/assets/main-bg.png) center/cover;
+      font-family: "Helvetica Neue", Arial, Helvetica, sans-serif;
+      touch-action: manipulation;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    #canvas {
+      position: fixed; left: 0; top: 0; right: 0; bottom: 0;
+      margin: auto;
+    }
+  </style>
+</head>
+<body>
+<script>
+// 与 games/tower_game/index.html 相同的启动 shim，避免 getComputedStyle 报
+// "parameter 1 is not of type 'Element'"
+(function(){
+  var orig = window.getComputedStyle;
+  window.getComputedStyle = function(el, pseudo){
+    if (!el || el.nodeType !== 1) {
+      return { getPropertyValue: function(){ return ''; }, getProperty: function(){ return ''; } };
+    }
+    try {
+      if (pseudo == null || pseudo === '') return orig.call(window, el);
+      return orig.call(window, el, pseudo);
+    } catch (e) {
+      try { return orig.call(window, el); } catch (e2) {
+        return { getPropertyValue: function(){ return ''; }, getProperty: function(){ return ''; } };
+      }
+    }
+  };
+  var drawProto = CanvasRenderingContext2D.prototype;
+  var origDraw = drawProto.drawImage;
+  drawProto.drawImage = function(img){
+    try {
+      if (!img) return;
+      return origDraw.apply(this, arguments);
+    } catch (e) { /* ignore broken/missing bitmap */ }
+  };
+})();
+</script>
+<canvas id="canvas"></canvas>
+<script src="/tower-game/assets/zepto-1.1.6.min.js"></script>
+<script>
+// Zepto show/hide 补丁（与原版一致）
+(function(){
+  function safeCS(el){ try { if (!el || el.nodeType !== 1) return null; return window.getComputedStyle(el); } catch (e) { return null; } }
+  function defaultDisplay(name){
+    try {
+      var e = document.createElement(name || 'div');
+      document.body.appendChild(e);
+      var d = safeCS(e);
+      var n = d ? d.getPropertyValue('display') : '';
+      e.parentNode && e.parentNode.removeChild(e);
+      return (!n || n === 'none') ? 'block' : n;
+    } catch (e) { return 'block'; }
+  }
+  function patch($){
+    if (!$ || !$.fn) return;
+    $.fn.show = function(){
+      return this.each(function(){
+        try {
+          if (!this || this.nodeType !== 1) return;
+          if (this.style && this.style.display === 'none') this.style.display = '';
+          var cs = safeCS(this);
+          if (cs && cs.getPropertyValue('display') === 'none') {
+            this.style.display = defaultDisplay(this.nodeName);
+          }
+        } catch (e) {}
+      });
+    };
+    $.fn.hide = function(){
+      return this.each(function(){
+        try { if (this && this.style) this.style.display = 'none'; } catch (e) {}
+      });
+    };
+  }
+  if (window.Zepto) patch(window.Zepto);
+  if (window.$ && window.$.fn) patch(window.$);
+})();
+</script>
+<script src="/tower-game/dist/main.js"></script>
+<script>
+    // 同款 TowerGame：自动开局 + 向父页回报分数
+    var game = null;
+    var score = 0;
+    var successCount = 0;
+    var failedCount = 0;
+    var started = false;
+
+    function post(type, data) {
+      try {
+        parent.postMessage({ source: 'tower-practice', type: type, data: data || {} }, '*');
+      } catch (e) { /* ignore */ }
+    }
+
+    function initGame() {
+      if (game || !window.TowerGame) return;
+      var w = window.innerWidth;
+      var h = window.innerHeight;
+      var ratio = 1.5;
+      if (h / w < ratio) w = Math.ceil(h / ratio);
+      try {
+        game = TowerGame({
+          width: w,
+          height: h,
+          canvasId: 'canvas',
+          soundOn: true,
+          setGameScore: function (s) {
+            score = s;
+            post('score', { score: score, layers: successCount, failed: failedCount });
+          },
+          setGameSuccess: function (s) {
+            successCount = s;
+            post('score', { score: score, layers: successCount, failed: failedCount });
+          },
+          setGameFailed: function (f) {
+            failedCount = f;
+            post('score', { score: score, layers: successCount, failed: failedCount });
+            if (f >= 3) {
+              post('gameover', { score: score, layers: successCount, failed: failedCount });
+            }
+          }
+        });
+        game.load(function () {
+          game.init();
+          post('ready', { score: 0, layers: 0, failed: 0 });
+        }, function () {});
+      } catch (e) {
+        post('error', { message: String((e && e.message) || e) });
+      }
+    }
+
+    function startGame() {
+      if (!game) initGame();
+      if (!game || started) return;
+      started = true;
+      try {
+        game.playBgm();
+        game.start();
+        post('started', {});
+      } catch (e) {
+        post('error', { message: String((e && e.message) || e) });
+      }
+    }
+
+    window.addEventListener('message', function (ev) {
+      var msg = ev.data || {};
+      if (msg.source !== 'tower-battle') return;
+      if (msg.type === 'start') startGame();
+      if (msg.type === 'pause') {
+        try { game && game.pauseBgm && game.pauseBgm(); } catch (e) {}
+      }
+      if (msg.type === 'sound') {
+        try {
+          if (msg.on) game && game.playBgm && game.playBgm();
+          else game && game.pauseBgm && game.pauseBgm();
+        } catch (e) {}
+      }
+    });
+
+    if (document.readyState === 'complete') initGame();
+    else window.addEventListener('load', initGame);
+    setTimeout(initGame, 1200);
+</script>
+</body>
+</html>

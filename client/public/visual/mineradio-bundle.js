@@ -19309,7 +19309,15 @@ function scheduleBeatAnalysis(songId, audioUrl, token, song) {
       }
       analysisAttempts++;
       beatAnalysisStartedAt = performance.now();
-      analyzeAudioBeats(audioUrl, null, token, {
+      // 析前再刷一次直链（旁路，不改播放 audio）；失败仍用旧址，由 fetch 内重试兜底
+      var analysisUrl = audioUrl;
+      try {
+        if (song && typeof window.__beatRefreshAudioUrl === 'function') {
+          var refreshed = await window.__beatRefreshAudioUrl(song);
+          if (refreshed) analysisUrl = refreshed;
+        }
+      } catch (e) { /* keep audioUrl */ }
+      analyzeAudioBeats(analysisUrl, null, token, {
         skipMusicTempo: beatAnalysisConfig.skipMusicTempoWhilePlaying && !audio.paused,
         background: true,
         song: song || null
@@ -19449,6 +19457,13 @@ function normalizeBeatPrefetchState(state) {
 
 async function fetchBeatPrefetchAudioUrl(song) {
   if (!song) return null;
+  // 优先走宿主刷新（听一听：/api/music/stream），拿到的是可 fetch 的同源代理
+  try {
+    if (typeof window.__beatRefreshAudioUrl === 'function') {
+      var hostUrl = await window.__beatRefreshAudioUrl(song);
+      if (hostUrl) return hostUrl;
+    }
+  } catch (e) { /* fall through */ }
   if (typeof resolveAlbumGaplessPlaybackData === 'function') {
     var resolved = await resolveAlbumGaplessPlaybackData(song);
     if (!resolved || !resolved.url || resolved.trial) return null;
@@ -19538,6 +19553,66 @@ async function runQueueBeatPrefetch(fromIdx, token, seq, state) {
 
 
 /* ==== js/modules/03-beat/01-audio-beat-analysis.js ==== */
+async function fetchBeatAudioBuffer(audioUrl, song, token) {
+  var refresh = (typeof window.__beatRefreshAudioUrl === 'function')
+    ? window.__beatRefreshAudioUrl
+    : null;
+  var triedRefresh = false;
+  var url = audioUrl;
+  // 最多 3 次：首址 + 失败后刷新直链重试（不影响播放中的 audio.src）
+  for (var attempt = 0; attempt < 3; attempt++) {
+    if (token !== beatMapToken) return null;
+    if (!url) break;
+    try {
+      var resp = await fetch(url);
+      if (token !== beatMapToken) return null;
+      if (!resp.ok) {
+        console.warn('beat audio fetch', resp.status, attempt);
+        if (!triedRefresh && refresh && song) {
+          triedRefresh = true;
+          var fresh = await refresh(song).catch(function () { return ''; });
+          if (fresh && fresh !== url) {
+            url = fresh;
+            continue;
+          }
+        }
+        return null;
+      }
+      var ctype = (resp.headers.get('content-type') || '').toLowerCase();
+      if (ctype && /json|html|text\//.test(ctype)) {
+        console.warn('beat audio not media', ctype);
+        if (!triedRefresh && refresh && song) {
+          triedRefresh = true;
+          var freshCt = await refresh(song).catch(function () { return ''; });
+          if (freshCt && freshCt !== url) {
+            url = freshCt;
+            continue;
+          }
+        }
+        return null;
+      }
+      var ab = await resp.arrayBuffer();
+      if (!ab || ab.byteLength < 1024) {
+        console.warn('beat audio too small', ab && ab.byteLength);
+        return null;
+      }
+      return ab;
+    } catch (e) {
+      console.warn('beat audio fetch error', e && e.message ? e.message : e);
+      if (!triedRefresh && refresh && song) {
+        triedRefresh = true;
+        var freshErr = await refresh(song).catch(function () { return ''; });
+        if (freshErr && freshErr !== url) {
+          url = freshErr;
+          continue;
+        }
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
 async function analyzeAudioBeats(audioUrl, durationSec, token, options) {
   options = options || {};
   var analysisProfile = cinemaAnalysisProfileForSong(options.song);
@@ -19549,14 +19624,9 @@ async function analyzeAudioBeats(audioUrl, durationSec, token, options) {
     await yieldToIdle(beatAnalysisYieldMs(options, 140, 760));
     if (token !== beatMapToken) { hideBeatChip(); beatMapBusy = false; return null; }
     showBeatChip('正在分析节奏…');
-    var resp = await fetch(audioUrl);
+    var ab = await fetchBeatAudioBuffer(audioUrl, options.song || null, token);
     if (token !== beatMapToken) { hideBeatChip(); return null; }
-    if (!resp.ok) { console.warn('beat audio fetch', resp.status); hideBeatChip(); return null; }
-    var ctype = (resp.headers.get('content-type') || '').toLowerCase();
-    if (ctype && /json|html|text\//.test(ctype)) { console.warn('beat audio not media', ctype); hideBeatChip(); return null; }
-    var ab = await resp.arrayBuffer();
-    if (!ab || ab.byteLength < 1024) { console.warn('beat audio too small', ab && ab.byteLength); hideBeatChip(); return null; }
-    if (token !== beatMapToken) { hideBeatChip(); return null; }
+    if (!ab) { hideBeatChip(); return null; }
 
     // 用临时 AudioContext 解码 (我们不能复用 audioCtx 因为它可能 closed)
     var TmpCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
@@ -21463,7 +21533,14 @@ async function startLocalBeatAnalysis(mode) {
       beatMapNextIdx = 0;
       resetBeatCameraSync(audio ? audio.currentTime : 0);
       var mrToken = beatMapToken;
-      map = await analyzeAudioBeats(audioUrl, audio && isFinite(audio.duration) ? audio.duration : 0, mrToken, { background: false, song: song });
+      var mrUrl = audioUrl;
+      try {
+        if (song && typeof window.__beatRefreshAudioUrl === 'function') {
+          var freshMr = await window.__beatRefreshAudioUrl(song);
+          if (freshMr) mrUrl = freshMr;
+        }
+      } catch (e) { /* keep audioUrl */ }
+      map = await analyzeAudioBeats(mrUrl, audio && isFinite(audio.duration) ? audio.duration : 0, mrToken, { background: false, song: song });
       if (localToken !== localBeatAnalysis.token || mrToken !== beatMapToken) return;
       if (!map) throw new Error('MR analysis returned empty map');
     }

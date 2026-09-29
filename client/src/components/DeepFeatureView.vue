@@ -10,7 +10,7 @@ const props = defineProps({
   me: { type: Object, default: null },
   payload: { type: Object, default: () => ({}) },
 });
-const emit = defineEmits(['back', 'open-chat', 'open-private']);
+const emit = defineEmits(['back', 'open-chat', 'open-private', 'open-tower-battle', 'open-guess-song']);
 
 const titleMap = {
   lookDetail: '看一看',
@@ -101,9 +101,11 @@ function absGameUrl(urlOrId) {
   }
 }
 
-const games = ref([
-  { id: 'tower_game', name: '叠塔挑战', desc: '比手速 · 层层叠高楼', icon: '🏗️', url: '/games/tower_game/' },
-]);
+const games = ref([]);
+const hasTowerPractice = ref(false);
+const hasActiveTowerRoom = ref(false);
+const towerBattleReady = ref(true);
+const hasActiveGuessRoom = ref(false);
 const gameFrame = ref(null); // { url, name, status }
 const gameFrameBusy = ref(false);
 const stickerDetail = ref(props.payload.sticker || null);
@@ -173,17 +175,42 @@ async function load() {
       if (res.ok) {
         const d = await res.json();
         const list = Array.isArray(d?.games) ? d.games : [];
-        if (list.length) {
-          games.value = list.map((g) => ({
-            id: g.id,
-            name: g.nameZh || g.name || g.id,
-            desc: g.desc || g.description || '点击开始试玩',
-            icon: g.icon || '🎮',
-            url: g.url || `/games/${g.id}/`,
-          }));
-        }
+        games.value = list.map((g) => ({
+          id: g.id,
+          name: g.nameZh || g.name || g.id,
+          desc: g.desc || g.description || '点击开始试玩',
+          icon: g.icon || '🎮',
+          url: g.url || `/games/${g.id}/`,
+          available: true,
+        }));
+        hasTowerPractice.value = list.some((g) => g.id === 'tower_game');
+      } else {
+        games.value = [];
+        hasTowerPractice.value = false;
       }
-    } catch { /* keep local fallback list */ }
+    } catch {
+      games.value = [];
+      hasTowerPractice.value = false;
+    }
+    // 叠塔对战依赖 tower-game 资源；缺失时明确「暂不可用」，避免点进去才发现打不开
+    try {
+      const probe = await fetch('/tower-game/embed.html', { method: 'HEAD', cache: 'no-store' });
+      towerBattleReady.value = probe.ok;
+    } catch {
+      towerBattleReady.value = false;
+    }
+    try {
+      const mod = await import('../tower-battle-store.js');
+      hasActiveTowerRoom.value = Boolean(mod.towerBattle?.inRoom);
+    } catch {
+      hasActiveTowerRoom.value = false;
+    }
+    try {
+      const gmod = await import('../guess-song-store.js');
+      hasActiveGuessRoom.value = Boolean(gmod.guessSong?.inRoom);
+    } catch {
+      hasActiveGuessRoom.value = false;
+    }
   }
   if (props.type === 'cardDetail' && !card.value) {
     try {
@@ -427,9 +454,56 @@ async function actionLook(kind) {
 
       <!-- 游戏中心 -->
       <div v-else-if="type === 'gameHome'" class="game-page">
+        <div class="game-section-title">实时对战</div>
+        <div class="game-list">
+          <button
+            type="button"
+            class="game-row game-row-hero"
+            :disabled="!towerBattleReady"
+            @click="towerBattleReady && emit('open-tower-battle', { autoCreate: !hasActiveTowerRoom })"
+          >
+            <span class="game-icon">🗼</span>
+            <span class="game-main">
+              <span class="game-name">叠塔对战</span>
+              <span class="game-desc">{{ towerBattleReady ? '2-6人 · 90秒实时比拼' : '暂不可用 · 当前版本未带游戏本体' }}</span>
+            </span>
+            <span class="game-play">{{ !towerBattleReady ? '暂不可用' : (hasActiveTowerRoom ? '回到比赛' : '发起对战') }}</span>
+          </button>
+          <button type="button" class="game-row game-row-hero" @click="emit('open-guess-song', { autoCreate: !hasActiveGuessRoom })">
+            <span class="game-icon">🎵</span>
+            <span class="game-main">
+              <span class="game-name">猜歌抢答</span>
+              <span class="game-desc">2-8人 · 听片段抢答歌名</span>
+            </span>
+            <span class="game-play">{{ hasActiveGuessRoom ? '回到比赛' : '发起对战' }}</span>
+          </button>
+        </div>
+        <div v-if="hasTowerPractice" class="game-section-title">单人练习</div>
+        <div v-if="hasTowerPractice" class="game-list">
+          <button
+            v-for="g in games.filter((x) => x.id === 'tower_game')"
+            :key="g.id"
+            class="game-row"
+            type="button"
+            @click="openGame(g)"
+          >
+            <span class="game-icon">{{ g.icon }}</span>
+            <span class="game-main">
+              <span class="game-name">叠塔练习</span>
+              <span class="game-desc">一个人先找找手感</span>
+            </span>
+            <span class="game-play">单人练习</span>
+          </button>
+        </div>
         <div class="game-section-title">小游戏</div>
         <div class="game-list">
-          <button v-for="g in games" :key="g.id" class="game-row" type="button" @click="openGame(g)">
+          <button
+            v-for="g in games.filter((x) => x.id !== 'tower_game' && x.available !== false)"
+            :key="g.id"
+            class="game-row"
+            type="button"
+            @click="openGame(g)"
+          >
             <span class="game-icon">{{ g.icon }}</span>
             <span class="game-main">
               <span class="game-name">{{ g.name }}</span>
@@ -437,6 +511,9 @@ async function actionLook(kind) {
             </span>
             <span class="game-play">开始</span>
           </button>
+          <div v-if="!games.filter((x) => x.id !== 'tower_game' && x.available !== false).length" class="game-empty">
+            暂无其他小游戏，实时对战不受影响。
+          </div>
         </div>
       </div>
 
@@ -646,6 +723,24 @@ async function actionLook(kind) {
 .game-play {
   font-size: 13px; color: #07c160; border: 1px solid rgba(7,193,96,0.6);
   border-radius: 14px; padding: 4px 14px; flex-shrink: 0;
+}
+.game-row-hero {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.12), rgba(34, 211, 238, 0.1));
+}
+.game-row-hero .game-icon {
+  background: linear-gradient(145deg, #1b2a4a, #2d4a8a);
+}
+.game-row-hero .game-play {
+  color: #fff;
+  background: linear-gradient(135deg, #3b82f6, #22d3ee);
+  border-color: transparent;
+  font-weight: 600;
+}
+.game-empty {
+  padding: 16px;
+  font-size: 12px;
+  color: var(--text-3);
+  text-align: center;
 }
 .game-layer {
   position: fixed; inset: 0; z-index: 4000; background: #111;

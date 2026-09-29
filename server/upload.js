@@ -8,6 +8,13 @@ const MEDIA_DIR = path.join(ROOT, 'data', 'media');
 const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif']);
 const VOICE_EXT = new Set(['webm', 'ogg', 'mp3', 'wav', 'm4a', 'aac', 'x-m4a']);
 const VIDEO_EXT = new Set(['mp4', 'webm', 'mov', 'm4v']);
+// 普通附件白名单：禁止 html/js/svg/exe 等可被当网页或可执行文件的类型
+const FILE_EXT = new Set([
+  'pdf', 'txt', 'csv', 'md', 'log',
+  'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+  'zip', 'rar', '7z', 'gz', 'tar',
+  'json', 'xml', 'yaml', 'yml',
+]);
 const LIMITS = {
   image: 8 * 1024 * 1024,
   file: 8 * 1024 * 1024,
@@ -91,10 +98,11 @@ function sanitizeExt(ext, kind) {
     // 宽松：mov/m4v → mp4 容器不一定兼容，仍保留原扩展名校验失败则回 mp4
     e = 'mp4';
   }
+  if (kind === 'file' && !FILE_EXT.has(e)) return null;
   return e;
 }
 
-export function saveMediaBuffer(buf, kind, ext) {
+export function saveMediaBuffer(buf, kind, ext, ownerId = null) {
   const mediaKind = normalizeKind(kind);
   const max = LIMITS[mediaKind] || LIMITS.file;
   if (!buf || buf.length < 1 || buf.length > max) {
@@ -104,40 +112,45 @@ export function saveMediaBuffer(buf, kind, ext) {
     return { error: '图片大小不合适' };
   }
   const safeExt = sanitizeExt(ext, mediaKind);
-  if (!safeExt) return { error: '图片格式不支持' };
-  const name = `c-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${safeExt}`;
+  if (!safeExt) {
+    return { error: mediaKind === 'file' ? '该文件类型不允许上传（为安全起见禁止网页/脚本/可执行文件）' : '图片格式不支持' };
+  }
+  const uid = Number(ownerId) > 0 ? Number(ownerId) : 0;
+  const name = uid
+    ? `u${uid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${safeExt}`
+    : `c-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${safeExt}`;
   const file = path.join(MEDIA_DIR, name);
   fs.mkdirSync(MEDIA_DIR, { recursive: true });
   fs.writeFileSync(file, buf);
   return { url: `/media/${name}`, mediaType: mediaKind };
 }
 
-export function mediaFromBodyJson(body) {
+export function mediaFromBodyJson(body, ownerId = null) {
   const mediaKind = normalizeKind(body?.kind);
   const b64 = String(body?.data || '');
   if (!b64) return { error: '缺少文件数据' };
   if (mediaKind === 'image') {
     const m = b64.match(/^data:image\/(png|jpe?g|webp|gif);base64,(.+)$/i);
     if (!m) return { error: '图片格式不支持' };
-    return saveMediaBuffer(Buffer.from(m[2], 'base64'), 'image', m[1].toLowerCase().replace('jpeg', 'jpg'));
+    return saveMediaBuffer(Buffer.from(m[2], 'base64'), 'image', m[1].toLowerCase().replace('jpeg', 'jpg'), ownerId);
   }
   if (mediaKind === 'file') {
     const m = b64.match(/^data:([^;]+);base64,(.+)$/i);
     if (!m) return { error: '文件格式不支持' };
-    return saveMediaBuffer(Buffer.from(m[2], 'base64'), 'file', extFromMime(m[1], 'bin'));
+    return saveMediaBuffer(Buffer.from(m[2], 'base64'), 'file', extFromMime(m[1], 'bin'), ownerId);
   }
   if (mediaKind === 'video') {
     const m = b64.match(/^data:video\/([a-z0-9.+-]+)(?:;[^,]*)?;base64,(.+)$/i);
     if (!m) return { error: '视频格式不支持' };
-    return saveMediaBuffer(Buffer.from(m[2], 'base64'), 'video', extFromMime(`video/${m[1]}`, 'mp4'));
+    return saveMediaBuffer(Buffer.from(m[2], 'base64'), 'video', extFromMime(`video/${m[1]}`, 'mp4'), ownerId);
   }
   const m = b64.match(/^data:audio\/([a-z0-9.+-]+)(?:;[^,]*)?;base64,(.+)$/i);
   if (!m) return { error: '语音格式不支持' };
   const ext = m[1].toLowerCase().split('+')[0].replace('mpeg', 'mp3');
-  return saveMediaBuffer(Buffer.from(m[2], 'base64'), 'voice', ext);
+  return saveMediaBuffer(Buffer.from(m[2], 'base64'), 'voice', ext, ownerId);
 }
 
-export function mediaFromMultipart(buf, contentType, queryKind) {
+export function mediaFromMultipart(buf, contentType, queryKind, ownerId = null) {
   const parts = parseMultipartBuffer(buf, contentType) || [];
   const filePart = parts.find((p) => p.data?.length && (p.filename || p.name === 'file' || p.name === 'data'));
   const kindPart = parts.find((p) => p.name === 'kind')?.data?.toString('utf8').trim();
@@ -149,15 +162,15 @@ export function mediaFromMultipart(buf, contentType, queryKind) {
     const def = mediaKind === 'image' ? 'png' : mediaKind === 'voice' ? 'webm' : mediaKind === 'video' ? 'mp4' : 'bin';
     ext = extFromMime(mime, def);
   }
-  return saveMediaBuffer(filePart.data, mediaKind, ext);
+  return saveMediaBuffer(filePart.data, mediaKind, ext, ownerId);
 }
 
-export function mediaFromRaw(buf, contentType, kind, filename) {
+export function mediaFromRaw(buf, contentType, kind, filename, ownerId = null) {
   const mediaKind = normalizeKind(kind);
   let ext = path.extname(String(filename || '')).replace('.', '').toLowerCase();
   if (!ext) {
     const def = mediaKind === 'image' ? 'png' : mediaKind === 'voice' ? 'webm' : mediaKind === 'video' ? 'mp4' : 'bin';
     ext = extFromMime(contentType, def);
   }
-  return saveMediaBuffer(buf, mediaKind, ext);
+  return saveMediaBuffer(buf, mediaKind, ext, ownerId);
 }

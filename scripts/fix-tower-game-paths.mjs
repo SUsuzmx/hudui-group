@@ -1,0 +1,11 @@
+import fs from 'node:fs';
+const p = 'client/public/tower-game/index.html';
+let s = fs.readFileSync(p, 'utf8');
+s = s.replace(/<base href="[^"]*">/i, '<base href="/tower-game/">');
+s = s.replace(/\/games\/tower_game\//g, '/tower-game/');
+s = s.replace(/\.\/assets\//g, '/tower-game/assets/');
+s = s.replace(/\.\/dist\//g, '/tower-game/dist/');
+fs.writeFileSync(p, s);
+console.log('base', /href="\/tower-game\/"/.test(s));
+console.log('main', s.includes('/tower-game/dist/main.js') || s.includes('dist/main.js'));
+console.log('assets', s.includes('/tower-game/assets/'));

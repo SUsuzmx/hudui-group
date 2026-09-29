@@ -99,6 +99,28 @@ function positionMs(room) {
   return room.positionMs + (now() - room.anchorAt);
 }
 
+function trackDurationMs(room) {
+  const t = room.current;
+  if (!t) return 0;
+  return Number(t.durationMs) || (Number(t.duration) || 0) * 1000 || 0;
+}
+
+/** 队列切下一首；没有下一首则停在曲末，避免进度继续外推 */
+function advanceToNext(room) {
+  const next = room.queue.shift();
+  if (next) {
+    room.current = next;
+    room.positionMs = 0;
+    room.playbackState = 'playing';
+  } else {
+    const dur = trackDurationMs(room);
+    room.playbackState = 'paused';
+    room.positionMs = dur > 0 ? dur : Math.floor(positionMs(room));
+  }
+  room.anchorAt = now();
+  touch(room);
+}
+
 function touch(room) {
   room.updatedAt = now();
   room.revision = (room.revision || 1) + 1;
@@ -164,7 +186,8 @@ function findMember(room, userId) {
 }
 
 function memberSnapshot(room, userId) {
-  return {
+  const uid = userId == null || userId === '' ? null : Number(userId);
+  const snap = {
     sessionId: room.id,
     id: room.id,
     conversationId: room.conversationId,
@@ -188,14 +211,18 @@ function memberSnapshot(room, userId) {
       avatarColor: m.avatarColor || '#4f6ef7',
       online: m.online,
       joinedAt: m.joinedAt,
-      isHost: m.userId === room.hostId,
+      isHost: Number(m.userId) === Number(room.hostId),
     })),
     inviteMessageId: room.inviteMessageId ?? null,
-    viewerId: userId ?? null,
-    canControl: room.allowAllControl || room.hostId === Number(userId),
     serverNow: now(),
     serverTime: now(),
   };
+  // 广播快照不带 viewerId，避免覆盖各端自己的身份
+  if (uid != null && Number.isFinite(uid)) {
+    snap.viewerId = uid;
+    snap.canControl = room.allowAllControl || Number(room.hostId) === uid;
+  }
+  return snap;
 }
 
 function transferHost(room, { force = false } = {}) {
@@ -551,16 +578,8 @@ export function initListenTogether(io) {
         room.positionMs = Math.floor(pos);
         room.anchorAt = now();
       } else if (action === 'next') {
-        const next = room.queue.shift();
-        if (next) {
-          room.current = next;
-          room.positionMs = 0;
-          room.playbackState = 'playing';
-          room.anchorAt = now();
-        } else {
-          room.playbackState = 'paused';
-          room.positionMs = 0;
-        }
+        advanceToNext(room);
+        return null;
       } else if (action === 'previous') {
         room.positionMs = 0;
         room.anchorAt = now();
@@ -582,8 +601,9 @@ export function initListenTogether(io) {
     function handleCommand(payload, ack) {
       try {
         const commandId = String(payload.commandId || '');
-        if (commandId) {
-          if (cmdCache.has(commandId)) {
+        const cmdKey = commandId ? `${user.id}:${commandId}` : '';
+        if (cmdKey) {
+          if (cmdCache.has(cmdKey)) {
             const room = rooms.get(String(payload.sessionId || payload.roomId || ''));
             return ack?.({ ok: true, duplicate: true, room: room ? memberSnapshot(room, user.id) : null, serverNow: now() });
           }
@@ -600,7 +620,7 @@ export function initListenTogether(io) {
         }
         const e = applyCommand(room, payload);
         if (e) return err(ack, 'bad_command', e);
-        if (commandId) cmdCache.set(commandId, now());
+        if (cmdKey) cmdCache.set(cmdKey, now());
         broadcast(room);
         ack?.({ ok: true, room: memberSnapshot(room, user.id), serverNow: now() });
       } catch (e) {
@@ -609,6 +629,31 @@ export function initListenTogether(io) {
     }
 
     socket.on('listen:command', handleCommand);
+
+    // 客户端 audio.ended 上报：无进度外推兜底，保证队列能自动续播
+    socket.on('listen:track-ended', (payload = {}, ack) => {
+      try {
+        const r = requireMember(payload, false);
+        if (r.error) return err(ack, r.code || 'forbidden', r.error);
+        const { room } = r;
+        if (room.status !== 'active' || room.playbackState !== 'playing') {
+          return ack?.({ ok: true, room: memberSnapshot(room, user.id), serverNow: now() });
+        }
+        const reportedKey = String(payload.trackKey || payload.key || '');
+        const curKey = trackKey(room.current);
+        // 已经切过歌则忽略重复 ended（多端同时上报）
+        if (reportedKey && curKey && reportedKey !== curKey) {
+          return ack?.({ ok: true, room: memberSnapshot(room, user.id), serverNow: now() });
+        }
+        // 信任客户端 ended：曲目 key 对上就切。
+        // 时长元数据经常不准，用 pos 接近曲末做门槛会把正常曲终拒掉。
+        advanceToNext(room);
+        broadcast(room);
+        ack?.({ ok: true, room: memberSnapshot(room, user.id), serverNow: now() });
+      } catch (e) {
+        err(ack, 'server', e.message);
+      }
+    });
 
     // 兼容旧控制接口（映射到 command）
     socket.on('listen:control', (payload = {}, ack) => {
@@ -627,7 +672,6 @@ export function initListenTogether(io) {
           return err(ack, 'forbidden', '现在由主持人控制播放。');
         }
         if (op === 'add') {
-          if (!rateOk(`qa:${user.id}`, 3, QUEUE_ADD_COOLDOWN_MS * 3)) return err(ack, 'rate', '操作太频繁');
           const track = sanitizeTrack(payload.track);
           if (!track) return err(ack, 'bad_track', '这首歌暂时放不出来，换一首试试。');
           const key = trackKey(track);
@@ -635,6 +679,8 @@ export function initListenTogether(io) {
             return err(ack, 'dup', '这首歌已经在队列里了。');
           }
           if (room.queue.length >= MAX_QUEUE) return err(ack, 'full', '队列有点满啦');
+          // 限流只计成功加歌，避免无效/重复请求把配额吃光
+          if (!rateOk(`qa:${user.id}`, 5, QUEUE_ADD_COOLDOWN_MS * 5)) return err(ack, 'rate', '操作太频繁');
           room.queue.push(track);
           touch(room);
         } else if (op === 'remove') {
@@ -743,10 +789,18 @@ export function initListenTogether(io) {
     });
   });
 
-  // 定时：宽限结束、主持超时转交、过期清理
+  // 定时：曲终自动切歌、宽限结束、主持超时转交、过期清理
   const timer = setInterval(() => {
     const t = now();
     for (const room of [...rooms.values()]) {
+      // 曲终自动续播（客户端 ended 上报的兜底）
+      if (room.status === 'active' && room.playbackState === 'playing') {
+        const dur = trackDurationMs(room);
+        if (dur > 0 && positionMs(room) >= dur + 800) {
+          advanceToNext(room);
+          broadcast(room);
+        }
+      }
       // 主持意外离线超时转交
       const host = findMember(room, room.hostId);
       if (!host?.online && anyOnline(room)) {
@@ -770,7 +824,7 @@ export function initListenTogether(io) {
     // 清理命令缓存
     const cutoff = t - CMD_CACHE_MS;
     for (const [k, at] of cmdCache) if (at < cutoff) cmdCache.delete(k);
-  }, 10_000);
+  }, 2000);
   timer.unref?.();
 
   return {

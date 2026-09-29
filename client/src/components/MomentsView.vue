@@ -18,6 +18,7 @@ const emit = defineEmits(['back', 'updated', 'open-user-moments']);
 
 const moments = ref([]);
 const loading = ref(false);
+const loadError = ref('');
 const noMore = ref(false);
 const refreshing = ref(false);
 const pullY = ref(0);
@@ -73,6 +74,7 @@ async function refreshFeed() {
   refreshing.value = true;
   pullY.value = 40;
   loading.value = true;
+  loadError.value = '';
   try {
     let data;
     if (isUserMode.value) {
@@ -92,6 +94,7 @@ async function refreshFeed() {
     toast('已刷新');
   } catch (e) {
     console.warn(e);
+    loadError.value = e?.message || '加载失败，请重试';
   } finally {
     loading.value = false;
     refreshing.value = false;
@@ -376,6 +379,7 @@ function fmtTime(ts) {
 async function load(reset = false) {
   if (loading.value) return;
   loading.value = true;
+  loadError.value = '';
   try {
     if (isUserMode.value) {
       const uid = Number(props.user?.userId ?? props.user?.id);
@@ -408,6 +412,7 @@ async function load(reset = false) {
     }
   } catch (e) {
     console.error(e);
+    loadError.value = e?.message || '加载失败，请重试';
   } finally {
     loading.value = false;
   }
@@ -979,7 +984,11 @@ onBeforeUnmount(() => {
           <input ref="coverInput" type="file" accept="image/*" class="cover-file-input" tabindex="-1" @change="onCoverPick" />
         </div>
 
-        <div v-if="moments.length === 0 && !loading" class="empty">{{ isUserMode ? '对方还没有可见的动态' : '还没有动态, 发一条吧' }}</div>
+        <div v-if="loadError && !moments.length" class="empty error-empty">
+          <div>{{ loadError }}</div>
+          <button type="button" class="retry-btn" @click="isUserMode ? load(true) : refreshFeed()">重试</button>
+        </div>
+        <div v-else-if="moments.length === 0 && !loading" class="empty">{{ isUserMode ? '对方还没有可见的动态' : '还没有动态, 发一条吧' }}</div>
 
       <article
         v-for="m in moments"
@@ -1740,6 +1749,21 @@ onBeforeUnmount(() => {
   color: #b2b2b2;
   font-size: 14px;
   padding: 48px 0;
+}
+.empty.error-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-2);
+}
+.empty.error-empty .retry-btn {
+  border: 0;
+  border-radius: 999px;
+  padding: 8px 18px;
+  background: var(--green, #07c160);
+  color: #fff;
+  font-size: 13px;
 }
 
 .moments-cover {

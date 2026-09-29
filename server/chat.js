@@ -38,7 +38,7 @@ const rowToMsg = (r) => {
   };
 };
 
-export const MEDIA_TYPES = new Set(['image', 'voice', 'video', 'card', 'file', 'redpacket', 'transfer', 'location', 'merge', 'jielong', 'groupcollect', 'listentogether']);
+export const MEDIA_TYPES = new Set(['image', 'voice', 'video', 'card', 'file', 'redpacket', 'transfer', 'location', 'merge', 'jielong', 'groupcollect', 'listentogether', 'tower_invite', 'guess_invite']);
 // 与 scripts/e2e-test.mjs 对齐: 60s 窗口内超过该条数则拒绝
 export const MSG_RATE = { limit: 20, windowMs: 60_000 };
 
@@ -359,6 +359,8 @@ export function initChat(io, { config, engine }) {
         : mediaType === 'jielong' ? `接龙\n${String(ext?.title || content || '').slice(0, 80)}`
         : mediaType === 'groupcollect' ? `[群收款]${ext?.note || ''}`
         : mediaType === 'listentogether' ? `[一起听] ${String(ext?.title || '').slice(0, 40)}`.trim()
+        : mediaType === 'tower_invite' ? '[游戏邀请] 叠塔对战'
+        : mediaType === 'guess_invite' ? '[游戏邀请] 猜歌抢答'
         : ''
       );
       const r = quote
@@ -806,6 +808,8 @@ export function initChat(io, { config, engine }) {
         : mType === 'redpacket' ? '[微信红包]'
         : mType === 'transfer' ? '[转账]'
         : mType === 'listentogether' ? `[一起听] ${String(ext?.title || '').slice(0, 40)}`.trim()
+        : mType === 'tower_invite' ? '[游戏邀请] 叠塔对战'
+        : mType === 'guess_invite' ? '[游戏邀请] 猜歌抢答'
         : ''
       );
 
@@ -897,6 +901,36 @@ export function initChat(io, { config, engine }) {
           try { stmts.updateMessageExt.run(JSON.stringify(extWithId).slice(0, 800), mid); } catch { /* ignore */ }
         }
         // 一起听/普通卡片：持久化 ext，便于重载后仍可加入
+        if (mType === 'tower_invite' && ext && !extWithId) {
+          // 邀请卡片由 tower:invite:send 创建；这里只做兜底压缩，不生成新邀请
+          const compact = {
+            kind: 'tower_invite',
+            inviteId: String(ext.inviteId || '').slice(0, 40),
+            game: 'tower',
+            inviterName: String(ext.inviterName || '').slice(0, 32),
+            status: String(ext.status || 'waiting').slice(0, 16),
+            playerCount: Number(ext.playerCount) || 1,
+            maxPlayers: Number(ext.maxPlayers) || 6,
+            createdAt: Number(ext.createdAt) || Date.now(),
+          };
+          extWithId = compact;
+          try { stmts.updateMessageExt.run(JSON.stringify(compact).slice(0, 800), mid); } catch { /* ignore */ }
+        }
+        if (mType === 'guess_invite' && ext && !extWithId) {
+          const compact = {
+            kind: 'guess_invite',
+            inviteId: String(ext.inviteId || '').slice(0, 40),
+            game: 'guess',
+            inviterName: String(ext.inviterName || '').slice(0, 32),
+            status: String(ext.status || 'waiting').slice(0, 16),
+            playerCount: Number(ext.playerCount) || 1,
+            maxPlayers: Number(ext.maxPlayers) || 8,
+            songCount: Number(ext.songCount) || 10,
+            createdAt: Number(ext.createdAt) || Date.now(),
+          };
+          extWithId = compact;
+          try { stmts.updateMessageExt.run(JSON.stringify(compact).slice(0, 800), mid); } catch { /* ignore */ }
+        }
         if (mType === 'listentogether' && ext && !extWithId) {
           const compact = {
             kind: 'listen',

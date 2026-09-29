@@ -668,7 +668,8 @@ function contactPeople() {
   const seen = new Set();
   const list = [];
   const push = (p) => {
-    const key = p.nickname;
+    // 不要用昵称去重：相同昵称是不同好友，合并会把人藏掉
+    const key = p.key || String(p.userId ?? p.id ?? p.nickname);
     if (!key || seen.has(key)) return;
     seen.add(key);
     list.push(p);

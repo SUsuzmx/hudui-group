@@ -331,6 +331,66 @@ const migrations = [
       createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_listen_rooms_expires ON listen_rooms(expires_at)');
     },
   },
+  {
+    id: 9,
+    name: 'tower_battle',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS tower_invites (
+          id              TEXT PRIMARY KEY,
+          room_id         TEXT NOT NULL,
+          conversation_id TEXT NOT NULL,
+          message_id      INTEGER,
+          inviter_id      INTEGER NOT NULL,
+          status          TEXT NOT NULL DEFAULT 'waiting',
+          created_at      INTEGER NOT NULL,
+          updated_at      INTEGER NOT NULL,
+          ended_at        INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS tower_stats (
+          user_id     INTEGER PRIMARY KEY,
+          games       INTEGER NOT NULL DEFAULT 0,
+          wins        INTEGER NOT NULL DEFAULT 0,
+          best_score  INTEGER NOT NULL DEFAULT 0,
+          best_height INTEGER NOT NULL DEFAULT 0,
+          best_combo  INTEGER NOT NULL DEFAULT 0,
+          updated_at  INTEGER NOT NULL
+        );
+      `);
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_tower_invites_room ON tower_invites(room_id)');
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_tower_invites_status ON tower_invites(status)');
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_tower_invites_msg ON tower_invites(message_id)');
+    },
+  },
+  {
+    id: 10,
+    name: 'guess_song',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS guess_invites (
+          id              TEXT PRIMARY KEY,
+          room_id         TEXT NOT NULL,
+          conversation_id TEXT NOT NULL,
+          message_id      INTEGER,
+          inviter_id      INTEGER NOT NULL,
+          status          TEXT NOT NULL DEFAULT 'waiting',
+          created_at      INTEGER NOT NULL,
+          updated_at      INTEGER NOT NULL,
+          ended_at        INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS guess_stats (
+          user_id     INTEGER PRIMARY KEY,
+          games       INTEGER NOT NULL DEFAULT 0,
+          wins        INTEGER NOT NULL DEFAULT 0,
+          best_score  INTEGER NOT NULL DEFAULT 0,
+          updated_at  INTEGER NOT NULL
+        );
+      `);
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_guess_invites_room ON guess_invites(room_id)');
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_guess_invites_status ON guess_invites(status)');
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_guess_invites_msg ON guess_invites(message_id)');
+    },
+  },
 ];
 
 export function runMigrations(db) {

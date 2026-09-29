@@ -4,6 +4,7 @@ import { musicPlayer, fmtAudioTime } from '../music-player.js';
 import {
   listenTogether,
   control as listenControl,
+  resumePlaybackFromGesture,
 } from '../listen-together.js';
 import {
   initVisualStage, ensureStageGestures, syncTrackToVisual, setVisualPreset, setFxField,
@@ -20,7 +21,11 @@ const emit = defineEmits(['close', 'invite-listen', 'expand-panel']);
 function onPlayToggle() {
   if (props.roomMode) {
     if (!listenTogether.canControl) return;
-    listenControl(listenTogether.state.room?.playing ? 'pause' : 'play');
+    const roomPlaying = Boolean(listenTogether.state.room?.playing);
+    const fail = Boolean(listenTogether.state.playFail);
+    // 手势内先尝试出声，避免等 socket 往返后 autoplay 被拦
+    if (!roomPlaying || fail) resumePlaybackFromGesture();
+    listenControl(roomPlaying && !fail ? 'pause' : 'play');
     return;
   }
   musicPlayer.togglePlay();
@@ -60,6 +65,39 @@ const seekPct = ref(0);
 
 const current = computed(() => musicPlayer.state.current || { title: '', artist: '', cover: '', duration: 0, source: '' });
 const playing = computed(() => musicPlayer.state.playing);
+const restriction = computed(() => musicPlayer.state.restriction);
+const restrictionMsg = computed(() => restriction.value?.message || '');
+const restrictionAction = computed(() => restriction.value?.action || 'switch_source');
+
+function recoverRestriction(kind) {
+  const r = restriction.value;
+  if (kind === 'next') {
+    musicPlayer.nextTrack();
+    return;
+  }
+  if (kind === 'retry') {
+    if (current.value?.id) musicPlayer.playTrack(current.value);
+    return;
+  }
+  if (kind === 'login') {
+    // 打开听一听登录面板（若已在听一听）
+    try {
+      window.dispatchEvent(new CustomEvent('hudui:open-music-login', {
+        detail: { provider: current.value?.source || 'qq' },
+      }));
+    } catch { /* ignore */ }
+    return;
+  }
+  if (kind === 'switch') {
+    // 换到列表里另一音源的同名/下一首
+    const list = musicPlayer.state.tracks || [];
+    const other = list.find((t) => t.source !== current.value?.source) || list.find((t) => t.id !== current.value?.id);
+    if (other) musicPlayer.playTrack(other);
+    else musicPlayer.nextTrack();
+    return;
+  }
+  void r;
+}
 const progress = computed(() => musicPlayer.state.progress);
 const duration = computed(() => musicPlayer.state.duration);
 const tracks = computed(() => musicPlayer.state.tracks);
@@ -84,7 +122,15 @@ function onSeekDone(e) {
   if (d) musicPlayer.seek(sec);
   seeking.value = false;
 }
-function playFromQueue(t) { showQueue.value = false; musicPlayer.playTrack(t); }
+function playFromQueue(t) {
+  showQueue.value = false;
+  // 已是当前曲：切播放/暂停，而不是从头重播
+  if (isActive(t)) {
+    musicPlayer.togglePlay();
+    return;
+  }
+  musicPlayer.playTrack(t);
+}
 function isActive(t) { return current.value && current.value.id === t.id && current.value.source === t.source; }
 function applyPreset(id) {
   try {
@@ -161,6 +207,22 @@ onBeforeUnmount(() => { stopVisualWatch(); if (lyricTimer) clearInterval(lyricTi
       </div>
       <div class="preset-grid" id="preset-grid"></div>
       <div class="lyric-color-grid" id="lyric-color-grid"></div>
+    </div>
+
+    <!-- 播放失败：说明原因 + 可执行恢复 -->
+    <div v-if="!roomMode && restrictionMsg" class="restriction-banner" role="alert">
+      <div class="rb-text">
+        <strong>无法播放</strong>
+        <span>{{ restrictionMsg }}</span>
+      </div>
+      <div class="rb-actions">
+        <button type="button" @click="recoverRestriction('switch')">换音源</button>
+        <button v-if="restrictionAction === 'login' || restrictionAction === 'upgrade' || restrictionAction === 'purchase'" type="button" @click="recoverRestriction('login')">
+          {{ restrictionAction === 'login' ? '登录音源' : restrictionAction === 'upgrade' ? '开通会员' : '去购买' }}
+        </button>
+        <button type="button" @click="recoverRestriction('next')">换一首</button>
+        <button type="button" class="rb-retry" @click="recoverRestriction('retry')">重试</button>
+      </div>
     </div>
 
     <header class="top-chrome">
@@ -301,6 +363,53 @@ onBeforeUnmount(() => { stopVisualWatch(); if (lyricTimer) clearInterval(lyricTi
   background: #050608;
 }
 .player-stage :deep(.visual-stage-root:active) { cursor: grabbing; }
+
+.restriction-banner {
+  position: absolute;
+  top: 64px;
+  left: 12px;
+  right: 12px;
+  z-index: 30;
+  background: rgba(20, 20, 22, 0.92);
+  color: #fff;
+  border: 1px solid rgba(255, 120, 80, 0.45);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.rb-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.rb-text strong {
+  color: #ffb4a8;
+  font-size: 13px;
+}
+.rb-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.rb-actions button {
+  border: 0;
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+.rb-actions button.rb-retry {
+  background: #07c160;
+}
+.rb-actions button:active {
+  opacity: 0.85;
+}
 
 .top-chrome {
   position: absolute;

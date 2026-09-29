@@ -81,7 +81,7 @@ export const stmts = {
   setFriendBlack: db.prepare('UPDATE friends SET blacklisted = ? WHERE user_id = ? AND friend_id = ?'),
   setFriendPermission: db.prepare('UPDATE friends SET permission = ? WHERE user_id = ? AND friend_id = ?'),
   listFriends: db.prepare(
-    `SELECT u.id, u.nickname, u.avatar_color, u.avatar, u.wxid, f.created_at, f.remark, f.blacklisted, f.permission
+    `SELECT u.id, u.nickname, u.avatar_color, u.avatar, u.wxid, u.status_json, f.created_at, f.remark, f.blacklisted, f.permission
      FROM friends f JOIN users u ON u.id = f.friend_id
      WHERE f.user_id = ? ORDER BY COALESCE(NULLIF(f.remark,''), u.nickname) COLLATE NOCASE`
   ),
@@ -402,6 +402,58 @@ export const stmts = {
   claimTransfer: db.prepare(
     "UPDATE transfers SET status='claimed', to_user_id=? WHERE id=? AND status='pending' AND from_id != ?"
   ),
+  // 叠塔对战邀请 / 个人统计
+  insertTowerInvite: db.prepare(
+    `INSERT INTO tower_invites (id, room_id, conversation_id, message_id, inviter_id, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ),
+  getTowerInvite: db.prepare('SELECT * FROM tower_invites WHERE id = ?'),
+  setTowerInviteMessage: db.prepare('UPDATE tower_invites SET message_id = ?, updated_at = ? WHERE id = ?'),
+  setTowerInviteStatus: db.prepare(
+    'UPDATE tower_invites SET status = ?, updated_at = ?, ended_at = ? WHERE id = ?'
+  ),
+  setTowerInvitesStatusByRoom: db.prepare(
+    'UPDATE tower_invites SET status = ?, updated_at = ?, ended_at = ? WHERE room_id = ? AND status != ?'
+  ),
+  listTowerInvitesByRoom: db.prepare('SELECT * FROM tower_invites WHERE room_id = ?'),
+  listActiveTowerInvites: db.prepare("SELECT * FROM tower_invites WHERE status IN ('waiting','full','countdown','playing')"),
+  getTowerStats: db.prepare('SELECT * FROM tower_stats WHERE user_id = ?'),
+  upsertTowerStats: db.prepare(`
+    INSERT INTO tower_stats (user_id, games, wins, best_score, best_height, best_combo, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      games = games + excluded.games,
+      wins = wins + excluded.wins,
+      best_score = MAX(best_score, excluded.best_score),
+      best_height = MAX(best_height, excluded.best_height),
+      best_combo = MAX(best_combo, excluded.best_combo),
+      updated_at = excluded.updated_at
+  `),
+  // 猜歌抢答邀请 / 个人统计
+  insertGuessInvite: db.prepare(
+    `INSERT INTO guess_invites (id, room_id, conversation_id, message_id, inviter_id, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ),
+  getGuessInvite: db.prepare('SELECT * FROM guess_invites WHERE id = ?'),
+  setGuessInviteMessage: db.prepare('UPDATE guess_invites SET message_id = ?, updated_at = ? WHERE id = ?'),
+  setGuessInviteStatus: db.prepare(
+    'UPDATE guess_invites SET status = ?, updated_at = ?, ended_at = ? WHERE id = ?'
+  ),
+  setGuessInvitesStatusByRoom: db.prepare(
+    'UPDATE guess_invites SET status = ?, updated_at = ?, ended_at = ? WHERE room_id = ? AND status != ?'
+  ),
+  listGuessInvitesByRoom: db.prepare('SELECT * FROM guess_invites WHERE room_id = ?'),
+  listActiveGuessInvites: db.prepare("SELECT * FROM guess_invites WHERE status IN ('waiting','full','countdown','playing')"),
+  getGuessStats: db.prepare('SELECT * FROM guess_stats WHERE user_id = ?'),
+  upsertGuessStats: db.prepare(`
+    INSERT INTO guess_stats (user_id, games, wins, best_score, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      games = games + excluded.games,
+      wins = wins + excluded.wins,
+      best_score = MAX(best_score, excluded.best_score),
+      updated_at = excluded.updated_at
+  `),
   // 看一看 UGC
   insertLookPost: db.prepare(
     'INSERT INTO look_posts (user_id, title, media_url, cover_url, author, likes, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)'

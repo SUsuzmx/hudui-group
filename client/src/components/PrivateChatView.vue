@@ -29,6 +29,8 @@ import FilePreview from './FilePreview.vue';
 import WxPayCard from './WxPayCard.vue';
 import WxPayOverlay from './WxPayOverlay.vue';
 import ListenTogetherCard from './ListenTogetherCard.vue';
+import TowerBattleInviteCard from './TowerBattleInviteCard.vue';
+import GuessSongInviteCard from './GuessSongInviteCard.vue';
 import ListenTogetherBar from './ListenTogetherBar.vue';
 import {
   listenTogether,
@@ -42,7 +44,7 @@ const props = defineProps({
   target: { type: Object, required: true },
   pendingSearch: { type: Boolean, default: false },
 });
-const emit = defineEmits(['back', 'open-profile', 'open-chat-info', 'search-used', 'open-video-call', 'open-view']);
+const emit = defineEmits(['back', 'open-profile', 'open-chat-info', 'search-used', 'open-video-call', 'open-view', 'open-tower-invite', 'open-guess-invite']);
 
 const messages = ref([]);
 const draft = ref('');
@@ -589,6 +591,36 @@ async function onJoinListenCard(m) {
       conversationName: props.target?.remark || props.target?.nickname || '私聊',
     });
   }
+}
+
+function onTowerInviteCard(m, payload = {}) {
+  const ext = parseExt(m) || {};
+  const inviteId = ext.inviteId;
+  if (!inviteId) {
+    showToast('这场已经散了，再约一局吧。');
+    return;
+  }
+  emit('open-tower-invite', {
+    inviteId,
+    messageId: m.id,
+    status: payload.status || ext.status,
+    canJoin: payload.canJoin !== false,
+  });
+}
+
+function onGuessInviteCard(m, payload = {}) {
+  const ext = parseExt(m) || {};
+  const inviteId = ext.inviteId;
+  if (!inviteId) {
+    showToast('这场已经散了，再约一局吧。');
+    return;
+  }
+  emit('open-guess-invite', {
+    inviteId,
+    messageId: m.id,
+    status: payload.status || ext.status,
+    canJoin: payload.canJoin !== false,
+  });
 }
 
 function openFileMsg(m) {
@@ -1768,6 +1800,20 @@ onBeforeUnmount(() => {
               :member-count="parseExt(m).memberCount || 1"
               :status="parseExt(m).ended ? 'ended' : ''"
               @join="onJoinListenCard(m)"
+            />
+            <TowerBattleInviteCard
+              v-else-if="m.mediaType === 'tower_invite'"
+              class="bubble"
+              :ext="parseExt(m)"
+              :is-mine="isMine(m)"
+              @join="(p) => onTowerInviteCard(m, p)"
+            />
+            <GuessSongInviteCard
+              v-else-if="m.mediaType === 'guess_invite'"
+              class="bubble"
+              :ext="parseExt(m)"
+              :is-mine="isMine(m)"
+              @join="(p) => onGuessInviteCard(m, p)"
             />
             <WxPayCard
               v-else-if="payKindOf(m)"

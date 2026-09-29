@@ -2,6 +2,7 @@
 import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { getSocket } from '../socket-store.js';
 import { startRingtone, stopRingtone } from '../call-ring.js';
+import { toast } from '../toast.js';
 import UserAvatar from './UserAvatar.vue';
 
 const props = defineProps({
@@ -162,18 +163,85 @@ function finish(opts = {}) {
   emit('end', { seconds: seconds.value, ...opts });
 }
 
+function applyCameraStateToTracks() {
+  if (!localStream) return;
+  const videoTracks = localStream.getVideoTracks?.() || [];
+  if (cameraOff.value) {
+    // 彻底 stop：释放摄像头硬件指示灯，而不只是 mute
+    videoTracks.forEach((t) => {
+      try {
+        t.enabled = false;
+        t.stop();
+        localStream.removeTrack(t);
+      } catch { /* ignore */ }
+    });
+    // 通知对端无画面
+    try {
+      pc?.getSenders?.().forEach((s) => {
+        if (s.track?.kind === 'video') s.replaceTrack(null).catch(() => {});
+      });
+    } catch { /* ignore */ }
+    if (localVideo.value) {
+      try { localVideo.value.srcObject = localStream; } catch { /* ignore */ }
+    }
+    return;
+  }
+  // 打开状态：确保有 live 视频轨
+  const live = videoTracks.some((t) => t.readyState === 'live');
+  if (!live && isVideo()) {
+    // 由 ensureCameraTrack 异步补轨；这里只同步已有轨的 enabled
+    videoTracks.forEach((t) => { t.enabled = true; });
+    return;
+  }
+  videoTracks.forEach((t) => { t.enabled = true; });
+}
+
+async function ensureCameraTrack() {
+  if (!isVideo() || cameraOff.value || !localStream) return;
+  const hasLive = (localStream.getVideoTracks?.() || []).some((t) => t.readyState === 'live');
+  if (hasLive) {
+    applyCameraStateToTracks();
+    return;
+  }
+  try {
+    const ns = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: cameraFacing.value || 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+    });
+    const newTrack = ns.getVideoTracks()[0];
+    if (!newTrack) throw new Error('no video track');
+    newTrack.enabled = !cameraOff.value;
+    const sender = pc?.getSenders?.().find((s) => !s.track || s.track.kind === 'video');
+    if (sender) await sender.replaceTrack(newTrack);
+    else if (pc) pc.addTrack(newTrack, localStream);
+    for (const t of localStream.getVideoTracks?.() || []) {
+      try { localStream.removeTrack(t); t.stop(); } catch { /* ignore */ }
+    }
+    localStream.addTrack(newTrack);
+    bindLocalPreview();
+  } catch (e) {
+    console.warn('open camera failed', e);
+    cameraOff.value = true;
+    toast('无法打开摄像头');
+  }
+}
+
 async function getMedia() {
   if (localStream) {
+    applyCameraStateToTracks();
+    if (!cameraOff.value) await ensureCameraTrack();
     bindLocalPreview();
     return localStream;
   }
   const constraints = {
     audio: true,
-    video: isVideo()
+    video: isVideo() && !cameraOff.value
       ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }
       : false,
   };
   localStream = await navigator.mediaDevices.getUserMedia(constraints);
+  // 默认 cameraOff=true：不要开视频轨；显示“关闭”时绝不采集画面
+  applyCameraStateToTracks();
   bindLocalPreview();
   return localStream;
 }
@@ -456,7 +524,22 @@ function toggleMute() {
 function toggleCamera() {
   if (!isVideo()) return;
   cameraOff.value = !cameraOff.value;
-  localStream?.getVideoTracks?.().forEach((t) => { t.enabled = !cameraOff.value; });
+  if (cameraOff.value) {
+    applyCameraStateToTracks();
+    const live = (localStream?.getVideoTracks?.() || []).some((t) => t.readyState === 'live');
+    // UI 与真实状态对齐：若仍有 live 轨，强制再关一次
+    if (live) {
+      (localStream?.getVideoTracks?.() || []).forEach((t) => { try { t.stop(); localStream.removeTrack(t); } catch { /* ignore */ } });
+    }
+    return;
+  }
+  ensureCameraTrack().then(() => {
+    const live = (localStream?.getVideoTracks?.() || []).some((t) => t.readyState === 'live' && t.enabled);
+    if (!live) {
+      cameraOff.value = true;
+      toast('摄像头不可用，仍为关闭');
+    }
+  });
 }
 
 async function switchCamera() {
@@ -476,6 +559,8 @@ async function switchCamera() {
       try { localStream.removeTrack(t); t.stop(); } catch { /* ignore */ }
     }
     localStream.addTrack(newTrack);
+    // 切换镜头后仍尊重当前开关状态
+    applyCameraStateToTracks();
     cameraFacing.value = next;
     bindLocalPreview();
   } catch (e) {

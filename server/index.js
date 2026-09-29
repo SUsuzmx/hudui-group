@@ -8,6 +8,8 @@ import { ROOT, stmts, db } from './db.js';
 import { register, login, verifyToken, publicUser, listAvatars, updateProfile, IMG_DIR, loginRateLimited, registerRateLimited, publicProfile, parseUserStatus, changePassword, keepOnlyCurrentSession, requireAuth, userFromRequest, extractBearerToken } from './auth.js';
 import { initChat } from './chat.js';
 import { initListenTogether } from './listen-together.js';
+import { initTowerBattle } from './tower-battle.js';
+import { initGuessSong } from './guess-song.js';
 import { createEngine } from './ai/engine.js';
 import { isAiEnabled } from './ai/provider.js';
 import { aiAvatarFile } from './ai/avatars.js';
@@ -19,9 +21,11 @@ import { createMusicProviderRouter } from './providers/music-routes.js';
 import { createKugouRouter } from './providers/kugou.js';
 import { createLookApi } from './look-api.js';
 import { createMetaRouter, getUserSettings, setUserSettings } from './meta.js';
+import { canViewStatus, filterStatusForViewer } from './privacy.js';
 import { seedGroups, listGroups, getGroup, groupConvId, DEFAULT_GROUP_KIND, setGroupNotice, createGroup, listGroupMembers, addGroupMembers, leaveGroup, removeGroupMember, renameGroup } from './groups.js';
 import { canAccessConversation } from './acl.js';
 import { mediaFromBodyJson, mediaFromMultipart, mediaFromRaw, normalizeKind } from './upload.js';
+import { mediaServeMiddleware } from './media-serve.js';
 import { getBalance, listTx, debit } from './wallet.js';
 import { expirePendingPayments, RP_COVERS, redPacketPayload } from './rp.js';
 
@@ -80,9 +84,18 @@ app.use(express.json({ limit: '8mb' }));
 
 const requireUser = userFromRequest;
 
+/** 媒体/附件走 <img> 加载，登录后种 HttpOnly Cookie，避免直链无鉴权 */
+function setAuthCookie(res, token) {
+  try {
+    res.setHeader('Set-Cookie', `hudui_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${14 * 86400}`);
+  } catch { /* ignore */ }
+}
+
 // 聊天媒体上传: 优先 multipart / 原始二进制, 兼容旧 base64 JSON
-app.post('/api/chat/upload', express.raw({ type: () => true, limit: '9mb' }), (req, res) => {
-  if (!requireUser(req, res)) return;
+app.post('/api/chat/upload', express.raw({ type: () => true, limit: '45mb' }), (req, res) => {
+  const session = requireUser(req, res);
+  if (!session) return;
+  const ownerId = session.id;
   const ct = String(req.get('Content-Type') || '');
   const kind = normalizeKind(req.query.kind || req.get('x-media-kind') || 'image');
   let result;
@@ -91,11 +104,11 @@ app.post('/api/chat/upload', express.raw({ type: () => true, limit: '9mb' }), (r
     if (Buffer.isBuffer(body)) {
       try { body = JSON.parse(body.toString('utf8')); } catch { body = {}; }
     }
-    result = mediaFromBodyJson({ ...body, kind: body?.kind || kind });
+    result = mediaFromBodyJson({ ...body, kind: body?.kind || kind }, ownerId);
   } else if (ct.includes('multipart/form-data')) {
-    result = mediaFromMultipart(req.body, ct, kind);
+    result = mediaFromMultipart(req.body, ct, kind, ownerId);
   } else if (Buffer.isBuffer(req.body) && req.body.length) {
-    result = mediaFromRaw(req.body, ct, kind, req.get('x-filename') || '');
+    result = mediaFromRaw(req.body, ct, kind, req.get('x-filename') || '', ownerId);
   } else {
     result = { error: '不支持的上传格式' };
   }
@@ -105,7 +118,9 @@ app.post('/api/chat/upload', express.raw({ type: () => true, limit: '9mb' }), (r
 
 // 朋友圈配图上传
 app.post('/api/moments/upload', express.raw({ type: () => true, limit: '8mb' }), (req, res) => {
-  if (!requireUser(req, res)) return;
+  const session = requireUser(req, res);
+  if (!session) return;
+  const ownerId = session.id;
   const ct = String(req.get('Content-Type') || '');
   let result;
   if (ct.includes('application/json')) {
@@ -120,11 +135,11 @@ app.post('/api/moments/upload', express.raw({ type: () => true, limit: '8mb' }),
     if (buf.length < 10 || buf.length > 3 * 1024 * 1024) {
       return res.status(400).json({ error: '图片大小不合适' });
     }
-    result = mediaFromRaw(buf, `image/${m[1].toLowerCase().replace('jpeg', 'jpg')}`, 'image', '');
+    result = mediaFromRaw(buf, `image/${m[1].toLowerCase().replace('jpeg', 'jpg')}`, 'image', '', ownerId);
   } else if (ct.includes('multipart/form-data')) {
-    result = mediaFromMultipart(req.body, ct, 'image');
+    result = mediaFromMultipart(req.body, ct, 'image', ownerId);
   } else if (Buffer.isBuffer(req.body) && req.body.length) {
-    result = mediaFromRaw(req.body, ct, 'image', req.get('x-filename') || '');
+    result = mediaFromRaw(req.body, ct, 'image', req.get('x-filename') || '', ownerId);
   } else {
     result = { error: '不支持的上传格式' };
   }
@@ -134,7 +149,7 @@ app.post('/api/moments/upload', express.raw({ type: () => true, limit: '8mb' }),
 
 // 头像与媒体
 app.use('/avatars', express.static(IMG_DIR, { maxAge: '1h' }));
-app.use('/media', express.static(path.join(ROOT, 'data', 'media'), { maxAge: '7d' }));
+app.use('/media', mediaServeMiddleware);
 
 app.get('/api/avatars', (req, res) => res.json({ avatars: listAvatars() }));
 
@@ -386,6 +401,7 @@ app.post('/api/register', (req, res) => {
   if (r.error) return res.status(400).json({ error: r.error });
   log(`新用户注册: ${r.user.nickname}`);
   kickOtherSessions(r.user?.id, r.kickedTokens);
+  setAuthCookie(res, r.token);
   res.json({ token: r.token, user: r.user, isNew: true, singleLogin: true });
 });
 
@@ -398,12 +414,16 @@ app.post('/api/login', (req, res) => {
   if (r.error) return res.status(400).json({ error: r.error });
   log(`用户登录: ${r.user.nickname}（单端挤下 ${r.kickedTokens?.length || 0} 个旧会话）`);
   kickOtherSessions(r.user?.id, r.kickedTokens);
+  setAuthCookie(res, r.token);
   res.json({ token: r.token, user: r.user, isNew: false, singleLogin: true });
 });
 
 app.get('/api/me', (req, res) => {
   const session = userFromRequest(req, res);
   if (!session) return;
+  // 续种媒体 Cookie，保证 <img>/<video> 直链可鉴权
+  const tok = extractBearerToken(req);
+  if (tok) setAuthCookie(res, tok);
   const full = stmts.userById.get(session.id);
   res.json({ user: publicUser(full || { ...session, avatar_color: session.avatarColor }) });
 });
@@ -475,7 +495,7 @@ app.get('/api/users/:id', (req, res) => {
       signature: target.signature,
       gender: target.gender ?? '',
       momentsCover: target.moments_cover ?? null,
-      status: parseUserStatus(target.status_json),
+      status: filterStatusForViewer(target.id, parseUserStatus(target.status_json), user.id),
       isFriend: Boolean(fr),
       remark: fr?.remark || null,
       blacklisted: Boolean(fr?.blacklisted || peerFr?.blacklisted),
@@ -563,6 +583,8 @@ app.get('/api/status/friends', (req, res) => {
       if (!row) continue;
       const st = parseUserStatus(row.status_json);
       if (!st) continue;
+      // 状态可见性：private 仅自己 / friends 仅好友 —— 与设置一致
+      if (!canViewStatus(uid, st, user.id)) continue;
       statuses.push({
         userId: uid,
         nickname: f.remark || row.nickname,
@@ -642,7 +664,9 @@ app.get('/api/media/demo-catalog', requireAuth, (req, res) => mediaApi.demoCatal
 // 看一看 UGC：上传视频 + 发布/删除（仅本地 /media 源）
 const lookApi = createLookApi();
 app.post('/api/look/upload', express.raw({ type: () => true, limit: '45mb' }), (req, res) => {
-  if (!requireUser(req, res)) return;
+  const session = requireUser(req, res);
+  if (!session) return;
+  const ownerId = session.id;
   const ct = String(req.get('Content-Type') || '');
   const kind = normalizeKind(req.query.kind || req.get('x-media-kind') || 'video');
   let result;
@@ -651,11 +675,11 @@ app.post('/api/look/upload', express.raw({ type: () => true, limit: '45mb' }), (
     if (Buffer.isBuffer(body)) {
       try { body = JSON.parse(body.toString('utf8')); } catch { body = {}; }
     }
-    result = mediaFromBodyJson({ ...body, kind: body?.kind || kind });
+    result = mediaFromBodyJson({ ...body, kind: body?.kind || kind }, ownerId);
   } else if (ct.includes('multipart/form-data')) {
-    result = mediaFromMultipart(req.body, ct, kind);
+    result = mediaFromMultipart(req.body, ct, kind, ownerId);
   } else if (Buffer.isBuffer(req.body) && req.body.length) {
-    result = mediaFromRaw(req.body, ct, kind, req.get('x-filename') || '');
+    result = mediaFromRaw(req.body, ct, kind, req.get('x-filename') || '', ownerId);
   } else {
     result = { error: '不支持的上传格式' };
   }
@@ -974,6 +998,8 @@ const engine = createEngine({
 });
 chatApi = initChat(io, { config, engine });
 initListenTogether(io);
+initTowerBattle(io);
+initGuessSong(io);
 
 setInterval(() => engine.tick(), 30_000).unref();
 // 红包/转账 24h 超时退回

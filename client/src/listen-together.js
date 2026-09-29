@@ -21,32 +21,44 @@ let lastApplyAt = 0;
 let lastSeekAt = 0;
 let applying = false;
 
+function sameUser(a, b) {
+  if (a == null || b == null || a === '' || b === '') return false;
+  return Number(a) === Number(b);
+}
+
 export const listenTogether = {
   state,
   get inRoom() {
     return Boolean(state.room && state.joined);
   },
   get isHost() {
-    return Boolean(state.room && state.room.hostId === state.room.viewerId);
+    return Boolean(state.room && sameUser(state.room.hostId, state.room.viewerId));
   },
   get canControl() {
     if (!state.room) return false;
-    return state.room.allowAllControl || state.room.hostId === state.room.viewerId;
+    return Boolean(state.room.allowAllControl) || sameUser(state.room.hostId, state.room.viewerId);
   },
   get positionMs() {
-    const r = state.room;
-    if (!r) return 0;
-    if (!r.playing) return r.positionMs;
-    return r.positionMs + (Date.now() - r.serverTime + (r.positionMs != null ? 0 : 0));
+    return currentPosMs();
   },
 };
 
-/** 以服务器 serverTime 推算当前进度 */
+/** 以服务器 serverTime 推算当前进度；已知时长时钳制到曲末，避免曲终后进度继续跑 */
 export function currentPosMs() {
   const r = state.room;
   if (!r) return 0;
   const elapsed = r.playing ? Math.max(0, Date.now() - (r.serverTime || Date.now())) : 0;
-  return Math.max(0, (r.positionMs || 0) + elapsed);
+  let pos = Math.max(0, (r.positionMs || 0) + elapsed);
+  const durMs = Number(r.current?.durationMs) || (Number(r.current?.duration) || 0) * 1000;
+  if (durMs > 0 && pos > durMs) return durMs;
+  // 本地 audio 已 ended 时冻结在当前位置，避免时间继续跑
+  try {
+    const el = musicPlayer.getAudioElement();
+    if (el?.ended && musicPlayer.isMediaLoadedFor(r.current) && Number.isFinite(el.currentTime) && el.currentTime > 0) {
+      pos = Math.min(pos, el.currentTime * 1000);
+    }
+  } catch { /* ignore */ }
+  return pos;
 }
 
 export function estimatedPosSec() {
@@ -78,7 +90,16 @@ function newCommandId() {
 
 function applyRoom(room) {
   if (!room) return;
-  state.room = room;
+  // 广播快照不含 viewerId，保留本端身份，避免房主控制权被冲掉
+  const prevViewer = state.room?.viewerId;
+  const merged = { ...room };
+  if (merged.viewerId == null || merged.viewerId === '') {
+    if (prevViewer != null) merged.viewerId = prevViewer;
+  }
+  if (merged.canControl == null && merged.viewerId != null) {
+    merged.canControl = Boolean(merged.allowAllControl) || sameUser(merged.hostId, merged.viewerId);
+  }
+  state.room = merged;
   state.joined = true;
   state.error = '';
   state.lastSyncAt = Date.now();
@@ -98,19 +119,39 @@ async function syncPlaybackToRoom(force = false) {
     const cur = musicPlayer.state.current;
     const same = cur && cur.id === track.id && cur.source === track.source;
     const targetSec = currentPosMs() / 1000;
+    const durSec = (Number(track.durationMs) || (Number(track.duration) || 0) * 1000) / 1000;
+    const el = musicPlayer.getAudioElement();
+    const mediaIsThis = musicPlayer.isMediaLoadedFor(track);
+    // 曲末：不要 seek 越界；仅当 media 确实是这首时才认 ended
+    const atEnd = durSec > 0
+      ? targetSec >= durSec - 0.4
+      : Boolean(mediaIsThis && el?.ended);
 
     if (!same || force) {
       // 进入/切歌：装载房间曲目
       musicPlayer.setListenMode(true);
-      await musicPlayer.playTrack(track, { listenSync: true, startAt: targetSec, autoplay: r.playing });
+      // 已到曲末就不要再从末尾起播（会卡住 ended）；交给曲终上报/看门狗
+      if (atEnd && r.playing && mediaIsThis) {
+        reportTrackEnded();
+        return;
+      }
+      await musicPlayer.playTrack(track, { listenSync: true, startAt: targetSec, autoplay: r.playing && !atEnd });
     } else {
       // 同曲：只纠偏播放状态与进度
-      const el = musicPlayer.getAudioElement();
       const drift = Math.abs((el?.currentTime || 0) - targetSec);
       state.drift = drift;
-      if (r.playing) {
-        if (el && el.paused) {
-          try { await el.play(); } catch { state.playFail = true; }
+      // 曲终检测：ended 或已顶到时长末尾（必须是本曲 media，排除切歌加载中的旧 ended）
+      if (r.playing && mediaIsThis) {
+        if (el?.ended || (durSec > 0 && (el?.currentTime || 0) >= durSec - 0.25 && el?.paused)) {
+          reportTrackEnded();
+          return;
+        }
+      }
+      if (r.playing && !atEnd) {
+        if (el && el.paused && !el.ended) {
+          const ok = await musicPlayer.tryPlay();
+          if (!ok) state.playFail = true;
+          else state.playFail = false;
         }
         // 明显差异才校正（>1.2s），轻微漂移忽略
         if (el && drift > 1.2 && Date.now() - lastSeekAt > 1500) {
@@ -118,10 +159,11 @@ async function syncPlaybackToRoom(force = false) {
           try { el.currentTime = targetSec; } catch { /* ignore */ }
         }
       } else {
-        if (el && !el.paused) {
+        // 房间暂停时才停；播放中到曲末也别 pause，否则永远等不到 ended
+        if (el && !r.playing && !el.paused) {
           try { el.pause(); } catch { /* ignore */ }
         }
-        if (el && drift > 1.2 && Date.now() - lastSeekAt > 1500) {
+        if (el && drift > 1.2 && !atEnd && Date.now() - lastSeekAt > 1500) {
           lastSeekAt = Date.now();
           try { el.currentTime = targetSec; } catch { /* ignore */ }
         }
@@ -133,13 +175,60 @@ async function syncPlaybackToRoom(force = false) {
   }
 }
 
+function reportTrackEnded() {
+  musicPlayer.setListenMode(true);
+  musicPlayer.notifyListenTrackEnded('watchdog');
+}
+
+// 曲终上报：由房间权威切歌/停住，避免本地连播抢跑
+musicPlayer.setListenTrackEndedHandler((reason, endedKey) => {
+  if (!state.joined || !state.room?.id) return;
+  const track = state.room.current;
+  const key = endedKey || (track ? `${track.source}:${track.id}` : '');
+  emitAck('listen:track-ended', {
+    sessionId: state.room.id,
+    roomId: state.room.id,
+    trackKey: key,
+  }).then((res) => {
+    if (res?.room) applyRoom(res.room);
+  }).catch(() => {});
+});
+
+// 播放被系统拦下（非音源问题）：提示用户点一下，而不是当坏歌
+musicPlayer.setListenPlayFailHandler(() => {
+  state.playFail = true;
+});
+
+/** 用户手势恢复出声（一起听静音兜底）——必须在手势里同步调 play */
+export function resumePlaybackFromGesture() {
+  return musicPlayer.tryPlay().then((ok) => {
+    if (ok) state.playFail = false;
+    else musicPlayer.unlockAudio();
+    return ok;
+  });
+}
+
 function startSyncLoop() {
   if (syncTimer) return;
   syncTimer = setInterval(() => {
     if (!state.room || !state.joined) return;
-    // 每 5s 校验进度差异
+    // 曲终看门狗：ended 事件可能被后台/提前 pause 吃掉
+    const el = musicPlayer.getAudioElement();
+    const track = state.room.current;
+    const durSec = (Number(track?.durationMs) || (Number(track?.duration) || 0) * 1000) / 1000;
+    if (state.room.playing && musicPlayer.isMediaLoadedFor(track)) {
+      if (el?.ended) {
+        reportTrackEnded();
+        return;
+      }
+      if (durSec > 0 && (el?.currentTime || 0) >= durSec - 0.2) {
+        reportTrackEnded();
+        return;
+      }
+    }
+    // 校验进度差异
     syncPlaybackToRoom(false);
-  }, 5000);
+  }, 1500);
 }
 
 function stopSyncLoop() {
@@ -207,6 +296,7 @@ function bindSocket() {
 }
 
 export async function createRoom({ conversationId, track, inviteMessageId = null, hostName = '', sendInvite = true, conversationName = '' }) {
+  musicPlayer.unlockAudio();
   bindSocket();
   state.connecting = true;
   state.error = '';
@@ -221,7 +311,7 @@ export async function createRoom({ conversationId, track, inviteMessageId = null
   applyRoom(res.room);
   startSyncLoop();
   // 开房即播：确保第一首立刻出声（用户手势内 autoplay 允许）
-  if (res.room && res.room.playing === false && (res.room.allowAllControl || res.room.hostId === res.room.viewerId)) {
+  if (res.room && res.room.playing === false && (res.room.allowAllControl || sameUser(res.room.hostId, res.room.viewerId))) {
     try {
       await emitAck('listen:command', {
         sessionId: res.room.id,
@@ -296,6 +386,7 @@ export async function createRoom({ conversationId, track, inviteMessageId = null
 }
 
 export async function joinRoom(roomIdOrExt, { inviteMessageId = null } = {}) {
+  musicPlayer.unlockAudio();
   bindSocket();
   state.connecting = true;
   state.error = '';
@@ -415,12 +506,22 @@ export function resetListenTogether() {
 
 // 页面重新可见 / 焦点恢复时重新同步
 if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && state.joined) {
-      syncNow().catch(() => {});
-      syncPlaybackToRoom(true).catch(() => {});
+  const recover = () => {
+    if (!state.joined) return;
+    syncNow().catch(() => {});
+    syncPlaybackToRoom(true).catch(() => {});
+    // 之前被系统拦下：后台回来再试一次出声
+    if (state.playFail && state.room?.playing) {
+      musicPlayer.tryPlay().then((ok) => {
+        if (ok) state.playFail = false;
+      }).catch(() => {});
     }
+  };
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') recover();
   });
+  window.addEventListener('focus', recover);
+  window.addEventListener('pageshow', recover);
 }
 
 export function isRoomMode() {

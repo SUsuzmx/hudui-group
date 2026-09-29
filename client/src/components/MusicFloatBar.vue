@@ -1,21 +1,48 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
+import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue';
 import { musicPlayer, fmtAudioTime } from '../music-player.js';
 import { toast } from '../toast.js';
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
+  /** 打开听一顿时强制显示（清除收起标记） */
+  forceShow: { type: Boolean, default: false },
 });
-const emit = defineEmits(['open-listen']);
+const emit = defineEmits(['open-listen', 'float-dismissed']);
 
 // 一起听与单曲「听一听」隔离：房间/听音模式不显示本悬浮条
-const show = computed(() => props.visible && !musicPlayer.state.listenMode && Boolean(musicPlayer.state.current));
+const hiddenByUser = ref(false);
+const show = computed(() => {
+  if (!props.visible || musicPlayer.state.listenMode || !musicPlayer.state.current) return false;
+  if (hiddenByUser.value && !props.forceShow) return false;
+  return true;
+});
+
+watch(() => props.forceShow, (on) => {
+  if (on) {
+    hiddenByUser.value = false;
+    try { localStorage.removeItem('hudui_music_float_hidden'); } catch { /* ignore */ }
+  }
+});
+
+// 进入听一听后会清标记；返回时若标记已清则重新显示
+watch(() => props.visible, (on) => {
+  if (!on) return;
+  try {
+    if (localStorage.getItem('hudui_music_float_hidden') !== '1') {
+      hiddenByUser.value = false;
+    }
+  } catch {
+    hiddenByUser.value = false;
+  }
+});
 
 const pos = ref({ x: 0, y: 0 });
 const dragging = ref(false);
 const moved = ref(false);
 const showTrash = ref(false);
 const overTrash = ref(false);
+const dropMode = ref(''); // 'collapse' | 'stop' | ''
 const dismissing = ref(false);
 
 let start = { x: 0, y: 0, ox: 0, oy: 0 };
@@ -60,9 +87,11 @@ function defaultPos() {
 function trashRect() {
   const w = window.innerWidth || 375;
   const h = window.innerHeight || 667;
-  const cx = w / 2;
-  const cy = h - 72;
-  return { cx, cy, r: 72 };
+  // 左：收起（继续播） 右：停止播放
+  return {
+    collapse: { cx: w * 0.32, cy: h - 72, r: 64 },
+    stop: { cx: w * 0.68, cy: h - 72, r: 64 },
+  };
 }
 
 function floatCenter() {
@@ -73,11 +102,14 @@ function floatCenter() {
 }
 
 function hitTrash() {
-  const t = trashRect();
+  const zones = trashRect();
   const c = floatCenter();
-  const dx = c.x - t.cx;
-  const dy = c.y - t.cy;
-  return Math.hypot(dx, dy) <= t.r;
+  for (const [mode, t] of Object.entries(zones)) {
+    const dx = c.x - t.cx;
+    const dy = c.y - t.cy;
+    if (Math.hypot(dx, dy) <= t.r) return mode;
+  }
+  return '';
 }
 
 function clearLongPress() {
@@ -102,9 +134,10 @@ function onPointerDown(e) {
 
   clearLongPress();
   longPressTimer = setTimeout(() => {
-    // 长按：底部出现微红渐变手电筒 + 垃圾桶
+    // 长按：底部出现「收起 / 停止」双关闭区
     showTrash.value = true;
-    overTrash.value = hitTrash();
+    dropMode.value = hitTrash();
+    overTrash.value = Boolean(dropMode.value);
   }, LONG_PRESS_MS);
 }
 
@@ -119,17 +152,29 @@ function onPointerMove(e) {
   const next = clamp(start.ox + dx, start.oy + dy);
   pos.value = next;
   if (showTrash.value) {
-    overTrash.value = hitTrash();
+    dropMode.value = hitTrash();
+    overTrash.value = Boolean(dropMode.value);
   }
 }
 
-function dismissFloat() {
+function dismissFloat(mode = 'collapse') {
   dismissing.value = true;
-  try { musicPlayer.stopAll(); } catch { /* ignore */ }
+  if (mode === 'stop') {
+    try { musicPlayer.stopAll(); } catch { /* ignore */ }
+    hiddenByUser.value = true;
+    try { localStorage.setItem('hudui_music_float_hidden', '1'); } catch { /* ignore */ }
+    toast('已停止播放');
+  } else {
+    // 仅收起悬浮窗，音乐继续
+    hiddenByUser.value = true;
+    try { localStorage.setItem('hudui_music_float_hidden', '1'); } catch { /* ignore */ }
+    toast('已收起悬浮窗，音乐继续播放');
+  }
   showTrash.value = false;
   overTrash.value = false;
-  toast('已关闭播放悬浮窗');
+  dropMode.value = '';
   setTimeout(() => { dismissing.value = false; }, 200);
+  emit('float-dismissed', { stop: mode === 'stop' });
 }
 
 function onPointerUp() {
@@ -142,13 +187,14 @@ function onPointerUp() {
   dragging.value = false;
   pointerId = null;
 
-  if (showTrash.value && overTrash.value) {
-    dismissFloat();
+  if (showTrash.value && dropMode.value) {
+    dismissFloat(dropMode.value);
     return;
   }
 
   showTrash.value = false;
   overTrash.value = false;
+  dropMode.value = '';
   const next = clamp(pos.value.x, pos.value.y);
   pos.value = { x: snapX(next.x), y: next.y };
 }
@@ -179,22 +225,25 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <!-- 长按后：底部微红渐变手电筒 + 垃圾桶 -->
+  <!-- 长按后：双关闭区 —— 左收起（继续播） / 右停止播放 -->
   <div v-if="show && showTrash" class="trash-layer">
     <div class="flashlight" :class="{ hot: overTrash }">
       <div class="beam"></div>
       <div class="glow"></div>
     </div>
-    <div class="trash-zone" :class="{ hot: overTrash }">
+    <div class="trash-zone collapse" :class="{ hot: dropMode === 'collapse' }">
+      <div class="trash-icon" aria-hidden="true">⌄</div>
+      <div class="trash-label">{{ dropMode === 'collapse' ? '松手收起' : '收起' }}</div>
+      <div class="trash-sub">音乐继续</div>
+    </div>
+    <div class="trash-zone stop" :class="{ hot: dropMode === 'stop' }">
       <div class="trash-icon" aria-hidden="true">
-        <svg viewBox="0 0 48 48" width="40" height="40">
-          <path d="M16 14h16l-1.2 22.5A3 3 0 0 1 27.8 39h-7.6a3 3 0 0 1-3-2.5L16 14z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/>
-          <path d="M13 14h22" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
-          <path d="M20 14v-2.5A2.5 2.5 0 0 1 22.5 9h3A2.5 2.5 0 0 1 28 11.5V14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
-          <path d="M21 20v12M27 20v12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <svg viewBox="0 0 48 48" width="32" height="32">
+          <rect x="12" y="12" width="24" height="24" rx="3" fill="currentColor"/>
         </svg>
       </div>
-      <div class="trash-label">{{ overTrash ? '松手关闭' : '拖入关闭' }}</div>
+      <div class="trash-label">{{ dropMode === 'stop' ? '松手停止' : '停止播放' }}</div>
+      <div class="trash-sub">结束这首歌</div>
     </div>
   </div>
 
@@ -224,7 +273,9 @@ onBeforeUnmount(() => {
       <span class="mf-meta">
         <span class="mf-title">{{ musicPlayer.state.current.title }}</span>
         <span class="mf-sub">
-          {{ showTrash ? (overTrash ? '松手关闭' : '长按关闭区') : (musicPlayer.state.playing ? '播放中' : '已暂停') }}
+          {{ showTrash
+            ? (dropMode === 'stop' ? '松手停止' : dropMode === 'collapse' ? '松手收起' : '拖到收起 / 停止')
+            : (musicPlayer.state.playing ? '播放中' : '已暂停') }}
           <template v-if="!showTrash"> · {{ fmtAudioTime(musicPlayer.state.progress) }}</template>
         </span>
       </span>
@@ -364,9 +415,7 @@ onBeforeUnmount(() => {
 
 .trash-zone {
   position: absolute;
-  left: 50%;
   bottom: calc(22px + env(safe-area-inset-bottom, 0px));
-  transform: translateX(-50%);
   width: 96px;
   height: 96px;
   border-radius: 50%;
@@ -374,11 +423,19 @@ onBeforeUnmount(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 2px;
   color: #ffb4b4;
   background: radial-gradient(circle at center, rgba(80, 20, 20, 0.55), rgba(30, 10, 10, 0.2) 70%, transparent 75%);
   border: 1.5px solid rgba(255, 90, 90, 0.28);
   transition: transform 160ms ease, color 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+.trash-zone.collapse {
+  left: 32%;
+  transform: translateX(-50%);
+}
+.trash-zone.stop {
+  left: 68%;
+  transform: translateX(-50%);
 }
 .trash-zone.hot {
   color: #fff;
@@ -386,6 +443,14 @@ onBeforeUnmount(() => {
   border-color: rgba(255, 70, 70, 0.75);
   background: radial-gradient(circle at center, rgba(160, 30, 30, 0.7), rgba(80, 16, 16, 0.35) 70%, transparent 75%);
   box-shadow: 0 0 24px rgba(255, 60, 60, 0.35);
+}
+.trash-zone.collapse.hot {
+  border-color: rgba(255, 180, 80, 0.8);
+  background: radial-gradient(circle at center, rgba(140, 90, 20, 0.7), rgba(60, 40, 10, 0.35) 70%, transparent 75%);
+}
+.trash-sub {
+  font-size: 10px;
+  opacity: 0.85;
 }
 .trash-icon {
   line-height: 0;

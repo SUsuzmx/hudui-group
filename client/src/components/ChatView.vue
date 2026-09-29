@@ -39,6 +39,8 @@ import ImagePreview from './ImagePreview.vue';
 import WxPayCard from './WxPayCard.vue';
 import ListenTogetherCard from './ListenTogetherCard.vue';
 import ListenTogetherBar from './ListenTogetherBar.vue';
+import TowerBattleInviteCard from './TowerBattleInviteCard.vue';
+import GuessSongInviteCard from './GuessSongInviteCard.vue';
 import {
   listenTogether,
   createRoom,
@@ -54,7 +56,7 @@ const props = defineProps({
   chat: { type: Object, default: null },
   pendingSearch: { type: Boolean, default: false },
 });
-const emit = defineEmits(['back', 'open-chat-info', 'members', 'search-used', 'open-video-call', 'open-profile', 'open-view']);
+const emit = defineEmits(['back', 'open-chat-info', 'members', 'search-used', 'open-video-call', 'open-profile', 'open-view', 'open-tower-invite', 'open-guess-invite']);
 
 const conversationId = computed(() => props.chat?.conversationId || null);
 const chatTitle = computed(() => props.chat?.name || members.value.groupName || 'WeChat');
@@ -1670,6 +1672,36 @@ async function onJoinListenCard(m) {
   }
 }
 
+function onTowerInviteCard(m, payload = {}) {
+  const ext = parseExt(m) || {};
+  const inviteId = ext.inviteId;
+  if (!inviteId) {
+    showToast('这场已经散了，再约一局吧。');
+    return;
+  }
+  emit('open-tower-invite', {
+    inviteId,
+    messageId: m.id,
+    status: payload.status || ext.status,
+    canJoin: payload.canJoin !== false,
+  });
+}
+
+function onGuessInviteCard(m, payload = {}) {
+  const ext = parseExt(m) || {};
+  const inviteId = ext.inviteId;
+  if (!inviteId) {
+    showToast('这场已经散了，再约一局吧。');
+    return;
+  }
+  emit('open-guess-invite', {
+    inviteId,
+    messageId: m.id,
+    status: payload.status || ext.status,
+    canJoin: payload.canJoin !== false,
+  });
+}
+
 function openRedPacketSheet() {
   showRp.value = true;
   dockMode.value = 0;
@@ -2273,6 +2305,20 @@ onBeforeUnmount(() => {
               :member-count="parseExt(m).memberCount || 1"
               :status="parseExt(m).ended ? 'ended' : ''"
               @join="onJoinListenCard(m)"
+            />
+            <TowerBattleInviteCard
+              v-else-if="m.mediaType === 'tower_invite'"
+              class="bubble"
+              :ext="parseExt(m)"
+              :is-mine="isMineMsg(m)"
+              @join="(p) => onTowerInviteCard(m, p)"
+            />
+            <GuessSongInviteCard
+              v-else-if="m.mediaType === 'guess_invite'"
+              class="bubble"
+              :ext="parseExt(m)"
+              :is-mine="isMineMsg(m)"
+              @join="(p) => onGuessInviteCard(m, p)"
             />
             <WxPayCard
               v-else-if="payKindOf(m)"

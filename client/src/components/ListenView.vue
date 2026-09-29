@@ -160,6 +160,11 @@ function runSearch() {
 function playTrack(t) {
   if (!t) return;
   musicPlayer.setTracks(tracks.value.length ? tracks.value : musicPlayer.state.tracks);
+  // 当前曲：图标是暂停就暂停，是播放就继续 —— 不要从头重播
+  if (isActive(t)) {
+    musicPlayer.togglePlay();
+    return;
+  }
   musicPlayer.playTrack(t);
 }
 
@@ -196,6 +201,21 @@ function openLogin(provider) {
   showLogin.value = true;
   cookieInput.value = '';
   refreshLoginStatus();
+}
+
+function recoverRestriction(kind) {
+  if (kind === 'next') {
+    musicPlayer.nextTrack();
+    return;
+  }
+  if (kind === 'switch') {
+    const list = musicPlayer.state.tracks || [];
+    const other = list.find((t) => t.source !== current.value?.source)
+      || list.find((t) => t.id !== current.value?.id);
+    if (other) musicPlayer.playTrack(other);
+    else musicPlayer.nextTrack();
+    return;
+  }
 }
 
 async function refreshLoginStatus() {
@@ -628,6 +648,12 @@ onMounted(() => {
     </div>
 
     <footer v-if="current && !showDetail" class="player">
+      <div v-if="musicPlayer.state.restriction?.message" class="restriction-strip">
+        <span class="rs-msg">{{ musicPlayer.state.restriction.message }}</span>
+        <button type="button" @click="recoverRestriction('switch')">换音源</button>
+        <button v-if="musicPlayer.state.restriction.action === 'login'" type="button" @click="openLogin(current.source)">登录</button>
+        <button type="button" @click="recoverRestriction('next')">换一首</button>
+      </div>
       <div class="player-console" @click.stop>
         <div
           class="progress-bar"
@@ -1003,6 +1029,32 @@ onMounted(() => {
   box-shadow: 0 2px 10px rgba(0,0,0,.03);
 }
 .track-list .song:last-child { border-bottom: 0; }
+
+.restriction-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 10px 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 120, 80, 0.12);
+  border: 1px solid rgba(255, 120, 80, 0.35);
+  font-size: 12px;
+}
+.restriction-strip .rs-msg {
+  flex: 1 1 140px;
+  color: var(--text);
+  line-height: 1.4;
+}
+.restriction-strip button {
+  border: 0;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 12px;
+  background: var(--green, #07c160);
+  color: #fff;
+}
 
 /* 播放器控制台：始终浮在音乐库层之上 */
 .player {
