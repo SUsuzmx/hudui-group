@@ -16,7 +16,45 @@ const contacts = ref([]);
 const groups = ref([]);
 const messages = ref([]);
 const localChats = ref([]);
+const mediaType = ref('all');
+const fromTs = ref('');
+const toTs = ref('');
+const showFilters = ref(false);
+const favType = ref('all');
+const favorites = ref([]);
 let timer = null;
+
+async function runEnhancedSearch() {
+  const key = q.value.trim();
+  if (!key) return;
+  try {
+    const params = {
+      q: key,
+      mediaType: mediaType.value === 'all' ? '' : mediaType.value,
+      from: fromTs.value ? new Date(fromTs.value).getTime() : '',
+      to: toTs.value ? new Date(toTs.value).getTime() + 86400_000 : '',
+      limit: 30,
+    };
+    const d = await api.searchMessages(params);
+    messages.value = d?.messages || [];
+  } catch (e) {
+    loadError.value = e?.message || '筛选搜索失败';
+  }
+}
+
+async function loadFavorites() {
+  try {
+    const d = await api.favoritesByType(favType.value);
+    favorites.value = d?.favorites || [];
+  } catch {
+    favorites.value = [];
+  }
+}
+
+function toggleFilters() {
+  showFilters.value = !showFilters.value;
+  if (showFilters.value) loadFavorites();
+}
 
 async function runSearch() {
   const key = q.value.trim();
@@ -56,7 +94,20 @@ async function runSearch() {
 
 watch(q, () => {
   clearTimeout(timer);
-  timer = setTimeout(runSearch, 280);
+  timer = setTimeout(() => {
+    runSearch();
+    if (mediaType.value !== 'all' || fromTs.value || toTs.value) {
+      runEnhancedSearch();
+    }
+  }, 280);
+});
+
+watch([mediaType, fromTs, toTs], () => {
+  if (q.value.trim()) runEnhancedSearch();
+});
+
+watch(favType, () => {
+  if (showFilters.value) loadFavorites();
 });
 
 function pickContact(c) {
@@ -172,8 +223,37 @@ const hasAny = () => contacts.value.length || groups.value.length || messages.va
         <span class="si"></span>
         <input v-model="q" type="search" placeholder="搜索联系人、群聊、聊天记录" autofocus />
       </div>
+      <button class="cancel" type="button" @click="toggleFilters">筛选</button>
       <button class="cancel" type="button" @click="emit('back')">取消</button>
     </header>
+    <div v-if="showFilters" class="filter-bar">
+      <select v-model="mediaType" class="filter-select">
+        <option value="all">全部类型</option>
+        <option value="text">文本</option>
+        <option value="image">图片</option>
+        <option value="file">文件</option>
+        <option value="voice">语音</option>
+        <option value="video">视频</option>
+      </select>
+      <input v-model="fromTs" type="date" class="filter-date" aria-label="开始日期" />
+      <input v-model="toTs" type="date" class="filter-date" aria-label="结束日期" />
+      <select v-model="favType" class="filter-select">
+        <option value="all">全部收藏</option>
+        <option value="text">文本收藏</option>
+        <option value="image">图片收藏</option>
+        <option value="link">链接</option>
+        <option value="file">文件</option>
+      </select>
+    </div>
+    <section v-if="showFilters && favorites.length" class="sec">
+      <div class="cat">收藏（{{ favorites.length }}）</div>
+      <div v-for="f in favorites" :key="'f' + f.id" class="item static">
+        <div class="main">
+          <div class="name">{{ f.kind }}</div>
+          <div class="sub">{{ (f.content || f.url || '').slice(0, 40) }}</div>
+        </div>
+      </div>
+    </section>
     <main class="body scroll-y">
       <div v-if="!q.trim()" class="hint">输入关键词，搜索联系人 / 群 / 聊天内容</div>
       <div v-else-if="loading" class="hint">搜索中…</div>
@@ -248,6 +328,15 @@ const hasAny = () => contacts.value.length || groups.value.length || messages.va
   height: 34px; padding: 0 10px; background: var(--white); border-radius: 6px;
 }
 .search-field input { flex: 1; border: 0; outline: 0; background: transparent; font-size: 14px; color: var(--text); min-width: 0; }
+.filter-bar {
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px;
+  background: var(--white); border-bottom: 0.5px solid var(--divider);
+}
+.filter-select, .filter-date {
+  flex: 1; min-width: 100px; min-height: 32px; border: 0; border-radius: 6px;
+  background: var(--divider-soft); color: var(--text); font-size: 12px; padding: 0 8px;
+}
+.item.static { pointer-events: none; }
 .si { width: 14px; height: 14px; border: 1.5px solid var(--text-3); border-radius: 50%; position: relative; flex-shrink: 0; }
 .si::after { content: ""; position: absolute; width: 5px; height: 1.5px; background: var(--text-3); right: -4px; bottom: -1px; transform: rotate(45deg); }
 .cancel { border: 0; background: transparent; color: var(--green); font-size: 14px; padding: 8px 4px; }

@@ -22,7 +22,7 @@ export const ARTIST_WRONG_PENALTY = 5;
 export const TRACK_FIELDS = [
   'source', 'id', 'mid', 'mediaMid', 'hash', 'albumId', 'albumAudioId', 'mixSongId',
   'title', 'artist', 'cover', 'duration', 'durationMs', 'privilege',
-  'hqHash', 'sqHash', 'resHash',
+  'hqHash', 'sqHash', 'resHash', 'url',
 ];
 
 /** 去掉 Live / 伴奏 / 翻唱等后缀，用于「几乎同名」判定 */

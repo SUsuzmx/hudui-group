@@ -584,8 +584,9 @@ onBeforeUnmount(() => {
 .lt-top {
   display: flex;
   align-items: center;
-  height: 52px;
-  padding: env(safe-area-inset-top, 0px) 8px 0;
+  height: calc(52px + var(--safe-t, 0px));
+  padding: var(--safe-t, 0px) 8px 0;
+  box-sizing: border-box;
   flex-shrink: 0;
 }
 .lt-top-title {

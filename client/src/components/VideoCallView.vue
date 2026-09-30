@@ -747,8 +747,8 @@ onBeforeUnmount(() => {
 }
 .call-page.connected .call-bg { opacity: 0.25; }
 .call-float-btn {
-  position: absolute; left: 16px; top: 18px; z-index: 5;
-  width: 40px; height: 40px; border-radius: 10px; border: 0;
+  position: absolute; left: 16px; top: calc(18px + var(--safe-t, 0px)); z-index: 5;
+  width: 44px; height: 44px; border-radius: 12px; border: 0;
   background: rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center;
   cursor: pointer;
 }
@@ -804,7 +804,7 @@ onBeforeUnmount(() => {
 .video-stage.hidden { display: none; }
 .remote-video { width: 100%; height: 100%; object-fit: cover; background: #000; }
 .local-video {
-  position: absolute; right: 12px; top: 48px;
+  position: absolute; right: 12px; top: calc(48px + var(--safe-t, 0px));
   width: 96px; height: 128px; object-fit: cover;
   border-radius: 8px; border: 1px solid rgba(255,255,255,0.25);
   background: #222; z-index: 3;

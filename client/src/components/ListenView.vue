@@ -196,6 +196,12 @@ function isActive(t) {
 }
 function openDetail() { if (current.value) showDetail.value = true; }
 
+/** 3D 舞台底部「邀请一起听」：先收起舞台，再弹会话选择（否则选人面板被舞台盖住） */
+function onInviteFromStage() {
+  showDetail.value = false;
+  inviteListenTogether();
+}
+
 function openLogin(provider) {
   loginProvider.value = provider || source.value || 'qq';
   showLogin.value = true;
@@ -693,7 +699,7 @@ onMounted(() => {
       </div>
     </footer>
 
-    <SongDetailView v-if="showDetail" @close="showDetail = false" />
+    <SongDetailView v-if="showDetail" @close="showDetail = false" @invite-listen="onInviteFromStage" />
 
     <div v-if="showLogin" class="login-mask" @click.self="showLogin = false">
       <div class="login-panel">

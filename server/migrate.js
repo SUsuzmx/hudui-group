@@ -391,6 +391,119 @@ const migrations = [
       createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_guess_invites_msg ON guess_invites(message_id)');
     },
   },
+  {
+    id: 11,
+    name: 'platform_security_ops',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS login_history (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id     INTEGER NOT NULL,
+          token       TEXT,
+          ip          TEXT NOT NULL DEFAULT '',
+          user_agent  TEXT NOT NULL DEFAULT '',
+          device      TEXT NOT NULL DEFAULT '',
+          city        TEXT NOT NULL DEFAULT '',
+          status      TEXT NOT NULL DEFAULT 'ok',
+          anomaly     INTEGER NOT NULL DEFAULT 0,
+          anomaly_note TEXT NOT NULL DEFAULT '',
+          created_at  INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS password_resets (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id     INTEGER NOT NULL,
+          code_hash   TEXT NOT NULL,
+          expires_at  INTEGER NOT NULL,
+          used_at     INTEGER,
+          created_at  INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS account_deletions (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id     INTEGER NOT NULL,
+          reason      TEXT NOT NULL DEFAULT '',
+          status      TEXT NOT NULL DEFAULT 'pending',
+          requested_at INTEGER NOT NULL,
+          processed_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS reports (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          reporter_id INTEGER NOT NULL,
+          target_type TEXT NOT NULL,
+          target_id   TEXT NOT NULL,
+          category    TEXT NOT NULL DEFAULT 'other',
+          detail      TEXT NOT NULL DEFAULT '',
+          status      TEXT NOT NULL DEFAULT 'pending',
+          handler_note TEXT NOT NULL DEFAULT '',
+          created_at  INTEGER NOT NULL,
+          updated_at  INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS feedback (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id     INTEGER NOT NULL,
+          category    TEXT NOT NULL DEFAULT 'suggestion',
+          content     TEXT NOT NULL,
+          contact     TEXT NOT NULL DEFAULT '',
+          status      TEXT NOT NULL DEFAULT 'open',
+          reply       TEXT NOT NULL DEFAULT '',
+          created_at  INTEGER NOT NULL,
+          updated_at  INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS moment_visitors (
+          moment_id   INTEGER NOT NULL,
+          visitor_id  INTEGER NOT NULL,
+          created_at  INTEGER NOT NULL,
+          PRIMARY KEY (moment_id, visitor_id)
+        );
+        CREATE TABLE IF NOT EXISTS group_announcement_reads (
+          group_id    INTEGER NOT NULL,
+          user_id     INTEGER NOT NULL,
+          read_at     INTEGER NOT NULL,
+          PRIMARY KEY (group_id, user_id)
+        );
+        CREATE TABLE IF NOT EXISTS group_join_requests (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          group_id    INTEGER NOT NULL,
+          user_id     INTEGER NOT NULL,
+          reason      TEXT NOT NULL DEFAULT '',
+          status      TEXT NOT NULL DEFAULT 'pending',
+          created_at  INTEGER NOT NULL,
+          handled_at  INTEGER,
+          handled_by  INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS error_logs (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id     INTEGER,
+          feature     TEXT NOT NULL DEFAULT '',
+          message     TEXT NOT NULL,
+          stack       TEXT NOT NULL DEFAULT '',
+          meta        TEXT NOT NULL DEFAULT '',
+          created_at  INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS cloud_backups (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id     INTEGER NOT NULL,
+          kind        TEXT NOT NULL DEFAULT 'full',
+          payload     TEXT NOT NULL,
+          size        INTEGER NOT NULL DEFAULT 0,
+          created_at  INTEGER NOT NULL
+        );
+      `);
+      addColumnIfMissing(db, 'groups', 'owner_id', 'INTEGER');
+      addColumnIfMissing(db, 'groups', 'require_approval', 'INTEGER NOT NULL DEFAULT 0');
+      addColumnIfMissing(db, 'groups', 'announcement', 'TEXT NOT NULL DEFAULT ""');
+      addColumnIfMissing(db, 'groups', 'announcement_at', 'INTEGER');
+      addColumnIfMissing(db, 'groups', 'settings_json', 'TEXT NOT NULL DEFAULT "{}"');
+      addColumnIfMissing(db, 'group_members', 'role', "TEXT NOT NULL DEFAULT 'member'");
+      addColumnIfMissing(db, 'moments', 'visibility', "TEXT NOT NULL DEFAULT 'public'");
+      addColumnIfMissing(db, 'moments', 'hide_from', 'TEXT NOT NULL DEFAULT "[]"');
+      addColumnIfMissing(db, 'moments', 'visible_to', 'TEXT NOT NULL DEFAULT "[]"');
+      addColumnIfMissing(db, 'messages', 'meta_json', 'TEXT');
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_login_history_user ON login_history(user_id, created_at DESC)');
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at DESC)');
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_feedback_user ON feedback(user_id, created_at DESC)');
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_error_logs_at ON error_logs(created_at DESC)');
+    },
+  },
 ];
 
 export function runMigrations(db) {

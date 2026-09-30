@@ -80,7 +80,8 @@ function enrichMember(m) {
     const u = stmts.userById.get(Number(m.userId));
     return {
       ...m,
-      nickname: u?.nickname || name,
+      // 群昵称优先（我在群里的昵称），否则回落账号昵称
+      nickname: name || u?.nickname,
       avatar: u?.avatar || null,
       emoji: null,
       color: u?.avatar_color || '#4f6ef7',
@@ -207,6 +208,10 @@ export function getGroup(groupId) {
     isDefault: g.kind === DEFAULT_GROUP_KIND,
     conversationId: groupConvId(g.id),
     notice: g.notice || '',
+    ownerId: g.owner_id ?? null,
+    requireApproval: Boolean(g.require_approval),
+    announcement: g.announcement || g.notice || '',
+    announcementAt: g.announcement_at || null,
   };
 }
 
@@ -221,6 +226,30 @@ export function renameGroup(groupId, name) {
   if (!text) return null;
   stmts.setGroupName.run(text, Number(groupId));
   return getGroup(groupId);
+}
+
+/** 修改「我在群里的昵称」（写入 group_members.nickname） */
+export function setMyGroupNickname(groupId, userId, nickname) {
+  const gid = Number(groupId);
+  const uid = Number(userId);
+  const g = getGroup(gid);
+  if (!g) return { error: '群不存在' };
+  const text = String(nickname || '').trim().slice(0, 20);
+  const rows = stmts.listGroupMembers.all(gid) || [];
+  const mine = rows.find((r) => Number(r.user_id) === uid);
+  if (!mine) return { error: '你不在该群聊中' };
+  // 空昵称则恢复账号昵称
+  let next = text;
+  if (!next) {
+    const u = stmts.userById.get(uid);
+    next = u?.nickname || mine.nickname || '';
+  }
+  try {
+    db.prepare('UPDATE group_members SET nickname = ? WHERE group_id = ? AND user_id = ?').run(next, gid, uid);
+  } catch (e) {
+    return { error: e.message || '保存失败' };
+  }
+  return { ok: true, nickname: next };
 }
 
 function memberRowToApi(r) {
@@ -315,6 +344,11 @@ export function createGroup({ name, memberNames, userIds = [], aiNames = [], cre
   const avatars = (memberNames || []).slice(0, 9).map((n) => String(n).slice(0, 12));
   const r = stmts.insertGroup.run(cleanName, 'custom', JSON.stringify(avatars), Date.now());
   const gid = Number(r.lastInsertRowid);
+  try {
+    if (creatorId) {
+      db.prepare('UPDATE groups SET owner_id = ? WHERE id = ?').run(Number(creatorId), gid);
+    }
+  } catch { /* ignore */ }
   if (creatorNickname || creatorId) {
     addGroupMembers(gid, {
       userIds,

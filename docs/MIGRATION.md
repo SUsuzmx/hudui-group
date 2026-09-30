@@ -66,9 +66,12 @@ cd hudui-group
 
 - `data/chat.db` `data/chat.db-wal` `data/chat.db-shm`
 - `data/media/`
+- `data/vapid.json`（Web Push 密钥，可选；不拷则新机自动生成，旧订阅失效）
+- `data/feature-flags.json`（可选，功能开关覆盖）
 - `config/ai.json`
 - `.netease-cookie` `.qq-cookie` `.kugou-cookie`
 - `games/`（可选）
+- `music/`（可选，本地曲库 / 猜歌兜底，体积大）
 
 ### 方案 C：空库全新装
 
@@ -235,12 +238,15 @@ npm run test:smoke
 npm run test:security
 npm run check:ai
 npm run test:tower   # 需先 PORT=3011 node scripts/tower-test-server.mjs
+node scripts/smoke-platform.mjs
+node scripts/verify-group-fixes.mjs
 ```
 
 人工必点：
 
 - [ ] 注册/登录（单端挤下）
 - [ ] 群聊收发、@AI、红包/转账
+- [ ] 群详情：成员头像墙、群公告、我在群里的昵称、查找聊天记录
 - [ ] 私聊、朋友验证
 - [ ] 朋友圈封面与点赞
 - [ ] 通讯录 A–Z
@@ -250,6 +256,7 @@ npm run test:tower   # 需先 PORT=3011 node scripts/tower-test-server.mjs
 - [ ] **叠塔对战**：发起 → 邀请卡 → 点卡加入 → 准备开局 → 90 秒对局 → 结算再来一局
 - [ ] 发现页游戏（若已部署）
 - [ ] PWA / Service Worker 强刷后正常
+- [ ] 账号安全：登录记录 / 找回密码；推送订阅（HTTPS）
 
 ---
 

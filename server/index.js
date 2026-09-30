@@ -22,12 +22,30 @@ import { createKugouRouter } from './providers/kugou.js';
 import { createLookApi } from './look-api.js';
 import { createMetaRouter, getUserSettings, setUserSettings } from './meta.js';
 import { canViewStatus, filterStatusForViewer } from './privacy.js';
-import { seedGroups, listGroups, getGroup, groupConvId, DEFAULT_GROUP_KIND, setGroupNotice, createGroup, listGroupMembers, addGroupMembers, leaveGroup, removeGroupMember, renameGroup } from './groups.js';
+import { seedGroups, listGroups, getGroup, groupConvId, DEFAULT_GROUP_KIND, setGroupNotice, createGroup, listGroupMembers, addGroupMembers, leaveGroup, removeGroupMember, renameGroup, setMyGroupNickname } from './groups.js';
 import { canAccessConversation } from './acl.js';
 import { mediaFromBodyJson, mediaFromMultipart, mediaFromRaw, normalizeKind } from './upload.js';
 import { mediaServeMiddleware } from './media-serve.js';
+import { pushStatus, saveSubscription, removeSubscription, pushToUser } from './push.js';
 import { getBalance, listTx, debit } from './wallet.js';
 import { expirePendingPayments, RP_COVERS, redPacketPayload } from './rp.js';
+import {
+  recordLogin, listLoginHistory,
+  requestPasswordReset, resetPasswordWithCode, generateRecoveryCode,
+  requestAccountDeletion, deleteAccountData,
+  checkSensitiveContent, filterContentOrError,
+  createReport, listMyReports, handleReport,
+  createFeedback, listMyFeedback, replyFeedback, FAQ_LIST,
+  recordMomentVisit, listMomentVisitors,
+  markAnnouncementRead, listAnnouncementReads,
+  setGroupJoinApproval, requestJoinGroup, listJoinRequests, handleJoinRequest,
+  setMemberRole, canManageGroup, canKickMember, listGroupAlbum,
+  exportChatHistory, saveCloudBackup, listCloudBackups, restoreCloudBackup,
+  searchMessagesEnhanced, listFavoritesByType,
+  logError, listErrorLogs,
+  isPlatformAdmin, adminOverview, adminListUsers, adminListReports, adminListFeedback,
+} from './platform.js';
+import { getFlags, setFlags, requireFeature, isFeatureEnabled } from './feature-flags.js';
 
 const LOG_FILE = path.join(ROOT, 'data', 'app.log');
 const LOG_MAX_BYTES = 5 * 1024 * 1024;
@@ -150,6 +168,18 @@ app.post('/api/moments/upload', express.raw({ type: () => true, limit: '8mb' }),
 // 头像与媒体
 app.use('/avatars', express.static(IMG_DIR, { maxAge: '1h' }));
 app.use('/media', mediaServeMiddleware);
+// 本地下载歌曲（猜歌兜底 / 试听），只读静态，禁止目录穿越
+app.use(
+  '/music',
+  express.static(path.join(ROOT, 'music'), {
+    maxAge: '1d',
+    dotfiles: 'deny',
+    index: false,
+    setHeaders(res) {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+    },
+  })
+);
 
 app.get('/api/avatars', (req, res) => res.json({ avatars: listAvatars() }));
 
@@ -402,7 +432,19 @@ app.post('/api/register', (req, res) => {
   log(`新用户注册: ${r.user.nickname}`);
   kickOtherSessions(r.user?.id, r.kickedTokens);
   setAuthCookie(res, r.token);
-  res.json({ token: r.token, user: r.user, isNew: true, singleLogin: true });
+  const anomaly = recordLogin({
+    userId: r.user.id,
+    token: r.token,
+    ip,
+    userAgent: req.get('User-Agent') || '',
+  });
+  res.json({
+    token: r.token,
+    user: r.user,
+    isNew: true,
+    singleLogin: true,
+    loginAnomaly: anomaly,
+  });
 });
 
 app.post('/api/login', (req, res) => {
@@ -411,11 +453,26 @@ app.post('/api/login', (req, res) => {
     return res.status(429).json({ error: '尝试次数过多, 请稍后再试' });
   }
   const r = login(req.body?.nickname, req.body?.password);
-  if (r.error) return res.status(400).json({ error: r.error });
+  if (r.error) {
+    try { logError({ feature: 'login', message: `login failed for ${req.body?.nickname}` }); } catch { /* ignore */ }
+    return res.status(400).json({ error: r.error });
+  }
   log(`用户登录: ${r.user.nickname}（单端挤下 ${r.kickedTokens?.length || 0} 个旧会话）`);
   kickOtherSessions(r.user?.id, r.kickedTokens);
   setAuthCookie(res, r.token);
-  res.json({ token: r.token, user: r.user, isNew: false, singleLogin: true });
+  const anomaly = recordLogin({
+    userId: r.user.id,
+    token: r.token,
+    ip,
+    userAgent: req.get('User-Agent') || '',
+  });
+  res.json({
+    token: r.token,
+    user: r.user,
+    isNew: false,
+    singleLogin: true,
+    loginAnomaly: anomaly,
+  });
 });
 
 app.get('/api/me', (req, res) => {
@@ -456,6 +513,265 @@ app.post('/api/auth/kick-others', (req, res) => {
   const r = keepOnlyCurrentSession(session.id, token);
   kickOtherSessions(session.id, r.kickedTokens);
   res.json({ ok: true, kicked: r.kickedTokens.length });
+});
+
+// ---------- 账号与安全 ----------
+app.get('/api/auth/login-history', requireAuth, requireFeature('accountSecurity'), (req, res) => {
+  res.json({ items: listLoginHistory(req.user.id, req.query.limit) });
+});
+
+app.post('/api/auth/forgot-password', requireFeature('accountSecurity'), (req, res) => {
+  const ip = req.ip || 'unknown';
+  if (loginRateLimited(ip, 'forgot:' + (req.body?.nickname || ''))) {
+    return res.status(429).json({ error: '尝试过于频繁' });
+  }
+  res.json(requestPasswordReset(req.body?.nickname));
+});
+
+app.post('/api/auth/reset-password', requireFeature('accountSecurity'), (req, res) => {
+  const ip = req.ip || 'unknown';
+  if (loginRateLimited(ip, 'reset:' + (req.body?.nickname || ''))) {
+    return res.status(429).json({ error: '尝试过于频繁' });
+  }
+  const r = resetPasswordWithCode(req.body?.nickname, req.body?.code, req.body?.newPassword);
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
+app.post('/api/auth/recovery-code', requireAuth, (req, res) => {
+  const code = generateRecoveryCode(req.user.id);
+  res.json({ ok: true, recoveryCode: code });
+});
+
+app.post('/api/account/delete', requireAuth, requireFeature('accountSecurity'), (req, res) => {
+  const user = userFromRequest(req, res);
+  if (!user) return;
+  requestAccountDeletion(user.id, req.body?.reason || '');
+  const r = deleteAccountData(user.id);
+  if (r.error) return res.status(400).json({ error: r.error });
+  log(`账号注销: ${user.nickname}`);
+  res.json({ ok: true, message: r.message });
+});
+
+// ---------- 举报 / 反馈 ----------
+app.post('/api/reports', requireAuth, requireFeature('momentsSafety'), (req, res) => {
+  const text = `${req.body?.detail || ''}`;
+  const check = filterContentOrError(text);
+  if (check.error) return res.status(400).json({ error: check.error });
+  const r = createReport({
+    reporterId: req.user.id,
+    targetType: req.body?.targetType,
+    targetId: req.body?.targetId,
+    category: req.body?.category,
+    detail: text,
+  });
+  res.json(r);
+});
+
+app.get('/api/reports/mine', requireAuth, (req, res) => {
+  res.json({ reports: listMyReports(req.user.id) });
+});
+
+app.post('/api/feedback', requireAuth, requireFeature('feedbackFaq'), (req, res) => {
+  const text = String(req.body?.content || '');
+  if (text.trim().length < 4) return res.status(400).json({ error: '请填写具体反馈内容' });
+  const check = filterContentOrError(text);
+  if (check.error) return res.status(400).json({ error: check.error });
+  res.json(createFeedback({
+    userId: req.user.id,
+    category: req.body?.category,
+    content: text,
+    contact: req.body?.contact,
+  }));
+});
+
+app.get('/api/feedback/mine', requireAuth, (req, res) => {
+  res.json({ feedbacks: listMyFeedback(req.user.id) });
+});
+
+app.get('/api/faq', (req, res) => {
+  res.json({ faq: FAQ_LIST });
+});
+
+// ---------- 朋友圈访客 / 举报 ----------
+app.get('/api/moments/:id/visitors', requireAuth, requireFeature('momentsSafety'), (req, res) => {
+  const r = listMomentVisitors(req.params.id, req.user.id);
+  if (r.error) return res.status(403).json({ error: r.error });
+  res.json(r);
+});
+
+app.post('/api/moments/:id/visit', requireAuth, (req, res) => {
+  recordMomentVisit(req.params.id, req.user.id);
+  res.json({ ok: true });
+});
+
+// ---------- 群治理 ----------
+app.get('/api/groups/:id/album', requireAuth, requireFeature('groupGovernance'), (req, res) => {
+  const r = listGroupAlbum(req.params.id, req.user.id);
+  if (r.error) return res.status(403).json({ error: r.error });
+  res.json(r);
+});
+
+app.post('/api/groups/:id/join-approval', requireAuth, (req, res) => {
+  const r = setGroupJoinApproval(req.params.id, req.user.id, Boolean(req.body?.requireApproval));
+  if (r.error) return res.status(403).json({ error: r.error });
+  res.json(r);
+});
+
+app.post('/api/groups/:id/join', requireAuth, (req, res) => {
+  const r = requestJoinGroup(req.params.id, req.user.id, req.body?.reason || '');
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
+app.get('/api/groups/:id/join-requests', requireAuth, (req, res) => {
+  const r = listJoinRequests(req.params.id, req.user.id);
+  if (r.error) return res.status(403).json({ error: r.error });
+  res.json(r);
+});
+
+app.post('/api/groups/join-requests/:id/handle', requireAuth, (req, res) => {
+  const r = handleJoinRequest(req.params.id, {
+    approve: Boolean(req.body?.approve),
+    handlerId: req.user.id,
+  });
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
+app.post('/api/groups/:id/members/role', requireAuth, (req, res) => {
+  const r = setMemberRole(req.params.id, req.user.id, req.body?.userId, req.body?.role);
+  if (r.error) return res.status(403).json({ error: r.error });
+  res.json(r);
+});
+
+app.get('/api/groups/:id/announcement/reads', requireAuth, (req, res) => {
+  const r = listAnnouncementReads(req.params.id, req.user.id);
+  if (r.error) return res.status(403).json({ error: r.error });
+  res.json(r);
+});
+
+app.post('/api/groups/:id/announcement/read', requireAuth, (req, res) => {
+  res.json(markAnnouncementRead(req.params.id, req.user.id));
+});
+
+app.get('/api/groups/:id/my-role', requireAuth, (req, res) => {
+  res.json(canManageGroup(req.params.id, req.user.id));
+});
+
+// ---------- 备份导出 ----------
+app.get('/api/backup/export', requireAuth, requireFeature('backupCloud'), (req, res) => {
+  const r = exportChatHistory(req.user.id, {
+    conversationId: req.query.conversationId || null,
+    limit: req.query.limit,
+  });
+  if (r.error) return res.status(403).json({ error: r.error });
+  res.json(r);
+});
+
+app.post('/api/backup/cloud', requireAuth, (req, res) => {
+  const exported = exportChatHistory(req.user.id, {
+    conversationId: req.body?.conversationId || null,
+    limit: req.body?.limit || 500,
+  });
+  if (exported.error) return res.status(400).json({ error: exported.error });
+  const saved = saveCloudBackup(req.user.id, exported.payload);
+  if (saved.error) return res.status(400).json({ error: saved.error });
+  res.json({ ok: true, size: saved.size, count: exported.payload?.count || 0 });
+});
+
+app.get('/api/backup/cloud', requireAuth, (req, res) => {
+  res.json({ backups: listCloudBackups(req.user.id) });
+});
+
+app.get('/api/backup/cloud/:id', requireAuth, (req, res) => {
+  const r = restoreCloudBackup(req.user.id, req.params.id);
+  if (r.error) return res.status(404).json({ error: r.error });
+  res.json(r);
+});
+
+// ---------- 搜索 / 收藏 ----------
+app.get('/api/search/messages', requireAuth, requireFeature('searchEnhanced'), (req, res) => {
+  res.json(searchMessagesEnhanced(req.user.id, {
+    q: req.query.q,
+    conversationId: req.query.conversationId,
+    mediaType: req.query.mediaType,
+    from: req.query.from,
+    to: req.query.to,
+    limit: req.query.limit,
+  }));
+});
+
+app.get('/api/favorites/by-type', requireAuth, (req, res) => {
+  res.json(listFavoritesByType(req.user.id, req.query.type || 'all'));
+});
+
+// ---------- 错误上报 ----------
+app.post('/api/client-error', requireAuth, (req, res) => {
+  logError({
+    userId: req.user.id,
+    feature: req.body?.feature || 'client',
+    message: req.body?.message || 'unknown',
+    stack: req.body?.stack || '',
+    meta: req.body?.meta || {},
+  });
+  res.json({ ok: true });
+});
+
+// ---------- 管理后台 ----------
+function requirePlatformAdmin(req, res, next) {
+  const user = userFromRequest(req, res);
+  if (!user) return;
+  if (!isPlatformAdmin(user.id)) return res.status(403).json({ error: '需要管理员权限' });
+  next();
+}
+
+app.get('/api/admin/overview', requirePlatformAdmin, requireFeature('adminPanel'), (req, res) => {
+  res.json({ ...adminOverview(), flags: getFlags() });
+});
+
+app.get('/api/admin/flags', requirePlatformAdmin, (req, res) => {
+  res.json({ flags: getFlags() });
+});
+
+app.post('/api/admin/flags', requirePlatformAdmin, (req, res) => {
+  const r = setFlags(req.body?.flags || req.body || {});
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
+app.get('/api/admin/users', requirePlatformAdmin, (req, res) => {
+  res.json({ users: adminListUsers(req.query.q || '', req.query.limit) });
+});
+
+app.get('/api/admin/reports', requirePlatformAdmin, (req, res) => {
+  res.json({ reports: adminListReports(req.query.status || '', req.query.limit) });
+});
+
+app.post('/api/admin/reports/:id', requirePlatformAdmin, (req, res) => {
+  const r = handleReport(req.params.id, {
+    status: req.body?.status,
+    handlerNote: req.body?.handlerNote,
+    adminId: req.user?.id || 1,
+  });
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
+app.get('/api/admin/feedback', requirePlatformAdmin, (req, res) => {
+  res.json({ feedbacks: adminListFeedback(req.query.status || '', req.query.limit) });
+});
+
+app.post('/api/admin/feedback/:id/reply', requirePlatformAdmin, (req, res) => {
+  res.json(replyFeedback(req.params.id, req.body?.reply || ''));
+});
+
+app.get('/api/admin/errors', requirePlatformAdmin, (req, res) => {
+  res.json({ errors: listErrorLogs({ feature: req.query.feature, limit: req.query.limit }) });
+});
+
+app.post('/api/content/check', requireAuth, (req, res) => {
+  res.json(checkSensitiveContent(req.body?.text || '', req.body?.kind || 'text'));
 });
 
 app.get('/api/users/:id', (req, res) => {
@@ -506,6 +822,37 @@ app.get('/api/users/:id', (req, res) => {
       commonGroupCount,
     },
   });
+});
+
+// ── Web Push：后台/关闭页面仍可收消息 ──
+app.get('/api/push/public-key', (req, res) => {
+  res.json(pushStatus());
+});
+
+app.post('/api/push/subscribe', requireAuth, (req, res) => {
+  const sub = req.body?.subscription || req.body;
+  const r = saveSubscription(req.user.id, sub);
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json({ ok: true });
+});
+
+app.post('/api/push/unsubscribe', requireAuth, (req, res) => {
+  const endpoint = req.body?.endpoint || req.body?.subscription?.endpoint;
+  removeSubscription(endpoint);
+  res.json({ ok: true });
+});
+
+/** 自测：给当前用户推一条（验证订阅与 SW 通知） */
+app.post('/api/push/test', requireAuth, async (req, res) => {
+  const r = await pushToUser(req.user.id, {
+    title: '通知测试',
+    body: '后台消息推送已就绪，点我打开会话',
+    tag: 'push-test',
+    conversationId: 'default',
+    url: '/?open=chat&conv=default',
+    kind: 'test',
+  });
+  res.json({ ok: true, sent: r.sent });
 });
 
 // 账号设置（隐私 / 通用）— 服务端持久化
@@ -789,12 +1136,23 @@ app.post('/api/groups/:id/leave', (req, res) => {
 app.post('/api/groups/:id/rename', (req, res) => {
   const user = requireUser(req, res);
   if (!user) return;
+  const manage = canManageGroup(req.params.id, user.id);
+  if (!manage.can) return res.status(403).json({ error: '仅群主或管理员可修改群名' });
   const g = renameGroup(req.params.id, req.body?.name);
   if (!g) return res.status(400).json({ error: '群名称不合法' });
   try {
     chatApi?.addSystemMessage?.(`${user.nickname} 修改群名为「${g.name}」`, g.conversationId);
   } catch { /* ignore */ }
   res.json({ ok: true, group: g });
+});
+
+// 我在群里的昵称
+app.post('/api/groups/:id/my-nickname', (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+  const r = setMyGroupNickname(req.params.id, user.id, req.body?.nickname);
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json({ ok: true, nickname: r.nickname });
 });
 
 app.post('/api/groups/:id/members/remove', (req, res) => {
@@ -804,6 +1162,14 @@ app.post('/api/groups/:id/members/remove', (req, res) => {
   if (!g) return res.status(404).json({ error: '群不存在' });
   const key = String(req.body?.key || '');
   if (!key) return res.status(400).json({ error: '缺少成员标识' });
+  // 权限：群主可踢任何人；管理员可踢普通成员
+  const manage = canManageGroup(g.id, user.id);
+  if (!manage.can) return res.status(403).json({ error: '仅群主或管理员可移出成员' });
+  if (key.startsWith('u')) {
+    const targetUid = Number(key.slice(1));
+    const kick = canKickMember(g.id, user.id, targetUid);
+    if (!kick.can) return res.status(403).json({ error: kick.reason || '无权移出该成员' });
+  }
   removeGroupMember(g.id, key);
   const label = key.startsWith('ai:') ? key.slice(3) : key.replace(/^u/, '');
   try {
@@ -818,6 +1184,8 @@ app.post('/api/groups/:id/notice', (req, res) => {
   if (!user) return;
   const g = getGroup(req.params.id);
   if (!g) return res.status(404).json({ error: '群不存在' });
+  const manage = canManageGroup(g.id, user.id);
+  if (!manage.can) return res.status(403).json({ error: '仅群主或管理员可更新群公告' });
   const notice = setGroupNotice(g.id, req.body?.notice);
   try {
     if (notice) {

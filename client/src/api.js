@@ -191,6 +191,8 @@ export const api = {
     request(`/api/groups/${id}/members`, { body: { userIds, aiNames } }),
   leaveGroup: (id) => request(`/api/groups/${id}/leave`, { body: {} }),
   renameGroup: (id, name) => request(`/api/groups/${id}/rename`, { body: { name } }),
+  setMyGroupNickname: (id, nickname) =>
+    request(`/api/groups/${id}/my-nickname`, { body: { nickname } }),
   removeGroupMember: (id, key) =>
     request(`/api/groups/${id}/members/remove`, { body: { key } }),
   userCards: () => request('/api/cards', { method: 'GET' }),
@@ -204,6 +206,63 @@ export const api = {
   redpacketDetail: (id) => request(`/api/redpacket/${Number(id)}`, { method: 'GET' }),
   settings: () => request('/api/settings', { method: 'GET' }),
   updateSettings: (settings) => request('/api/settings', { method: 'PUT', body: { settings } }),
+
+  // 账号与安全
+  loginHistory: () => request('/api/auth/login-history', { method: 'GET' }),
+  forgotPassword: (nickname) => request('/api/auth/forgot-password', { body: { nickname } }),
+  resetPassword: (nickname, code, newPassword) =>
+    request('/api/auth/reset-password', { body: { nickname, code, newPassword } }),
+  generateRecoveryCode: () => request('/api/auth/recovery-code', { body: {} }),
+  deleteAccount: (reason) => request('/api/account/delete', { body: { reason } }),
+
+  // 举报 / 反馈 / FAQ
+  createReport: (payload) => request('/api/reports', { body: payload }),
+  myReports: () => request('/api/reports/mine', { method: 'GET' }),
+  createFeedback: (payload) => request('/api/feedback', { body: payload }),
+  myFeedback: () => request('/api/feedback/mine', { method: 'GET' }),
+  faq: () => request('/api/faq', { method: 'GET' }),
+
+  // 群治理
+  groupAlbum: (id) => request(`/api/groups/${id}/album`, { method: 'GET' }),
+  setJoinApproval: (id, requireApproval) =>
+    request(`/api/groups/${id}/join-approval`, { body: { requireApproval } }),
+  requestJoinGroup: (id, reason) =>
+    request(`/api/groups/${id}/join`, { body: { reason } }),
+  joinRequests: (id) => request(`/api/groups/${id}/join-requests`, { method: 'GET' }),
+  handleJoinRequest: (id, approve) =>
+    request(`/api/groups/join-requests/${id}/handle`, { body: { approve } }),
+  setMemberRole: (id, userId, role) =>
+    request(`/api/groups/${id}/members/role`, { body: { userId, role } }),
+  announcementReads: (id) => request(`/api/groups/${id}/announcement/reads`, { method: 'GET' }),
+  markAnnouncementRead: (id) => request(`/api/groups/${id}/announcement/read`, { body: {} }),
+  groupMyRole: (id) => request(`/api/groups/${id}/my-role`, { method: 'GET' }),
+
+  // 朋友圈访客
+  momentVisitors: (id) => request(`/api/moments/${id}/visitors`, { method: 'GET' }),
+  reportMomentVisit: (id) => request(`/api/moments/${id}/visit`, { body: {} }),
+
+  // 备份
+  exportChat: (opts = {}) => request('/api/backup/export', { method: 'GET', query: opts }),
+  cloudBackup: (opts = {}) => request('/api/backup/cloud', { body: opts }),
+  cloudBackups: () => request('/api/backup/cloud', { method: 'GET' }),
+  restoreCloudBackup: (id) => request(`/api/backup/cloud/${id}`, { method: 'GET' }),
+
+  // 搜索 / 收藏
+  searchMessages: (params) => request('/api/search/messages', { method: 'GET', query: params }),
+  favoritesByType: (type) => request('/api/favorites/by-type', { method: 'GET', query: { type } }),
+
+  // 错误上报 / 管理
+  reportClientError: (payload) => request('/api/client-error', { body: payload }),
+  adminOverview: () => request('/api/admin/overview', { method: 'GET' }),
+  adminUsers: (q) => request('/api/admin/users', { method: 'GET', query: { q } }),
+  adminReports: (status) => request('/api/admin/reports', { method: 'GET', query: { status } }),
+  adminHandleReport: (id, payload) => request(`/api/admin/reports/${id}`, { body: payload }),
+  adminFeedback: (status) => request('/api/admin/feedback', { method: 'GET', query: { status } }),
+  adminReplyFeedback: (id, reply) => request(`/api/admin/feedback/${id}/reply`, { body: { reply } }),
+  adminErrors: (feature) => request('/api/admin/errors', { method: 'GET', query: { feature } }),
+  adminFlags: () => request('/api/admin/flags', { method: 'GET' }),
+  adminSetFlags: (flags) => request('/api/admin/flags', { method: 'POST', body: { flags } }),
+  checkContent: (text) => request('/api/content/check', { body: { text } }),
 
   // 发现页: 听一听 — 网易云 / QQ / 酷狗
   musicList: ({ q = '', source = 'qq', limit = 30 } = {}) =>
@@ -261,4 +320,8 @@ export const api = {
   changePassword: (oldPassword, newPassword) =>
     request('/api/password', { method: 'PUT', body: { oldPassword, newPassword } }),
   kickOtherDevices: () => request('/api/auth/kick-others', { method: 'POST', body: {} }),
+  pushPublicKey: () => request('/api/push/public-key', { method: 'GET' }),
+  pushSubscribe: (subscription) => request('/api/push/subscribe', { method: 'POST', body: { subscription } }),
+  pushUnsubscribe: (endpoint) => request('/api/push/unsubscribe', { method: 'POST', body: { endpoint } }),
+  pushTest: () => request('/api/push/test', { method: 'POST', body: {} }),
 };

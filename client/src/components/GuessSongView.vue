@@ -104,6 +104,21 @@ function remainLabel(deadline) {
 const answerRemain = computed(() => remainLabel(state.answerDeadline));
 const artistRemain = computed(() => remainLabel(state.artistDeadline));
 
+/** 领奖台：1 中间最高，2 左，3 右 */
+const podiumOrder = computed(() => {
+  const list = ranking.value || [];
+  return [
+    { no: 2, player: list.find((r) => r.rank === 2) || null },
+    { no: 1, player: list.find((r) => r.rank === 1) || null },
+    { no: 3, player: list.find((r) => r.rank === 3) || null },
+  ];
+});
+
+function scoreBarWidth(score) {
+  const max = Math.max(...(ranking.value || []).map((r) => Number(r.score) || 0), 1);
+  return Math.max(8, Math.round(((Number(score) || 0) / max) * 100));
+}
+
 function flash(msg) {
   flashMsg.value = msg;
   setTimeout(() => {
@@ -583,25 +598,67 @@ onBeforeUnmount(() => {
 
     <!-- ========== 结算 ========== -->
     <section v-else-if="phase === 'finished'" class="gs-finish">
-      <div class="gs-finish-hero">🏆</div>
+      <div class="gs-finish-glow" aria-hidden="true" />
+      <p class="gs-finish-kicker">MATCH OVER</p>
       <h2 class="gs-finish-title">本局名次</h2>
-      <p class="gs-finish-sub">{{ themeLabel }} · {{ room?.songCount || 10 }} 首</p>
-      <div class="gs-rank">
+      <p class="gs-finish-sub">{{ themeLabel }} · 共 {{ room?.songCount || 10 }} 首</p>
+
+      <!-- 前三领奖台 -->
+      <div v-if="ranking.length" class="gs-podium">
+        <div
+          v-for="slot in podiumOrder"
+          :key="slot.no"
+          class="gs-podium-slot"
+          :class="'p' + slot.no"
+        >
+          <template v-if="slot.player">
+            <UserAvatar
+              :name="slot.player.nickname"
+              :avatar="slot.player.avatar"
+              :color="slot.player.avatarColor"
+              :size="slot.no === 1 ? 56 : 44"
+            />
+            <div class="gs-podium-name">{{ slot.player.nickname }}</div>
+            <div class="gs-podium-score">{{ slot.player.score }} 分</div>
+            <div class="gs-podium-bar">
+              <span class="gs-podium-rank">{{ slot.no }}</span>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- 完整名次 -->
+      <div class="gs-rank-card">
         <div
           v-for="r in ranking"
           :key="r.userId"
           class="gs-rank-row"
-          :class="{ top: r.rank === 1, second: r.rank === 2, third: r.rank === 3 }"
+          :class="{ me: r.userId === myPlayer?.userId, top: r.rank === 1 }"
         >
-          <span class="gs-rank-no">{{ r.rank }}</span>
-          <UserAvatar :name="r.nickname" :avatar="r.avatar" :color="r.avatarColor" :size="40" />
-          <span class="gs-rank-name">{{ r.nickname }}</span>
-          <span class="gs-rank-score">{{ r.score }}</span>
+          <span class="gs-rank-no" :class="{ gold: r.rank === 1, silver: r.rank === 2, bronze: r.rank === 3 }">
+            {{ r.rank }}
+          </span>
+          <UserAvatar :name="r.nickname" :avatar="r.avatar" :color="r.avatarColor" :size="36" />
+          <div class="gs-rank-meta">
+            <div class="gs-rank-name">
+              {{ r.nickname }}
+              <span v-if="r.userId === myPlayer?.userId" class="gs-tag me">我</span>
+            </div>
+            <div class="gs-rank-bar">
+              <i :style="{ width: scoreBarWidth(r.score) + '%' }" />
+            </div>
+          </div>
+          <div class="gs-rank-score">{{ r.score }}</div>
         </div>
       </div>
-      <button type="button" class="gs-cta" :disabled="busy" @click="onRematch">一键再来一局</button>
-      <button type="button" class="gs-cta ghost" @click="showPicker = true">邀请再来</button>
-      <button type="button" class="gs-link" @click="confirmLeave = true">离开</button>
+
+      <div class="gs-finish-actions">
+        <button type="button" class="gs-cta" :disabled="busy" @click="onRematch">
+          {{ busy ? '准备中…' : '再来一局' }}
+        </button>
+        <button type="button" class="gs-cta ghost" @click="showPicker = true">邀请朋友</button>
+        <button type="button" class="gs-link" @click="confirmLeave = true">离开房间</button>
+      </div>
     </section>
 
     <section v-else class="gs-loading">
@@ -632,13 +689,16 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .gs-page {
-  min-height: 100%;
+  min-height: 0;
+  flex: 1;
   color: #f7f2ff;
   background:
     radial-gradient(1200px 600px at 80% -10%, rgba(255, 92, 120, 0.22), transparent 55%),
     radial-gradient(900px 500px at 10% 20%, rgba(120, 80, 255, 0.22), transparent 50%),
     linear-gradient(165deg, #12081f 0%, #1a0f2e 45%, #0d0718 100%);
-  padding-bottom: 32px;
+  padding-bottom: calc(32px + var(--safe-b, 0px));
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* ---- top ---- */
@@ -646,11 +706,11 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 14px 8px;
+  padding: calc(12px + var(--safe-t, 0px)) 14px 8px;
 }
 .gs-icon-btn {
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(255, 255, 255, 0.06);
@@ -658,6 +718,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
 }
 .gs-brand {
   flex: 1;
@@ -1250,16 +1311,30 @@ onBeforeUnmount(() => {
 
 /* ---- finish ---- */
 .gs-finish {
-  padding: 28px 18px;
+  position: relative;
+  padding: 28px 16px calc(28px + var(--safe-b, 0px));
   text-align: center;
+  overflow: hidden;
 }
-.gs-finish-hero {
-  font-size: 64px;
-  margin-bottom: 6px;
+.gs-finish-glow {
+  position: absolute;
+  left: 50%;
+  top: -40px;
+  width: 320px;
+  height: 220px;
+  transform: translateX(-50%);
+  background: radial-gradient(circle, rgba(251, 191, 36, 0.22), transparent 70%);
+  pointer-events: none;
+}
+.gs-finish-kicker {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  opacity: 0.55;
 }
 .gs-finish-title {
-  margin: 0;
-  font-size: 24px;
+  margin: 6px 0 0;
+  font-size: 26px;
   font-weight: 800;
 }
 .gs-finish-sub {
@@ -1267,38 +1342,149 @@ onBeforeUnmount(() => {
   opacity: 0.7;
   font-size: 13px;
 }
-.gs-rank {
+
+.gs-podium {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 10px;
+  min-height: 180px;
+  margin: 8px 0 18px;
+}
+.gs-podium-slot {
+  width: 96px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
+}
+.gs-podium-slot.p2 { order: 1; }
+.gs-podium-slot.p1 { order: 2; width: 112px; }
+.gs-podium-slot.p3 { order: 3; }
+.gs-podium-name {
+  max-width: 96px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gs-podium-score {
+  font-size: 12px;
+  color: #ffd08a;
+  font-weight: 700;
+}
+.gs-podium-bar {
+  width: 100%;
+  border-radius: 12px 12px 0 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.06));
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10px;
+}
+.gs-podium-slot.p1 .gs-podium-bar {
+  height: 88px;
+  background: linear-gradient(180deg, rgba(251, 191, 36, 0.55), rgba(251, 191, 36, 0.12));
+}
+.gs-podium-slot.p2 .gs-podium-bar {
+  height: 64px;
+  background: linear-gradient(180deg, rgba(203, 213, 225, 0.45), rgba(203, 213, 225, 0.1));
+}
+.gs-podium-slot.p3 .gs-podium-bar {
+  height: 52px;
+  background: linear-gradient(180deg, rgba(217, 119, 6, 0.45), rgba(217, 119, 6, 0.1));
+}
+.gs-podium-rank {
+  font-size: 18px;
+  font-weight: 800;
+  opacity: 0.85;
+}
+
+.gs-rank-card {
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   margin-bottom: 18px;
 }
 .gs-rank-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.06);
+  padding: 10px;
+  border-radius: 12px;
   text-align: left;
 }
+.gs-rank-row.me {
+  background: rgba(255, 140, 180, 0.12);
+}
 .gs-rank-row.top {
-  background: linear-gradient(135deg, rgba(251, 191, 36, 0.28), rgba(255, 107, 107, 0.2));
+  background: rgba(251, 191, 36, 0.1);
 }
 .gs-rank-no {
-  width: 24px;
+  width: 22px;
+  height: 22px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
   font-weight: 800;
-  color: #ffd08a;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.75);
+  flex-shrink: 0;
+}
+.gs-rank-no.gold {
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  color: #2a1a00;
+}
+.gs-rank-no.silver {
+  background: linear-gradient(135deg, #e2e8f0, #94a3b8);
+  color: #1e293b;
+}
+.gs-rank-no.bronze {
+  background: linear-gradient(135deg, #d97706, #b45309);
+  color: #fff7ed;
+}
+.gs-rank-meta {
+  flex: 1;
+  min-width: 0;
 }
 .gs-rank-name {
-  flex: 1;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.gs-rank-bar {
+  margin-top: 6px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+.gs-rank-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #ff8fab, #ffd08a);
 }
 .gs-rank-score {
   font-size: 18px;
   font-weight: 800;
   color: #ffd08a;
+  min-width: 36px;
+  text-align: right;
+}
+.gs-finish-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .gs-loading {

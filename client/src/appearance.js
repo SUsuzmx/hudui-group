@@ -5,6 +5,7 @@ const defaults = {
   dark: false,
   fontScale: 1,
   chatBg: null, // null = 跟随主题
+  highContrast: false,
 };
 
 function load() {
@@ -23,6 +24,7 @@ export function applyAppearance() {
   const a = load();
   const dark = Boolean(a.dark);
   document.documentElement.classList.toggle('dark', dark);
+  document.documentElement.classList.toggle('high-contrast', Boolean(a.highContrast));
   document.documentElement.style.setProperty('color-scheme', dark ? 'dark' : 'light');
   document.documentElement.style.setProperty('--font-scale', String(a.fontScale || 1));
   const chatBg = a.chatBg || (dark ? '#111111' : '#ededed');

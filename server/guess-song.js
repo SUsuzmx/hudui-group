@@ -35,6 +35,10 @@ import {
   REAL_ARTIST_NAMES,
   normalizeTitle,
 } from '../client/src/guess-song-engine.js';
+import {
+  localTracksForArtist,
+  allLocalMusicTracks,
+} from './local-music.js';
 
 function shuffle(arr, rng = Math.random) {
   const a = arr.slice();
@@ -667,21 +671,38 @@ function normalizeTheme(raw, rawLabel) {
 }
 
 /**
- * 从 QQ / 网易云 / 酷狗 随机攒一批曲目。
- * 失败自动降级，保证开局能继续。
+ * 从曲库攒一批曲目。
+ * - 指定歌手且本地 music/ 已有该歌手 → **只走本地**，不打远程
+ * - 其他主题（曲库小王子 / 无本地的歌手）→ 正常远程搜索
  */
 export async function buildGuessSongPool({ minCount = 24, force = false, theme = 'random', themeLabel = '' } = {}) {
   const t = now();
   const artist = theme === 'random' ? '' : String(themeLabel || theme.replace(/^artist:/, '') || '').trim();
-  // 指定歌手时单独缓存，避免随机池污染
   const cacheKey = artist ? `artist:${artist}` : 'random';
   if (!songPoolCache.byTheme) songPoolCache.byTheme = new Map();
   const hit = songPoolCache.byTheme.get(cacheKey);
   if (!force && hit && hit.tracks.length >= Math.min(minCount, 12) && t - hit.at < 30 * 60 * 1000) {
     return hit.tracks;
   }
-  // 本地兜底立刻可用
-  const seed = localFallbackTracks();
+
+  // 本地下载曲目（music/<歌手>/）
+  const localForTheme = artist ? localTracksForArtist(artist).map(keepTrackFields).filter(Boolean) : [];
+  // 有本地库（周杰伦/孙燕姿/陈奕迅/邓紫棋/林俊杰…）：纯本地，不打远程
+  if (artist && localForTheme.length >= 8) {
+    const uniqueLocal = [];
+    for (const tr of localForTheme) {
+      if (uniqueLocal.some((u) => titlesTooSimilar(u.title, tr.title) || isSameRecordingVariant(u, tr))) continue;
+      uniqueLocal.push(tr);
+    }
+    const tracks = uniqueLocal.length >= 5 ? uniqueLocal : localForTheme;
+    if (!songPoolCache.byTheme) songPoolCache.byTheme = new Map();
+    songPoolCache.byTheme.set(cacheKey, { at: now(), tracks });
+    songPoolCache.tracks = tracks;
+    songPoolCache.at = now();
+    return tracks;
+  }
+
+  const seed = [...localForTheme, ...localFallbackTracks()];
   if (hit && hit.tracks.length && !force) {
     setTimeout(() => {
       enrichSongPool(minCount, null, artist).catch(() => {});
@@ -702,10 +723,42 @@ function looksLikeArtistTrack(tr, artist) {
 }
 
 async function enrichSongPool(minCount, seedTracks = null, artist = '') {
-  const seed = seedTracks || localFallbackTracks();
+  // 本地下载（music/歌手/）：远程超时也能用真歌开局
+  const localArtist = artist ? localTracksForArtist(artist).map(keepTrackFields).filter(Boolean) : [];
+  const localAny = allLocalMusicTracks().map(keepTrackFields).filter(Boolean);
+  const seed = seedTracks && seedTracks.length
+    ? seedTracks
+    : [...localArtist, ...localFallbackTracks()];
+
   const collected = new Map();
+  const addList = (list, requireArtist) => {
+    for (const tr of list) {
+      if (!tr?.id && !tr?.hash) continue;
+      if (!tr.title || tr.title.length > 60) continue;
+      if (/伴奏|纯音乐|karaoke/i.test(tr.title) && !/[一-龥a-zA-Z]/.test(tr.title.replace(/伴奏|纯音乐|karaoke/gi, ''))) continue;
+      if (requireArtist && !looksLikeArtistTrack(tr, artist)) continue;
+      const k = trackKey(tr);
+      if (!collected.has(k)) collected.set(k, tr);
+    }
+  };
+
+  // 1) 本地真实曲目（同主题优先）
+  addList(localArtist, Boolean(artist));
+  if (!artist) addList(localAny, false);
+
+  // 本地已足够：不打远程
+  if (artist && localArtist.length >= 8) {
+    const uniqueLocal = [];
+    for (const tr of localArtist) {
+      if (uniqueLocal.some((u) => titlesTooSimilar(u.title, tr.title) || isSameRecordingVariant(u, tr))) continue;
+      uniqueLocal.push(tr);
+    }
+    return uniqueLocal.length ? uniqueLocal : localArtist;
+  }
+
   const want = artist ? Math.max(minCount, 36) : Math.max(minCount, 32);
-  const sources = ['kugou', 'qq', 'netease']; // 酷狗搜索分页最稳，优先
+  // 2) 远程搜索补池（串行，避免打挂音源）
+  const sources = ['kugou', 'qq', 'netease'];
   const baseQueries = artist
     ? [
       artist,
@@ -719,18 +772,6 @@ async function enrichSongPool(minCount, seedTracks = null, artist = '') {
     ]
     : SEARCH_QUERIES.slice().sort(() => Math.random() - 0.5).slice(0, 6);
 
-  const addList = (list, requireArtist) => {
-    for (const tr of list) {
-      if (!tr?.id && !tr?.hash) continue;
-      if (!tr.title || tr.title.length > 60) continue;
-      if (/伴奏|纯音乐|karaoke/i.test(tr.title) && !/[一-龥a-zA-Z]/.test(tr.title.replace(/伴奏|纯音乐|karaoke/gi, ''))) continue;
-      if (requireArtist && !looksLikeArtistTrack(tr, artist)) continue;
-      const k = trackKey(tr);
-      if (!collected.has(k)) collected.set(k, tr);
-    }
-  };
-
-  // 1) 按关键词拉取（串行少量请求，避免打挂酷狗歌单/播放）
   for (const q of baseQueries) {
     if (collected.size >= want) break;
     const pages = artist ? [0, 20] : [0];
@@ -745,7 +786,7 @@ async function enrichSongPool(minCount, seedTracks = null, artist = '') {
     }
   }
 
-  // 2) 歌手曲库仍不够：再搜代表作歌名，把同一歌手的歌收进来
+  // 3) 仍不够：再搜代表作
   if (artist && collected.size < want) {
     const hits = await Promise.all(
       [`${artist}`, `${artist} 歌曲`].map((q) =>
@@ -763,7 +804,6 @@ async function enrichSongPool(minCount, seedTracks = null, artist = '') {
       if (uniqueM.some((u) => titlesTooSimilar(u.title, tr.title) || isSameRecordingVariant(u, tr))) continue;
       uniqueM.push(tr);
     }
-    // 真实歌手曲目足够就用它们；不够再并入其它真实曲，绝不先丢回本地 demo
     if (uniqueM.length >= Math.min(8, want / 2)) tracks = uniqueM;
     else {
       const rest = tracks.filter(
@@ -780,11 +820,14 @@ async function enrichSongPool(minCount, seedTracks = null, artist = '') {
     unique.push(tr);
   }
 
-  // 真实曲目不够时才把本地 demo 拼在后面（保证开局），但顺序在后
-  const finalTracks = unique.length ? [...unique, ...seed.filter((s) => !unique.some((u) => trackKey(u) === trackKey(s)))] : seed;
+  // 真实曲目不够时，把本地下载 / demo 拼在后面
+  const fillers = [...localArtist, ...localAny, ...seed].filter(
+    (s) => s && !unique.some((u) => trackKey(u) === trackKey(s)) && !isPlaceholderTrack(s)
+  );
+  const finalTracks = unique.length ? [...unique, ...fillers] : [...localArtist, ...seed];
+
   if (!songPoolCache.byTheme) songPoolCache.byTheme = new Map();
   const cacheKey = artist ? `artist:${artist}` : 'random';
-  // 只要真实曲目超过 3 首就缓存，避免反复打接口
   if (unique.length >= Math.min(3, want)) {
     songPoolCache.byTheme.set(cacheKey, { at: now(), tracks: finalTracks });
     songPoolCache.tracks = finalTracks;
@@ -798,14 +841,23 @@ setTimeout(() => {
   enrichSongPool(30).catch(() => {});
 }, 500).unref?.();
 
-/** 从曲库抽 n 首互不重复的题目；优先真实曲目，不足时用真实金曲名兜底（音频仍走本地 demo） */
+/** 从曲库抽 n 首互不重复的题目；优先可播真实曲目（含本地下载），不足时用真实金曲名兜底 */
 function pickSongs(pool, n, rng = Math.random, artist = '') {
   let real = pool.filter((tr) => tr && !isPlaceholderTrack(tr));
   if (artist) {
     const matched = real.filter((tr) => String(tr.artist || '').includes(artist));
     if (matched.length >= Math.min(n, 3)) real = matched;
   }
-  const shuffled = real.slice().sort(() => rng() - 0.5);
+  // 本地已下载（有 url）优先，远程超时也能播
+  real = real.slice().sort((a, b) => {
+    const la = a.url && String(a.url).startsWith('/music/') ? 0 : 1;
+    const lb = b.url && String(b.url).startsWith('/music/') ? 0 : 1;
+    return la - lb;
+  });
+  const shuffled = [
+    ...real.filter((t) => t.url && String(t.url).startsWith('/music/')),
+    ...real.filter((t) => !(t.url && String(t.url).startsWith('/music/'))).sort(() => rng() - 0.5),
+  ];
   const picked = [];
   const usedNorm = new Set();
   for (const tr of shuffled) {
@@ -893,6 +945,7 @@ function startRound(room, index) {
     trackRef: {
       source: track.source,
       id: track.id,
+      url: track.url || '',
       mid: track.mid,
       mediaMid: track.mediaMid,
       hash: track.hash,

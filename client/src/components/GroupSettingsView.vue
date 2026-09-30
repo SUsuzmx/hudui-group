@@ -31,6 +31,16 @@ const groupRemark = ref('');
 const editingRemark = ref(false);
 const remarkDraft = ref('');
 const busy = ref(false);
+const myRole = ref('member');
+const requireApproval = ref(false);
+const announcementReads = ref(null);
+const albumImages = ref([]);
+const showAlbum = ref(false);
+const joinRequests = ref([]);
+const showJoinReqs = ref(false);
+const editingMyNick = ref(false);
+const myNickDraft = ref('');
+const myGroupNick = ref('');
 
 function resolveGroupId() {
   if (props.groupId) return Number(props.groupId);
@@ -52,7 +62,16 @@ async function loadAll() {
     try {
       const d = await api.groupInfo(gid);
       notice.value = d?.group?.notice || '';
+      requireApproval.value = Boolean(d?.group?.requireApproval);
     } catch { /* ignore */ }
+    try {
+      const role = await api.groupMyRole(gid);
+      myRole.value = role?.role || 'member';
+      if (role?.can) {
+        const reqs = await api.joinRequests(gid).catch(() => ({ requests: [] }));
+        joinRequests.value = reqs?.requests || [];
+      }
+    } catch { myRole.value = 'member'; }
     try {
       const d = await api.groupMembers(gid);
       memberList.value = (d.members || []).map((m) => ({
@@ -61,6 +80,9 @@ async function loadAll() {
         avatar: m.avatar || null,
         emoji: m.emoji || (m.isAI ? '🤖' : null),
       }));
+      const meId = Number(props.me?.id || 0);
+      const mine = memberList.value.find((m) => meId && Number(m.userId) === meId);
+      myGroupNick.value = (mine?.nickname || '').trim();
     } catch { memberList.value = []; }
   }
   // 回退: socket 成员 + AI 联系人, 保证头像墙非空
@@ -382,10 +404,94 @@ async function leaveGroup() {
   }
 }
 
+async function toggleJoinApproval() {
+  const gid = resolveGroupId();
+  if (!gid) return;
+  try {
+    const d = await api.setJoinApproval(gid, !requireApproval.value);
+    requireApproval.value = Boolean(d?.requireApproval);
+    toast(requireApproval.value ? '已开启入群验证' : '已关闭入群验证');
+  } catch (e) {
+    toast(e.message || '设置失败');
+  }
+}
+
+async function loadAnnouncementReads() {
+  const gid = resolveGroupId();
+  if (!gid) return;
+  try {
+    const d = await api.announcementReads(gid);
+    if (d?.error) {
+      toast(d.error);
+      return;
+    }
+    announcementReads.value = d;
+    toast(`已读 ${d?.reads?.length || 0} / ${d?.total || 0}`);
+  } catch (e) {
+    toast(e.message || '加载失败');
+  }
+}
+
+async function markNoticeRead() {
+  const gid = resolveGroupId();
+  if (!gid) return;
+  try {
+    await api.markAnnouncementRead(gid);
+    toast('已标记为已读');
+  } catch (e) {
+    toast(e.message || '操作失败');
+  }
+}
+
+async function openAlbum() {
+  const gid = resolveGroupId();
+  if (!gid) return;
+  try {
+    const d = await api.groupAlbum(gid);
+    if (d?.error) {
+      toast(d.error);
+      return;
+    }
+    albumImages.value = d?.images || [];
+    showAlbum.value = true;
+  } catch (e) {
+    toast(e.message || '加载失败');
+  }
+}
+
+async function handleJoin(id, approve) {
+  try {
+    await api.handleJoinRequest(id, approve);
+    toast(approve ? '已同意入群' : '已拒绝');
+    joinRequests.value = joinRequests.value.filter((r) => r.id !== id);
+  } catch (e) {
+    toast(e.message || '操作失败');
+  }
+}
+
+async function setAdmin(m, asAdmin) {
+  const gid = resolveGroupId();
+  if (!gid || !m.userId) return;
+  try {
+    await api.setMemberRole(gid, m.userId, asAdmin ? 'admin' : 'member');
+    toast(asAdmin ? '已设为管理员' : '已取消管理员');
+    const d = await api.groupMembers(gid);
+    memberList.value = (d.members || []).map((x) => ({
+      ...x,
+      color: x.color || (x.isAI ? '#07c160' : '#4f6ef7'),
+    }));
+  } catch (e) {
+    toast(e.message || '设置失败');
+  }
+}
+
 function openMember(m) {
+  const uid = m.userId != null && Number(m.userId) > 0 ? Number(m.userId) : null;
+  // 无真实 userId（AI / 纯昵称成员）走本地资料，避免拉 /api/users 报「用户不存在」
+  const useLocal = !uid || Boolean(m.isAI) || Boolean(m.personaKey);
   emit('open-profile', {
-    id: m.userId ?? m.personaId ?? memberKey(m),
-    userId: m.userId ?? null,
+    id: uid ?? m.personaId ?? memberKey(m),
+    userId: uid,
     nickname: m.nickname,
     avatar: m.avatar,
     avatarUrl: m.avatar,
@@ -395,9 +501,31 @@ function openMember(m) {
     avatarColor: m.color,
     isAI: Boolean(m.isAI),
     personaId: m.personaId ?? (m.personaKey ? m.personaKey.replace(/^ai:/, '') : null),
-    isFriend: !m.isAI,
-    local: Boolean(m.isAI),
+    isFriend: Boolean(uid) && !m.isAI,
+    local: useLocal,
   });
+}
+
+async function saveMyNick() {
+  const gid = resolveGroupId();
+  if (!gid) return;
+  const val = myNickDraft.value.trim().slice(0, 20);
+  busy.value = true;
+  try {
+    const d = await api.setMyGroupNickname(gid, val);
+    myGroupNick.value = d?.nickname ?? val;
+    // 同步成员墙展示
+    const meId = Number(props.me?.id || 0);
+    memberList.value = memberList.value.map((m) =>
+      (meId && Number(m.userId) === meId) ? { ...m, nickname: myGroupNick.value || props.me?.nickname || m.nickname } : m,
+    );
+    editingMyNick.value = false;
+    toast(val ? `群昵称已设为「${val}」` : '已恢复为默认昵称');
+  } catch (e) {
+    toast(e.message || '保存失败');
+  } finally {
+    busy.value = false;
+  }
 }
 
 onMounted(loadAll);
@@ -423,7 +551,7 @@ onMounted(loadAll);
       <section class="card members-card">
         <div class="member-grid">
           <div
-            v-for="m in members"
+            v-for="m in memberList"
             :key="memberKey(m)"
             class="member-cell"
             :title="m.nickname"
@@ -436,6 +564,15 @@ onMounted(loadAll);
               :color="m.color || '#07c160'"
               :size="64"
             />
+            <span v-if="m.role === 'owner'" class="role-badge owner">群主</span>
+            <span v-else-if="m.role === 'admin'" class="role-badge admin">管理</span>
+            <button
+              v-if="myRole === 'owner' && m.userId && m.role !== 'owner'"
+              class="role-toggle"
+              type="button"
+              :title="m.role === 'admin' ? '取消管理员' : '设为管理员'"
+              @click.stop="setAdmin(m, m.role !== 'admin')"
+            >{{ m.role === 'admin' ? '取消' : '管理' }}</button>
           </div>
           <div class="member-cell action" @click="showInvite = true" title="添加成员">
             <div class="icon-btn plus">+</div>
@@ -458,6 +595,29 @@ onMounted(loadAll);
         </div>
         <div class="cell-row" @click="editingNotice = true; noticeDraft = notice">
           <span class="cell-label">群公告</span>
+          <span class="arrow">›</span>
+        </div>
+        <div class="cell-row" @click="loadAnnouncementReads">
+          <span class="cell-label">公告已读情况</span>
+          <span class="cell-value">查看</span>
+          <span class="arrow">›</span>
+        </div>
+        <div class="cell-row" @click="markNoticeRead">
+          <span class="cell-label">标记公告已读</span>
+          <span class="arrow">›</span>
+        </div>
+        <div class="cell-row" @click="openAlbum">
+          <span class="cell-label">群相册</span>
+          <span class="cell-value">图片归档</span>
+          <span class="arrow">›</span>
+        </div>
+        <div v-if="myRole === 'owner'" class="cell-row" @click="toggleJoinApproval">
+          <span class="cell-label">需要验证才能入群</span>
+          <button class="switch" :class="{ on: requireApproval }" type="button" aria-label="入群验证"></button>
+        </div>
+        <div v-if="myRole === 'owner' || myRole === 'admin'" class="cell-row" @click="showJoinReqs = true">
+          <span class="cell-label">入群申请</span>
+          <span class="cell-value">{{ joinRequests.filter(r => r.status === 'pending').length || '' }}</span>
           <span class="arrow">›</span>
         </div>
         <div class="cell-row" @click="editingRemark = true; remarkDraft = groupRemark">
@@ -515,9 +675,9 @@ onMounted(loadAll);
       </section>
 
       <section class="card">
-        <div class="cell-row" @click="renaming = true; nameDraft = groupName">
+        <div class="cell-row" @click="editingMyNick = true; myNickDraft = myGroupNick || me?.nickname || ''">
           <span class="cell-label">我在群里的昵称</span>
-          <span class="cell-value">{{ me?.nickname || '—' }}</span>
+          <span class="cell-value">{{ myGroupNick || me?.nickname || '—' }}</span>
           <span class="arrow">›</span>
         </div>
         <div class="cell-row" @click="toggleExtra('showNick')">
@@ -533,6 +693,51 @@ onMounted(loadAll);
       </section>
     </main>
 
+    <div v-if="showAlbum" class="mask" @click.self="showAlbum = false">
+      <div class="dialog album-dialog">
+        <div class="dialog-title">群相册</div>
+        <div v-if="albumImages.length" class="album-grid">
+          <img v-for="img in albumImages" :key="img.id" :src="img.url" :alt="img.senderName" loading="lazy" />
+        </div>
+        <div v-else class="empty-tip" style="padding:20px">群里还没有图片</div>
+        <div class="dialog-actions">
+          <button type="button" @click="showAlbum = false">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="announcementReads" class="mask" @click.self="announcementReads = null">
+      <div class="dialog">
+        <div class="dialog-title">公告已读情况</div>
+        <p class="hint" style="padding:0 0 8px">已读 {{ announcementReads.reads?.length || 0 }} / {{ announcementReads.total || 0 }}</p>
+        <div class="read-list">
+          <div v-for="r in announcementReads.reads" :key="r.id" class="read-item ok">{{ r.nickname }} · 已读</div>
+          <div v-for="u in announcementReads.unread" :key="'u' + u.id" class="read-item">{{ u.nickname }} · 未读</div>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" @click="announcementReads = null">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="showJoinReqs" class="mask" @click.self="showJoinReqs = false">
+      <div class="dialog">
+        <div class="dialog-title">入群申请</div>
+        <div v-for="r in joinRequests.filter(x => x.status === 'pending')" :key="r.id" class="read-item">
+          <div class="row-head"><span class="label">{{ r.nickname }}</span></div>
+          <p class="hint" style="padding:0">{{ r.reason || '请求加入群聊' }}</p>
+          <div class="dialog-actions">
+            <button type="button" @click="handleJoin(r.id, false)">拒绝</button>
+            <button type="button" class="ok" @click="handleJoin(r.id, true)">同意</button>
+          </div>
+        </div>
+        <div v-if="!joinRequests.filter(x => x.status === 'pending').length" class="empty-tip" style="padding:16px">暂无待处理申请</div>
+        <div class="dialog-actions">
+          <button type="button" @click="showJoinReqs = false">关闭</button>
+        </div>
+      </div>
+    </div>
+
     <div v-if="renaming" class="mask" @click.self="renaming = false">
       <div class="dialog">
         <div class="dialog-title">修改群名</div>
@@ -540,6 +745,36 @@ onMounted(loadAll);
         <div class="dialog-actions">
           <button type="button" @click="renaming = false">取消</button>
           <button type="button" class="primary" :disabled="busy || !nameDraft.trim()" @click="saveRename">确定</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="editingNotice" class="mask" @click.self="editingNotice = false">
+      <div class="dialog notice-dialog">
+        <div class="dialog-title">群公告</div>
+        <textarea
+          v-model="noticeDraft"
+          class="notice-textarea"
+          maxlength="500"
+          rows="5"
+          placeholder="填写群公告，所有成员可见"
+        ></textarea>
+        <div class="dialog-actions">
+          <button type="button" @click="editingNotice = false">取消</button>
+          <button type="button" class="primary" :disabled="savingNotice" @click="saveNotice">
+            {{ savingNotice ? '发布中…' : '发布' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="editingMyNick" class="mask" @click.self="editingMyNick = false">
+      <div class="dialog">
+        <div class="dialog-title">我在群里的昵称</div>
+        <input v-model="myNickDraft" maxlength="20" placeholder="仅在本群显示的昵称" />
+        <div class="dialog-actions">
+          <button type="button" @click="editingMyNick = false">取消</button>
+          <button type="button" class="primary" :disabled="busy" @click="saveMyNick">确定</button>
         </div>
       </div>
     </div>
@@ -685,11 +920,23 @@ onMounted(loadAll);
   padding: 0;
 }
 .member-cell {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+}
+.role-badge {
+  position: absolute; top: 0; right: 0; font-size: 10px; padding: 1px 4px;
+  border-radius: 4px; color: #fff;
+}
+.role-badge.owner { background: #e6a23c; }
+.role-badge.admin { background: #4f6ef7; }
+.role-toggle {
+  position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
+  border: 0; border-radius: 4px; background: rgba(0,0,0,0.45); color: #fff;
+  font-size: 10px; padding: 2px 6px; min-height: 18px;
 }
 .member-name { display: none; }
 .icon-btn.plus {
@@ -862,6 +1109,12 @@ onMounted(loadAll);
   width: 100%; box-sizing: border-box; border: 1px solid var(--divider); border-radius: 8px;
   padding: 10px; font-size: 15px; background: var(--white); color: var(--text);
 }
+.notice-dialog { width: min(320px, 90%); }
+.dialog .notice-textarea {
+  width: 100%; box-sizing: border-box; border: 1px solid var(--divider); border-radius: 8px;
+  padding: 10px; font-size: 14px; line-height: 1.5; resize: vertical; min-height: 110px;
+  background: var(--white); color: var(--text); font-family: inherit;
+}
 .dialog-actions { display: flex; gap: 10px; margin-top: 14px; }
 .dialog-actions button {
   flex: 1; min-height: 40px; border: 0; border-radius: 8px; background: var(--divider-soft); color: var(--text);
@@ -929,5 +1182,19 @@ onMounted(loadAll);
   border-radius: 6px; padding: 6px 14px; font-size: 13px; min-height: 32px;
 }
 .notice-actions button.primary { background: var(--green); color: #fff; }
+.album-dialog { width: min(420px, 92%); max-height: 70vh; overflow: auto; }
+.album-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+  max-height: 50vh; overflow: auto; margin-bottom: 8px;
+}
+.album-grid img {
+  width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 4px; background: var(--divider-soft);
+}
+.read-list { max-height: 40vh; overflow: auto; margin-bottom: 8px; }
+.read-item {
+  padding: 8px 0; border-bottom: 0.5px solid var(--divider-soft);
+  font-size: 14px; color: var(--text);
+}
+.read-item.ok { color: var(--green); }
 .empty-tip { font-size: 12px; color: var(--text-3); text-align: center; }
 </style>

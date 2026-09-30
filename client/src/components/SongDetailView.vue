@@ -438,10 +438,10 @@ onBeforeUnmount(() => { stopVisualWatch(); if (lyricTimer) clearInterval(lyricTi
 }
 .top-spacer { width: 40px; }
 .chrome-btn {
-  min-width: 40px;
-  height: 36px;
+  min-width: 44px;
+  height: 44px;
   border: 0;
-  border-radius: 18px;
+  border-radius: 22px;
   background: rgba(255, 255, 255, 0.1);
   color: #fff;
   font-size: 20px;

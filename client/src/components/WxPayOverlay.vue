@@ -287,7 +287,7 @@ const claimAmt = computed(() => {
 }
 .rp-top { padding: 28px 24px 12px; text-align: center; position: relative; }
 .rp-close {
-  position: absolute; left: 12px; top: 12px; width: 36px; height: 36px; border: 0;
+  position: absolute; left: 12px; top: calc(12px + var(--safe-t, 0px)); width: 44px; height: 44px; border: 0;
   background: transparent; color: rgba(255,255,255,0.85); font-size: 18px;
 }
 .rp-cover-badge { font-size: 22px; margin-bottom: 4px; }

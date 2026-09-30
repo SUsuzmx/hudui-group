@@ -295,10 +295,16 @@ function toAudioSrc(url) {
  * 解析片段播放地址。
  * /api/music/proxy 需要 Bearer，<audio> 带不了请求头；
  * 先走鉴权接口 musicStreamInfo 拿直链/代理，再交给 <audio>。
+ * 本地已下载歌曲（music/）优先用同源 url。
  */
 async function resolveTrackUrl(ref) {
   if (!ref) return localDemoUrl('');
-  if (ref.source === 'local') return localDemoUrl(ref.id);
+  // 本地曲库 / 演示曲：直接同源播放
+  if (ref.url && String(ref.url).startsWith('/music/')) return String(ref.url);
+  if (ref.source === 'local') {
+    if (ref.url && String(ref.url).startsWith('/')) return String(ref.url);
+    return localDemoUrl(ref.id);
+  }
 
   const extra = {
     mid: ref.mid || '',

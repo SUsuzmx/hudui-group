@@ -11,6 +11,7 @@ import {
   strangerCanSeeAuthorMoments,
   withinMomentsRange,
 } from './privacy.js';
+import { recordMomentVisit, filterContentOrError } from './platform.js';
 
 function parseImages(raw) {
   try {
@@ -147,6 +148,14 @@ export function createMomentsRouter({ notify } = {}) {
         ? stmts.listMomentsBefore.all(beforeId, 50)
         : stmts.listMoments.all(50);
       const visible = rows.filter((r) => canView(r, req.user.id)).slice(0, 20);
+      // 记录访客（作者自己浏览不计）
+      try {
+        for (const r of visible) {
+          if (Number(r.user_id) !== Number(req.user.id)) {
+            recordMomentVisit(r.id, req.user.id);
+          }
+        }
+      } catch { /* ignore */ }
       res.json({ moments: visible.map((r) => rowToMoment(r, req.user.id)) });
     },
     mine(req, res) {
@@ -215,6 +224,8 @@ export function createMomentsRouter({ notify } = {}) {
         return res.status(400).json({ error: '说点什么或配张图吧' });
       }
       if (content.length > 500) return res.status(400).json({ error: '文字最多 500 字' });
+      const contentCheck = filterContentOrError(content);
+      if (contentCheck.error) return res.status(400).json({ error: contentCheck.error });
       const r = stmts.insertMomentFull.run(
         req.user.id,
         content,
@@ -302,6 +313,9 @@ export function createMomentsRouter({ notify } = {}) {
       res.json(loadInteractions(id, req.user.id));
     },
     comment(req, res) {
+      const text = String(req.body?.content ?? '').trim();
+      const contentCheck = filterContentOrError(text);
+      if (contentCheck.error) return res.status(400).json({ error: contentCheck.error });
       const id = Number(req.body?.id);
       const content = String(req.body?.content ?? '').trim();
       const replyToId = Number(req.body?.replyToId) || null;

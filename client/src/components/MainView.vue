@@ -1795,7 +1795,7 @@ function doChatAction(kind) {
 .tab-dot { position: absolute; top: 8px; left: calc(50% + 8px); width: 8px; height: 8px; border-radius: 4px; background: var(--red); }
 .mask { position: absolute; inset: 0; background: var(--mask); z-index: 30; }
 .pop-menu {
-  position: absolute; top: 4px; right: 8px; width: 168px;
+  position: absolute; top: calc(var(--nav-h) + var(--status-h) + 4px); right: 8px; width: 168px;
   background: #4c4c4c; border-radius: 6px; overflow: hidden;
   box-shadow: 0 8px 24px rgba(0,0,0,0.25);
   z-index: 45; transform-origin: top right; animation: popIn 160ms var(--ease);

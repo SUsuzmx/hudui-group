@@ -7,6 +7,9 @@ import { clearMsgCache, removeHiddenChatId } from './chat-cache.js';
 import { notifyMessage } from './notify.js';
 import ToastHost from './components/ToastHost.vue';
 import LoginView from './components/LoginView.vue';
+import OfflineBanner from './components/OfflineBanner.vue';
+import PwaConsentModal from './components/PwaConsentModal.vue';
+import { registerServiceWorker } from './push-client.js';
 
 const pageLoading = {
   render: () => h('div', { class: 'boot-loading' }, '加载中…'),
@@ -130,6 +133,42 @@ function handleAuthed({ token, user, isNew }) {
   view.value = 'main';
   warmCoreViews();
   bindAuthKick();
+  afterAuthBoot();
+}
+
+/** 登录后：注册 SW、处理通知深链 */
+function afterAuthBoot() {
+  try { registerServiceWorker().catch(() => {}); } catch { /* ignore */ }
+  try { openFromQuery(); } catch { /* ignore */ }
+}
+
+function openFromQuery() {
+  const q = new URLSearchParams(location.search || '');
+  const open = q.get('open');
+  if (!open) return;
+  if (open === 'chat') {
+    const conv = q.get('conv') || '';
+    const from = q.get('from') || '会话';
+    const userId = Number(q.get('userId') || 0);
+    if (String(conv).startsWith('pv_') || userId) {
+      openPrivateChat({
+        userId: userId || null,
+        nickname: from,
+        avatar: null,
+        color: '#4f6ef7',
+      });
+    } else {
+      openChat({
+        conversationId: conv || null,
+        name: from || '微信',
+        isDefault: !conv || conv === 'default',
+      });
+    }
+    // 清掉 query，避免刷新重复跳转
+    try {
+      history.replaceState({}, '', location.pathname);
+    } catch { /* ignore */ }
+  }
 }
 
 let unbindKick = null;
@@ -196,6 +235,7 @@ onMounted(async () => {
     view.value = 'main';
     // 单端登录：被挤下线时立刻回登录页
     bindAuthKick();
+    afterAuthBoot();
   } catch {
     setToken(null);
     view.value = 'login';
@@ -472,8 +512,10 @@ function onFeatureBack(payload) {
   }
   if (payload.then === 'open-search') {
     const info = payload.payload || {};
-    goBack();
-    setTimeout(() => {
+    const { prevView } = goBack();
+    // 同 tick 置位，ChatView 挂载时才能读到 pendingSearch（与 search-history 一致）
+    pendingSearch.value = true;
+    if (prevView !== 'chat') {
       openChat({
         conversationId: info.conversationId,
         groupId: info.groupId,
@@ -481,8 +523,7 @@ function onFeatureBack(payload) {
         name: info.groupName || 'WeChat',
         isDefault: false,
       });
-      setTimeout(() => { pendingSearch.value = true; }, 240);
-    }, 60);
+    }
     return;
   }
   subView.value = { type: 'stub', title: payload.title || '功能页' };
@@ -676,6 +717,8 @@ async function onChatInfoToggle({ key, value }) {
 <template>
   <div class="app-shell">
     <ToastHost />
+    <OfflineBanner />
+    <PwaConsentModal :ready="view === 'main' && Boolean(me)" />
     <!-- 主页顶部轻量提示（聊天页内用各自导航下的条，避免盖住返回） -->
     <ListenTogetherBar
       v-if="listenTogether.inRoom && view === 'main'"

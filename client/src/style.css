@@ -20,10 +20,15 @@
   --blue: #576b95;
   --press: rgba(0, 0, 0, 0.05);
   --mask: rgba(0, 0, 0, 0.45);
-  --status-h: 0px;
+  /* 安全区：viewport-fit=cover 下顶/底/左右都要避开刘海与 Home 指示条 */
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+  --status-h: var(--safe-t);
   --nav-h: 44px;
   --tab-h: 52px;
-  --safe-b: env(safe-area-inset-bottom, 0px);
+  --app-h: 100dvh;
   --dur: 200ms;
   --ease: cubic-bezier(0.25, 0.1, 0.25, 1);
   --chat-bg: #ededed;
@@ -111,8 +116,12 @@ html.dark .section-bar + .cell-group {
 }
 
 html, body, #app {
-  height: 100%;
   width: 100%;
+  height: 100%;
+  /* 移动端地址栏收起/展开：dvh/svh 比 100% / vh 更贴可视高度，避免底部留白 */
+  height: 100dvh;
+  height: 100svh;
+  max-height: 100svh;
   background: var(--bg);
   font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Source Han Sans SC', sans-serif;
   color: var(--text);
@@ -121,24 +130,45 @@ html, body, #app {
   font-size: calc(16px * var(--font-scale));
 }
 
+html {
+  /* 拉满物理屏（含 safe-area），底色盖住 Home 指示条区域 */
+  background: var(--bg);
+  min-height: 100%;
+}
+
 body {
   user-select: none;
   overflow: hidden;
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  height: var(--app-h, 100dvh);
+  max-height: none;
+  /* 防止 iOS 橡皮筋把整页拽出白边 */
+  overscroll-behavior: none;
+  touch-action: manipulation;
 }
 
 #app {
   display: flex;
   justify-content: stretch;
+  align-items: stretch;
+  height: 100%;
+  overflow: hidden;
 }
 
 .app-shell {
   position: relative;
   width: 100%;
   height: 100%;
+  min-height: 0;
   background: var(--bg);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  padding-left: var(--safe-l);
+  padding-right: var(--safe-r);
 }
 
 button {
@@ -205,6 +235,98 @@ ul { list-style: none; }
   flex-shrink: 0;
   transition: background var(--dur) var(--ease);
 }
+/* ── 移动端顶栏/底栏统一安全区 ─────────────────────────────
+   viewport-fit=cover 时内容会伸到刘海下；--status-h 把内容压回可点区域。
+   组件 scoped 样式会盖掉同名选择器，这里用 !important 做全站兜底。 */
+.app-shell .nav,
+.app-shell .nav-bar,
+.app-shell .nav-bar.nav,
+.app-shell header.nav {
+  height: calc(var(--nav-h) + var(--status-h)) !important;
+  min-height: calc(var(--nav-h) + var(--status-h)) !important;
+  padding-top: var(--status-h) !important;
+  box-sizing: border-box !important;
+  padding-left: max(8px, var(--safe-l)) !important;
+  padding-right: max(8px, var(--safe-r)) !important;
+}
+
+/* 绝对定位的返回/更多：落在导航内容区，不被刘海吃掉点击 */
+.app-shell .nav > .nav-back,
+.app-shell .nav > .nav-more,
+.app-shell .nav > .nav-call,
+.app-shell .nav > .nav-right,
+.app-shell .nav-bar > .nav-back,
+.app-shell .nav-bar > .nav-more,
+.app-shell .nav-bar > .nav-call,
+.app-shell .nav-bar > .nav-right,
+.app-shell .nav-bar > .icon-btn,
+.app-shell .nav > .icon-btn,
+.app-shell .nav-back,
+.app-shell .nav-more,
+.app-shell .nav-call,
+.app-shell .nav-right {
+  top: var(--status-h) !important;
+  bottom: auto !important;
+  height: var(--nav-h) !important;
+  min-height: 44px !important;
+  min-width: 44px !important;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  box-sizing: border-box !important;
+}
+
+/* 导航标题也避开状态栏 */
+.app-shell .nav-title,
+.app-shell .nav-bar .nav-title {
+  top: var(--status-h) !important;
+  bottom: 0 !important;
+}
+
+/* 导航内按钮放大触控热区 */
+.app-shell .nav .icon-btn,
+.app-shell .nav-bar .icon-btn,
+.app-shell .nav-back,
+.app-shell .nav-more {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* 底部 Tab / 播放条：Home 指示条上方 */
+.app-shell .tab-bar {
+  padding-bottom: var(--safe-b) !important;
+  height: calc(var(--tab-h) + var(--safe-b)) !important;
+}
+
+/* 功能页 .page > .content：底部避开 Home 指示条。
+   主聊天是 .main-page > .content，不受影响。 */
+.app-shell .page > .content {
+  padding-bottom: calc(24px + var(--safe-b)) !important;
+}
+
+/* 半屏 sheet 统一垫高底部 */
+.app-shell .sheet,
+.app-shell .login-panel,
+.app-shell .likes-sheet {
+  padding-bottom: calc(16px + var(--safe-b));
+}
+
+/* 聊天输入栏：键盘弹起时垫高，避免被遮挡 */
+.app-shell .chat-dock {
+  padding-bottom: calc(var(--safe-b) + env(keyboard-inset-bottom, 0px)) !important;
+}
+/* 输入框字号 ≥16px，防 iOS 聚焦自动放大 */
+.app-shell .chat-input,
+.app-shell textarea.chat-input {
+  font-size: 16px !important;
+}
+
+/* 全屏游戏/通话等：禁止横向安全区被裁切 */
+.app-shell .call-host,
+.app-shell .player-stage {
+  padding-left: var(--safe-l);
+  padding-right: var(--safe-r);
+}
+
 .icon-btn:active { background: var(--press); }
 
 /* 通话页保持挂载但不可见时的隐藏壳 */
@@ -220,4 +342,62 @@ ul { list-style: none; }
   opacity: 0;
   pointer-events: none;
   z-index: -1;
+}
+
+/* 高对比度：加强边框与文字对比，方便低视力用户 */
+html.high-contrast {
+  --text: #000000;
+  --text-2: #222222;
+  --text-3: #333333;
+  --bg: #ffffff;
+  --white: #ffffff;
+  --card: #ffffff;
+  --divider: #000000;
+  --divider-soft: #444444;
+  --green: #006b32;
+  --green-bubble: #b6f0c8;
+  --bubble-mine: #b6f0c8;
+  --bubble-peer: #ffffff;
+  --bubble-peer-text: #000000;
+  --bubble-mine-text: #000000;
+  --blue: #003d99;
+  --red: #b00020;
+  --press: rgba(0, 0, 0, 0.12);
+}
+html.high-contrast.dark {
+  --text: #ffffff;
+  --text-2: #f0f0f0;
+  --text-3: #e0e0e0;
+  --bg: #000000;
+  --white: #000000;
+  --card: #000000;
+  --divider: #ffffff;
+  --divider-soft: #bbbbbb;
+  --green: #3dff9a;
+  --green-bubble: #1a5c32;
+  --bubble-mine: #1a5c32;
+  --bubble-peer: #111111;
+  --bubble-peer-text: #ffffff;
+  --bubble-mine-text: #ffffff;
+  --blue: #7ec8ff;
+  --red: #ff6b6b;
+}
+html.high-contrast .row,
+html.high-contrast .card,
+html.high-contrast .nav-bar {
+  border-color: var(--divider);
+}
+html.high-contrast .switch.on {
+  background: var(--green);
+  outline: 2px solid #000;
+}
+html.high-contrast.dark .switch.on {
+  outline-color: #fff;
+}
+html.high-contrast button:focus-visible,
+html.high-contrast a:focus-visible,
+html.high-contrast input:focus-visible,
+html.high-contrast [tabindex]:focus-visible {
+  outline: 3px solid var(--blue);
+  outline-offset: 2px;
 }

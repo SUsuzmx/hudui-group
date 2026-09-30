@@ -1,4 +1,4 @@
-// 后台消息通知
+// 后台消息通知：优先 SW showNotification（可点进会话），再回退 Notification API
 let permission = typeof Notification !== 'undefined' ? Notification.permission : 'denied';
 
 export async function ensureNotifyPermission() {
@@ -17,10 +17,30 @@ export async function ensureNotifyPermission() {
   }
 }
 
-export function notifyMessage({ title, body, tag } = {}) {
+async function notifyViaSw({ title, body, tag, url, conversationId }) {
+  try {
+    const reg = await navigator.serviceWorker?.ready;
+    if (reg?.active) {
+      reg.active.postMessage({
+        type: 'show-notification',
+        title: title || '微信',
+        body: body || '',
+        tag: tag || 'hudui-msg',
+        url: url || '/',
+        conversationId: conversationId || null,
+      });
+      return true;
+    }
+  } catch { /* ignore */ }
+  return false;
+}
+
+export async function notifyMessage({ title, body, tag, url, conversationId } = {}) {
   if (typeof Notification === 'undefined') return;
   if (Notification.permission !== 'granted') return;
   if (typeof document !== 'undefined' && !document.hidden) return;
+  const swOk = await notifyViaSw({ title, body, tag, url, conversationId });
+  if (swOk) return;
   try {
     const n = new Notification(title || '微信', {
       body: body || '',
@@ -29,7 +49,10 @@ export function notifyMessage({ title, body, tag } = {}) {
       silent: false,
     });
     n.onclick = () => {
-      try { window.focus(); } catch { /* ignore */ }
+      try {
+        window.focus();
+        if (url) location.href = url;
+      } catch { /* ignore */ }
       n.close();
     };
   } catch { /* ignore */ }

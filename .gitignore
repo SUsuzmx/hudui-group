@@ -16,6 +16,9 @@ config/ai.local.json
 .env
 .env.*
 
+# local music library (large audio files; optional guess-song fallback)
+music/
+
 # logs / local artifacts
 *.log
 *.err

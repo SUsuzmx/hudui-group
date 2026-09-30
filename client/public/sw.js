@@ -1,5 +1,5 @@
-const CACHE = 'wx-shell-v13';
-const SHELL = ['/manifest.json', '/icon-192.png', '/icon-512.png', '/icon.svg'];
+const CACHE = 'wx-shell-v14';
+const SHELL = ['/manifest.json', '/icon-192.png', '/icon-512.png', '/icon.svg', '/offline.html'];
 function isApi(p) { return p.startsWith('/api') || p.startsWith('/socket.io'); }
 function isNoCacheDoc(p) { return p === '/' || p === '/index.html' || p === '/sw.js'; }
 function isVisualStagePath(p) { return p.startsWith('/visual/') || p.startsWith('/assets/skull'); }
@@ -68,5 +68,81 @@ self.addEventListener('fetch', (e) => {
       caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
     }
     return res;
-  }).catch(() => caches.match(req)));
+  }).catch(() => caches.match(req).then((h) => h || offlineFallback(req))));
 });
+
+function offlineFallback(req) {
+  const dest = req.destination || '';
+  if (dest === 'document' || (req.headers && req.headers.get('accept') || '').includes('text/html')) {
+    return caches.match('/offline.html').then((h) => h || new Response(
+      '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>离线</title><body style="font-family:sans-serif;padding:32px;background:#ededed;color:#191919"><h2>当前处于离线</h2><p>聊天、在线音乐等需要网络。已缓存的页面资源仍可浏览。</p><p><a href="/">重试</a></p>',
+      { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+    ));
+  }
+  return Response.error();
+}
+
+// ── Web Push：页面关闭后由系统唤起通知 ──
+self.addEventListener('push', (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    try { data = { body: event.data ? event.data.text() : '' }; } catch { data = {}; }
+  }
+  const title = data.title || '微信';
+  const body = data.body || '你收到一条新消息';
+  const tag = data.tag || 'hudui-push';
+  const url = data.url || '/';
+  event.waitUntil((async () => {
+    try {
+      await self.registration.showNotification(title, {
+        body,
+        tag,
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+        data: { url, conversationId: data.conversationId || null, kind: data.kind || 'message' },
+        requireInteraction: false,
+      });
+    } catch { /* ignore */ }
+  })());
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = event.notification?.data?.url || '/';
+  event.waitUntil((async () => {
+    const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const c of all) {
+      try {
+        if ('focus' in c) {
+          await c.focus();
+          if (c.navigate) await c.navigate(target);
+          return;
+        }
+      } catch { /* ignore */ }
+    }
+    try {
+      await self.clients.openWindow(target);
+    } catch { /* ignore */ }
+  })());
+});
+
+// 同步型本地通知（页面在后台时由页面调用，比 new Notification 更稳）
+self.addEventListener('message', (event) => {
+  const d = event.data || {};
+  if (d && d.type === 'show-notification') {
+    event.waitUntil((async () => {
+      try {
+        await self.registration.showNotification(d.title || '微信', {
+          body: d.body || '',
+          tag: d.tag || 'hudui-msg',
+          icon: '/icon-192.png',
+          badge: '/icon-192.png',
+          data: { url: d.url || '/', conversationId: d.conversationId || null },
+        });
+      } catch { /* ignore */ }
+    })());
+  }
+});
+

@@ -111,11 +111,11 @@ onBeforeUnmount(() => {
 }
 .ip-close {
   position: absolute;
-  top: 12px;
+  top: calc(12px + var(--safe-t, 0px));
   right: 12px;
   z-index: 2;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   border: 0;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.12);

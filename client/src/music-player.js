@@ -218,11 +218,20 @@ function maybeUpdatePositionState(force) {
 
 function artworkList(cover) {
   if (!cover) return [];
-  const abs = /^https?:\/\//i.test(cover) ? cover : new URL(cover, location.href).href;
+  const abs = /^https?:\/\//i.test(cover) || cover.startsWith('data:')
+    ? cover
+    : new URL(cover, location.href).href;
+  // 锁屏/系统媒体面板需要正确 MIME，否则封面可能不显示
+  let type = 'image/png';
+  if (/\.jpe?g(\?|$)/i.test(abs) || /image\/jpe?g/i.test(abs)) type = 'image/jpeg';
+  else if (/\.webp(\?|$)/i.test(abs)) type = 'image/webp';
+  else if (/\.gif(\?|$)/i.test(abs)) type = 'image/gif';
+  else if (/^data:image\/jpe?g/i.test(abs)) type = 'image/jpeg';
+  else if (/^data:image\/webp/i.test(abs)) type = 'image/webp';
   return [96, 128, 192, 256, 512].map((s) => ({
     src: abs,
     sizes: `${s}x${s}`,
-    type: 'image/png',
+    type,
   }));
 }
 

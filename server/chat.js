@@ -13,6 +13,29 @@ import {
   claimRedPacketForUser,
   RP_EXPIRE_MS,
 } from './rp.js';
+import { pushToUser } from './push.js';
+
+/** 会话成员解析：pv_u_a_b / pv_ai_x_y / grp_n */
+function parseConvPeers(convId, senderId) {
+  const s = String(convId || '');
+  const out = [];
+  try {
+    const pp = s.split('_');
+    if (pp[1] === 'u') {
+      const a = parseInt(pp[2], 10);
+      const b = parseInt(pp[3], 10);
+      if (Number.isInteger(a)) out.push(a);
+      if (Number.isInteger(b)) out.push(b);
+    } else if (pp[1] === 'ai' || pp[1] === 'grp') {
+      // AI 会话归 owner；群聊暂不整群推送
+      if (pp[1] === 'ai') {
+        const owner = parseInt(pp[2], 10);
+        if (Number.isInteger(owner)) out.push(owner);
+      }
+    }
+  } catch { /* ignore */ }
+  return out.filter((id) => Number.isInteger(id) && id !== Number(senderId));
+}
 
 const rowToMsg = (r) => {
   let ext = null;
@@ -990,6 +1013,26 @@ export function initChat(io, { config, engine }) {
           if (Number.isInteger(peer) && peer !== user.id) {
             stmts.incrChatUnread.run(peer, conversationId, Date.now());
           }
+        }
+      } catch { /* ignore */ }
+
+      // 离线/后台：Web Push 通知对端（点通知可进对应聊天）
+      try {
+        const peers = parseConvPeers(conversationId, user.id);
+        const textPreview = String(msg?.content || (mType ? `[${mType}]` : '新消息')).slice(0, 80);
+        for (const peerId of peers) {
+          const onlineEntry = online.get(peerId);
+          // 在线且有 socket 连接时不强制推送，避免双份打扰；后台标签页仍可能收到
+          const isHot = Boolean(onlineEntry && onlineEntry.conns > 0);
+          if (isHot) continue;
+          pushToUser(peerId, {
+            title: user.nickname || '微信',
+            body: textPreview,
+            tag: `chat-${conversationId}`,
+            conversationId,
+            url: `/?open=chat&conv=${encodeURIComponent(conversationId)}&from=${encodeURIComponent(user.nickname || '')}&userId=${user.id || ''}`,
+            kind: 'chat',
+          }).catch(() => {});
         }
       } catch { /* ignore */ }
 

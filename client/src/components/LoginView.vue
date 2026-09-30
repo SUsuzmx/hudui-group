@@ -16,6 +16,12 @@ const codeSent = ref(false);
 const codeCountdown = ref(0);
 const avatarList = ref([]);
 const chosenAvatar = ref(null);
+const showForgot = ref(false);
+const forgotNickname = ref('');
+const forgotCode = ref('');
+const forgotNewPwd = ref('');
+const forgotMsg = ref('');
+const forgotBusy = ref(false);
 let timer = null;
 
 function validPhone(p) {
@@ -40,6 +46,37 @@ async function sendCode() {
       codeCountdown.value = 0;
     }
   }, 1000);
+}
+
+async function requestForgot() {
+  forgotMsg.value = '';
+  forgotBusy.value = true;
+  try {
+    const d = await api.forgotPassword(forgotNickname.value.trim());
+    forgotMsg.value = d?.message || '已生成找回指引';
+    if (d?.recoveryCode) {
+      forgotMsg.value += `（演示找回码：${d.recoveryCode}）`;
+      forgotCode.value = d.recoveryCode;
+    }
+  } catch (e) {
+    forgotMsg.value = e.message || '请求失败';
+  } finally {
+    forgotBusy.value = false;
+  }
+}
+
+async function submitReset() {
+  forgotBusy.value = true;
+  try {
+    await api.resetPassword(forgotNickname.value.trim(), forgotCode.value.trim(), forgotNewPwd.value);
+    forgotMsg.value = '密码已重置，请返回登录';
+    showForgot.value = false;
+    error.value = '密码已重置，请用新密码登录';
+  } catch (e) {
+    forgotMsg.value = e.message || '重置失败';
+  } finally {
+    forgotBusy.value = false;
+  }
 }
 
 async function submitAccount() {
@@ -140,6 +177,14 @@ async function submitRegister() {
       >
         {{ mode === 'login' ? '用手机号注册' : '已有账号？直接登录' }}
       </button>
+      <button
+        v-if="mode === 'login'"
+        class="switch linklike"
+        type="button"
+        @click="showForgot = true; error = ''"
+      >
+        忘记密码？
+      </button>
       <p class="demo-tip">演示环境验证码固定为 123456</p>
     </form>
 
@@ -168,6 +213,26 @@ async function submitRegister() {
       </button>
       <button class="switch" type="button" @click="step = 'account'; error = ''">上一步</button>
     </form>
+
+    <div v-if="showForgot" class="forgot-mask" @click.self="showForgot = false">
+      <div class="forgot-dialog">
+        <h3>找回密码</h3>
+        <p class="forgot-tip">使用账号昵称与找回码重置密码。可在已登录设备「设置 → 账号与安全」生成找回码。</p>
+        <input v-model="forgotNickname" placeholder="昵称" maxlength="16" autocomplete="username" />
+        <button class="submit mini" type="button" :disabled="forgotBusy" @click="requestForgot">
+          {{ forgotBusy ? '处理中…' : '获取找回码' }}
+        </button>
+        <input v-model="forgotCode" placeholder="找回码" autocomplete="one-time-code" />
+        <input v-model="forgotNewPwd" type="password" placeholder="新密码（至少 6 位）" autocomplete="new-password" />
+        <p v-if="forgotMsg" class="error">{{ forgotMsg }}</p>
+        <div class="forgot-actions">
+          <button type="button" class="switch" @click="showForgot = false">关闭</button>
+          <button type="button" class="submit mini" :disabled="forgotBusy || !forgotCode || forgotNewPwd.length < 6" @click="submitReset">
+            重置密码
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -177,14 +242,15 @@ async function submitRegister() {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 0 32px;
+  padding: 0 32px calc(24px + var(--safe-b, 0px));
   background: var(--bg);
   overflow-y: auto;
   width: 100%;
+  min-height: 0;
 }
 
 .logo {
-  margin-top: 10vh;
+  margin-top: calc(48px + var(--safe-t, 0px));
   text-align: center;
 }
 .logo-bubble {
@@ -264,6 +330,27 @@ async function submitRegister() {
   margin-top: 8px;
 }
 .submit:disabled { opacity: 0.6; }
+.switch.linklike {
+  background: transparent; color: var(--text-2); min-height: 36px;
+}
+.forgot-mask {
+  position: fixed; inset: 0; z-index: 80; background: rgba(0,0,0,0.45);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.forgot-dialog {
+  width: min(360px, 100%); background: var(--white); border-radius: 12px; padding: 18px;
+}
+.forgot-dialog h3 { font-size: 17px; margin-bottom: 8px; color: var(--text); }
+.forgot-tip { font-size: 12px; color: var(--text-2); line-height: 1.5; margin-bottom: 12px; }
+.forgot-dialog input {
+  width: 100%; min-height: 42px; margin-bottom: 10px; border: 0; border-radius: 8px;
+  background: var(--divider-soft); padding: 0 12px; font-size: 15px; color: var(--text);
+}
+.forgot-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }
+.submit.mini {
+  min-height: 38px; padding: 0 16px; margin-bottom: 10px; width: 100%;
+}
+.forgot-actions .submit.mini { width: auto; margin-bottom: 0; }
 .switch {
   width: 100%;
   color: #576b95;

@@ -51,7 +51,7 @@ function onToggle() {
   left: 0;
   right: 0;
   z-index: 120;
-  padding-top: calc(6px + env(safe-area-inset-top, 0px));
+  padding-top: calc(6px + var(--safe-t, 0px));
   box-shadow: 0 2px 8px rgba(20, 120, 110, 0.12);
 }
 .lt-bar-main {

@@ -321,7 +321,7 @@ function myTitle(p) {
   flex: 1;
   width: 100%;
   height: 100%;
-  min-height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: #f95240 url('/tower/main-bg.png') center/cover;
@@ -332,7 +332,7 @@ function myTitle(p) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
+  padding: calc(10px + var(--safe-t, 0px)) 12px 10px;
   gap: 8px;
   z-index: 2;
 }

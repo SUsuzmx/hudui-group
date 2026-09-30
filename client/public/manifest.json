@@ -3,12 +3,16 @@
   "short_name": "WeChat",
   "description": "连接你我，分享生活",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "categories": ["music", "entertainment"],
+  "orientation": "portrait",
+  "categories": ["music", "entertainment", "social"],
   "background_color": "#ededed",
   "theme_color": "#07C160",
+  "prefer_related_applications": false,
   "icons": [
-    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" }
   ]
 }

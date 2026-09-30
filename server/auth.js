@@ -43,7 +43,7 @@ function verifyPassword(password, stored) {
 // 简易内存限流: key -> timestamps[]
 // 阈值与 scripts/e2e-test.mjs、scripts/smoke-security.mjs 对齐
 export const LOGIN_RATE = { limit: 10, windowMs: 15 * 60_000 };
-export const REGISTER_RATE = { limit: 20, windowMs: 60 * 60_000 };
+export const REGISTER_RATE = { limit: 50, windowMs: 60 * 60_000 };
 
 const rateBuckets = new Map();
 function rateLimited(key, limit, windowMs) {
@@ -92,6 +92,11 @@ export function parseUserStatus(raw) {
 }
 
 export function publicUser(u) {
+  let isAdmin = false;
+  try {
+    const s = u.settings ? JSON.parse(u.settings) : {};
+    isAdmin = s.isAdmin === true;
+  } catch { /* ignore */ }
   return {
     id: u.id,
     nickname: u.nickname,
@@ -103,6 +108,7 @@ export function publicUser(u) {
     gender: u.gender ?? '',
     momentsCover: u.moments_cover ?? null,
     status: parseUserStatus(u.status_json),
+    isAdmin,
   };
 }
 

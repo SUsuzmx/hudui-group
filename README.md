@@ -11,6 +11,10 @@
 
 ### 近期功能要点
 
+- **平台能力（账号安全 / 群治理 / 内容安全 / 备份 / 运营）**：登录记录与异常提醒、找回密码与注销、群管理员/入群验证/公告已读/群相册、朋友圈访客与举报、聊天记录导出与云备份、反馈 FAQ、增强搜索、运营后台；可用 **功能开关**（`server/feature-flags.js` + `data/feature-flags.json`）一键回退
+- **PWA / Web Push**：离线页与离线横幅、安装引导；VAPID 推送订阅，后台/关页仍可收新消息（需 HTTPS）
+- **本地曲库兜底**：可选 `music/<歌手>/<曲名>.mp3`，猜歌拉流超时自动兜底（`music/` 默认不入库）
+- **群聊信息页修复**：成员头像墙正确渲染并可进资料；群公告可编辑发布；「查找聊天记录」返回即开搜索；「我在群里的昵称」独立编辑并写入群成员昵称
 - **猜歌抢答**：2–8 人实时猜歌；游戏中心「发起对战」→ 发邀请卡 → 点卡加入；听同步片段抢答歌名 + 歌手抢分；房主可选 5/10/15 首；断线恢复、一键再来一局；**不需要房间码**。详见下方「猜歌抢答」
 - **叠塔对战**：2–6 人实时叠塔比赛；游戏中心「发起对战」→ 选好友/群聊发邀请卡 → 点卡一键加入；90 秒一局、服务端权威判定、断线恢复、再来一局；**不需要房间码**。详见下方「叠塔对战」
 - **一起听**：群聊/私聊实时同听；聊天「+」面板或听一听「邀请好友一起听」创建房间并发送邀请卡片；服务器权威同步播放/暂停/切歌/进度；主持权限与「全员控制」；队列、歌词、表情互动、迷你状态条；详见下方「一起听」
@@ -138,15 +142,16 @@ Socket：Cloudflare Tunnel 下 **polling 优先再升级 websocket**，减少握
 项目根目录（示例 Windows: C:\perry）
 ├── client/                  # Vue 3 前端源码
 │   ├── index.html
-│   ├── public/              # manifest.json / sw.js / PWA 图标
+│   ├── public/              # manifest.json / sw.js / offline.html / PWA 图标
 │   └── src/
-│       ├── components/      # 主界面/聊天/朋友圈/群详情/通话/服务等页面
+│       ├── components/      # 主界面/聊天/朋友圈/群详情/通话/服务/设置等页面
 │       ├── pinyin-initial.js # 通讯录拼音首字母 A–Z
 │       ├── draft-sync.js    # 聊天输入草稿防抖与防覆盖
 │       ├── status-bg.js     # 状态渐变/图标/剩余时长
 │       ├── api.js           # HTTP 封装
 │       ├── music-player.js  # 听一听播放器（三音源，唯一 Audio）
 │       ├── listen-together.js # 一起听房间状态与同步
+│       ├── push-client.js   # Web Push 订阅
 │       ├── socket-store.js  # 共享 Socket.IO
 │       └── ...
 ├── client-dist/             # 构建产物（npm run build，不入库）
@@ -157,6 +162,7 @@ Socket：Cloudflare Tunnel 下 **polling 优先再升级 websocket**，减少握
 ├── data/                    # 运行时数据（.gitignore）
 ├── games/                   # 发现页小游戏静态产物（第三方体积大，.gitignore）
 ├── img/                     # 仅保留默认头像 amdin.png（AI 使用远程卡通 URL）
+├── music/                   # 可选本地曲库（猜歌兜底；体积大，.gitignore）
 ├── prototype/               # 静态原型 https://chat.supeiji.top/prototype/
 ├── scripts/
 │   ├── run-app.cmd          # Windows 守护进程
@@ -164,6 +170,9 @@ Socket：Cloudflare Tunnel 下 **polling 优先再升级 websocket**，减少握
 │   ├── e2e-test.mjs
 │   ├── regression-all.mjs
 │   ├── smoke-security.mjs
+│   ├── smoke-platform.mjs   # 平台能力冒烟
+│   ├── accept-*.mjs         # 功能/权限/隐私验收
+│   ├── verify-*.mjs         # 管理端/清理/群聊修复等校验
 │   ├── test-listen-together.mjs
 │   ├── test-private-listen.mjs
 │   └── archive/             # 红包/通话/私聊支付等冒烟脚本
@@ -175,7 +184,11 @@ Socket：Cloudflare Tunnel 下 **polling 优先再升级 websocket**，减少握
 │   ├── auth.js              # 注册/登录/资料/限流/统一鉴权
 │   ├── chat.js              # 群/私聊消息、红包转账、通话信令
 │   ├── providers/           # 音源：netease / qq / kugou（kugou-api.cjs 完整协议）
-│   ├── groups.js            # 群种子 + 成员表
+│   ├── groups.js            # 群种子 + 成员表 + 群昵称
+│   ├── platform.js          # 账号安全/群治理/备份/反馈/运营
+│   ├── feature-flags.js     # 功能开关（可热关闭）
+│   ├── push.js              # Web Push（VAPID）
+│   ├── local-music.js       # 本地曲库扫描
 │   ├── rp.js                # 红包拆分/领取/超时退回
 │   ├── wallet.js            # 演示钱包
 │   ├── ai/
@@ -227,6 +240,7 @@ Python 侧常用库（Agent 文件生成）：`openpyxl`、`python-docx`、`pyth
 - **个人信息页**：改资料后「完成」写入服务器
 - 二维码名片、扫码/搜索加好友
 - 状态（心情/专注等，24h 有效）；PWA 可安装
+- **账号安全**：登录记录（设备/IP/异常提醒）、忘记密码与重置、恢复码、注销账号、下线其它设备
 
 ### 会话与消息
 
@@ -245,10 +259,10 @@ Python 侧常用库（Agent 文件生成）：`openpyxl`、`python-docx`、`pyth
 
 ### 群聊详情页（对齐截图）
 
-- 标题 `聊天信息(n)` + 免打扰铃；**成员头像墙** + 虚线「+」
-- 群聊名称 / 群二维码 / 群公告 / 备注
-- 查找聊天记录；免打扰 / 折叠 / 以下消息仍通知 / 置顶 / 保存到通讯录
-- 我在群里的昵称；显示群成员昵称；删除并退出
+- 标题 `聊天信息(n)` + 免打扰铃；**成员头像墙** + 虚线「+」；点头像进资料（AI/无 userId 成员走本地资料，不报「用户不存在」）
+- 群聊名称 / 群二维码 / **群公告（可编辑发布）** / 备注
+- 查找聊天记录（返回聊天页即打开搜索）；免打扰 / 折叠 / 以下消息仍通知 / 置顶 / 保存到通讯录
+- **我在群里的昵称**（独立弹窗，写入 `group_members.nickname`，成员列表优先展示）；显示群成员昵称；删除并退出
 
 ### 私聊与通话
 
@@ -299,12 +313,28 @@ Python 侧常用库（Agent 文件生成）：`openpyxl`、`python-docx`、`pyth
 | `config/app.json` | 端口、AI 频率 |
 | `config/ai.json` | 模型与密钥（勿公开） |
 | `.env.example` | `DASHSCOPE_API_KEY` 模板 |
+| `data/feature-flags.json` | 功能开关覆盖（缺省全开，见 `server/feature-flags.js`） |
+| `data/vapid.json` | Web Push VAPID 密钥（首次启动自动生成，勿公开） |
 | `server/ai/personas.js` | AI 人设，改完重启 |
 | `server/groups.js` | 群种子与成员播种 |
 | `server/ai/agent.js` | Agent 指令解析 / 提醒 / 文件调度 |
 | `server/ai/agent_gen.py` | 本地 Python 生成 xlsx/docx/pptx/pdf |
 
 `publicBase` 建议：`https://chat.supeiji.top`
+
+### 功能开关（Feature Flags）
+
+`server/feature-flags.js` 提供可热关闭的能力，对应 `requireFeature('xxx')` 中间件；关闭后接口返回 503。运维可在后台或直接改 `data/feature-flags.json`：
+
+| 开关 | 覆盖能力 |
+|------|----------|
+| `accountSecurity` | 找回密码 / 登录记录 / 注销 |
+| `groupGovernance` | 群管理员 / 入群验证 / 公告已读 / 群相册 |
+| `momentsSafety` | 朋友圈访客 / 举报 / 敏感词 |
+| `backupCloud` | 聊天记录导出 / 云端备份 |
+| `feedbackFaq` | 反馈 / FAQ / 举报进度 |
+| `searchEnhanced` | 消息搜索筛选 / 收藏分类 |
+| `adminPanel` | 运营后台（`/api/admin/*`） |
 
 ---
 
@@ -392,9 +422,16 @@ Windows 隧道常驻可用计划任务调用 `cloudflared ... run werewolf`。
 npm run test:smoke
 npm run test:security
 npm run check:ai
+# 平台能力 / 隐私 / 权限（需先起服务）
+node scripts/smoke-platform.mjs
+node scripts/accept-features.mjs
+node scripts/accept-privacy.mjs
+node scripts/accept-permissions.mjs
+# 群聊信息页修复（建群 / 成员头像 / 群昵称 / 公告）
+node scripts/verify-group-fixes.mjs
 ```
 
-人工：登录、群聊、私聊红包/转账、朋友圈封面、群详情头像墙、音视频通话、通讯录 A–Z、群内 @AI 提醒/生成文件、聊天点头像进资料页、发现页游戏。
+人工：登录、群聊、私聊红包/转账、朋友圈封面、群详情头像墙、音视频通话、通讯录 A–Z、群内 @AI 提醒/生成文件、聊天点头像进资料页、发现页游戏、群公告与「我在群里的昵称」、查找聊天记录。
 
 ---
 
@@ -422,6 +459,11 @@ Get-Content C:\perry\data\service.log -Tail 50
 | `npm run check:ai` | AI 连通性 |
 | `npm run test:e2e` | 端到端 |
 | `npm run test:smoke` / `test:security` | 回归 / 安全冒烟 |
+| `node scripts/smoke-platform.mjs` | 平台能力冒烟 |
+| `node scripts/accept-*.mjs` | 功能/权限/隐私验收 |
+| `node scripts/verify-group-fixes.mjs` | 群聊信息页修复验证 |
+| `node scripts/cleanup-test-accounts.mjs` | 清理测试账号 |
+| `npm run rotate-logs` / `media:gc` | 日志轮转 / 媒体回收 |
 
 ---
 
@@ -433,17 +475,25 @@ Get-Content C:\perry\data\service.log -Tail 50
 | `GET /games/<id>/` | 静态游戏入口（需 `games/<id>/index.html`） |
 | `GET /api/ai-contacts` | AI 人设元数据（`groupOnly: true`，不作通讯录） |
 | `POST /api/friends/add` | 加好友；拒绝 AI/persona |
+| `POST /api/groups/:id/my-nickname` | 修改「我在群里的昵称」 |
+| `POST /api/groups/:id/notice` | 发布群公告 |
+| `GET /api/auth/login-history` | 登录记录（设备/异常） |
+| `POST /api/auth/forgot-password` `/reset-password` | 找回密码 |
+| `GET /api/backup/export` `POST /api/backup/cloud` | 聊天记录导出 / 云备份 |
+| `GET /api/push/public-key` `POST /api/push/subscribe` | Web Push |
+| `GET /api/admin/overview` `GET /api/admin/flags` | 运营后台 / 功能开关（管理员） |
 
 ---
 
 ## 安全注意事项
 
-- `config/ai.json`、`data/`、`.env` 勿提交公开仓库  
-- `games/` 第三方完整仓库/压缩包默认 `.gitignore`，避免仓库膨胀  
+- `config/ai.json`、`data/`、`.env`、`data/vapid.json` 勿提交公开仓库  
+- `games/`、`music/` 第三方/本地大文件默认 `.gitignore`，避免仓库膨胀  
 - 生产对外仅通过 Tunnel；防火墙勿裸暴露 3000（若机器有公网 IP）  
 - 迁移后建议轮换 AI 密钥  
 - 钱包/红包/转账均为**演示**，非真实支付  
 - AI 生成的提醒与文件保存在本机 `data/`，勿当真实协作存储  
+- 运营后台仅平台管理员可访问；功能开关关闭后对应接口返回 503，便于紧急止血  
 
 ---
 
@@ -477,4 +527,7 @@ Get-Content C:\perry\data\service.log -Tail 50
 git add -A
 git commit -m "your message"
 git push
+```
+
+说明：`music/`、`data/`、`config/ai.json`、Cookie 文件已忽略；仓库只含源码与文档，不含曲库与运行时数据。
 ```

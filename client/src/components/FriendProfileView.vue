@@ -98,9 +98,35 @@ async function load() {
       };
     } else {
       const uid = Number(props.user?.userId ?? props.user?.id);
-      const data = await api.user(uid);
-      profile.value = data.user || null;
-      if (profile.value) loadChannelFromExtras(uid);
+      if (!Number.isFinite(uid) || uid <= 0) {
+        // 无有效用户 ID：用本地展示，避免报「用户不存在」
+        profile.value = {
+          id: props.user.id ?? null,
+          nickname: props.user.nickname,
+          avatar: props.user.avatar ?? props.user.avatarUrl ?? null,
+          emoji: props.user.emoji ?? props.user.avatarEmoji ?? null,
+          avatarColor: props.user.color ?? props.user.avatarColor ?? '#4f6ef7',
+          isFriend: false,
+          isAI: false,
+        };
+      } else {
+        try {
+          const data = await api.user(uid);
+          profile.value = data.user || null;
+          if (profile.value) loadChannelFromExtras(uid);
+        } catch {
+          // 接口失败（含用户不存在）时回落本地资料
+          profile.value = {
+            id: uid,
+            nickname: props.user.nickname,
+            avatar: props.user.avatar ?? props.user.avatarUrl ?? null,
+            emoji: props.user.emoji ?? props.user.avatarEmoji ?? null,
+            avatarColor: props.user.color ?? props.user.avatarColor ?? '#4f6ef7',
+            isFriend: props.user.isFriend ?? false,
+            isAI: false,
+          };
+        }
+      }
     }
   } catch (e) {
     error.value = e.message || '加载失败';

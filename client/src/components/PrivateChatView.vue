@@ -1,5 +1,5 @@
 <script setup>
-import { ref, nextTick, onMounted, onBeforeUnmount, computed } from 'vue';
+import { ref, nextTick, onMounted, onBeforeUnmount, computed, watch } from 'vue';
 import { api, compressImage } from '../api.js';
 import { EMOJI_LIST, renderContent } from '../chat-shared.js';
 import {
@@ -81,6 +81,13 @@ const showSearch = ref(false);
 const searchQuery = ref('');
 const searchResults = ref([]);
 const searching = ref(false);
+// 从聊天信息页跳回时 pendingSearch 可能在挂载后才置位，需 watch 兜底
+watch(() => props.pendingSearch, (v) => {
+  if (v) {
+    showSearch.value = true;
+    emit('search-used');
+  }
+});
 const photoInput = ref(null);
 const recorder = ref(null);
 const recording = ref(false);
@@ -2460,7 +2467,7 @@ onBeforeUnmount(() => {
 }
 .img-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .preview-close {
-  position: absolute; top: 12px; right: 12px; width: 44px; height: 44px;
+  position: absolute; top: calc(12px + var(--safe-t, 0px)); right: 12px; width: 44px; height: 44px;
   color: #fff; font-size: 22px; z-index: 2;
 }
 

@@ -762,9 +762,40 @@ async function openCommentAt() {
 }
 
 function openMenu(m) {
-  // 他人动态不弹删除
-  if (!isOwnMoment(m)) return;
   menuMoment.value = m;
+}
+
+const momentVisitors = ref(null);
+
+async function showMomentVisitors(m) {
+  try {
+    const d = await api.momentVisitors(m.id);
+    if (d?.error) {
+      toast(d.error);
+      return;
+    }
+    momentVisitors.value = d;
+    menuMoment.value = null;
+  } catch (e) {
+    toast(e.message || '加载失败');
+  }
+}
+
+async function reportMoment(m) {
+  const detail = prompt('请填写举报原因（诈骗/色情/辱骂/其它）', '其它');
+  if (detail == null) return;
+  try {
+    await api.createReport({
+      targetType: 'moment',
+      targetId: String(m.id),
+      category: 'other',
+      detail,
+    });
+    toast('举报已提交，可在「帮助与反馈」查看进度');
+    menuMoment.value = null;
+  } catch (e) {
+    toast(e.message || '举报失败');
+  }
 }
 
 const visEditMoment = ref(null);
@@ -839,8 +870,6 @@ async function deleteMoment() {
 
 function startLongPress(m) {
   clearLongPress();
-  // 仅自己的动态才弹删除菜单
-  if (!isOwnMoment(m)) return;
   longPressTimer.value = setTimeout(() => openMenu(m), 550);
 }
 function clearLongPress() {
@@ -1351,8 +1380,21 @@ onBeforeUnmount(() => {
 
     <div v-if="menuMoment" class="action-mask" @click.self="menuMoment = null">
       <div class="action-sheet">
-        <button class="action-item danger" @click="deleteMoment">删除</button>
+        <button v-if="isOwnMoment(menuMoment)" class="action-item" @click="showMomentVisitors(menuMoment)">谁看过我</button>
+        <button v-if="isOwnMoment(menuMoment)" class="action-item danger" @click="deleteMoment">删除</button>
+        <button v-if="!isOwnMoment(menuMoment)" class="action-item danger" @click="reportMoment(menuMoment)">举报</button>
         <button class="action-item" @click="menuMoment = null">取消</button>
+      </div>
+    </div>
+
+    <div v-if="momentVisitors" class="action-mask" @click.self="momentVisitors = null">
+      <div class="action-sheet">
+        <div class="visitors-title">访客（{{ momentVisitors.count || 0 }}）</div>
+        <div v-for="v in momentVisitors.visitors" :key="v.id" class="visitor-row">
+          {{ v.nickname }}
+        </div>
+        <div v-if="!momentVisitors.visitors?.length" class="visitors-title">还没有访客</div>
+        <button class="action-item" @click="momentVisitors = null">关闭</button>
       </div>
     </div>
 
@@ -1781,7 +1823,7 @@ onBeforeUnmount(() => {
 .cover-name { color: #fff; font-size: 18px; font-weight: 600; text-shadow: 0 1px 4px rgba(0,0,0,0.35); padding-bottom: 8px; }
 .cover-avatar :deep(.avatar) { box-shadow: 0 4px 12px rgba(0,0,0,0.25); border: 2px solid rgba(255,255,255,0.85); }
 .cover-cam {
-  position: absolute; right: 16px; top: 16px; width: 40px; height: 40px; border-radius: 50%;
+  position: absolute; right: 16px; top: calc(16px + var(--safe-t, 0px)); width: 44px; height: 44px; border-radius: 50%;
   border: 0; background: rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center;
   z-index: 3; cursor: pointer;
 }
@@ -1867,7 +1909,7 @@ onBeforeUnmount(() => {
 }
 .preview-close {
   position: absolute;
-  top: 12px;
+  top: calc(12px + var(--safe-t, 0px));
   right: 12px;
   width: 44px;
   height: 44px;
@@ -2369,5 +2411,14 @@ onBeforeUnmount(() => {
 .action-item:last-child {
   border-bottom: none;
   margin-top: 8px;
+  border-top: 8px solid var(--bg);
+}
+.visitors-title {
+  padding: 14px 16px; font-size: 15px; font-weight: 600;
+  color: var(--text); text-align: center; border-bottom: 0.5px solid var(--divider-soft);
+}
+.visitor-row {
+  padding: 12px 16px; font-size: 15px; color: var(--text);
+  border-bottom: 0.5px solid var(--divider-soft);
 }
 </style>
