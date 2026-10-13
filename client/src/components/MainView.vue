@@ -139,6 +139,7 @@ const discoverGroups = [
     { icon: 'scan', label: '扫一扫', key: 'scan' },
     { icon: 'listen', label: '听一听', key: 'listen' },
   ],
+  [{ icon: 'listen', label: '沉浸式听歌', key: 'immersive' }],
   [
     { icon: 'search-page', label: '看一看', key: 'look' },
     { icon: 'search-page', label: '搜一搜', key: 'search' },
@@ -549,6 +550,10 @@ function openDiscover(s) {
   if (s.key === 'statusWall') { loadFriendStatuses(); return; }
   if (s.key === 'listen') {
     emit('open-view', { type: 'listen' });
+    return;
+  }
+  if (s.key === 'immersive') {
+    emit('open-view', { type: 'immersive' });
     return;
   }
   if (s.key === 'look') {

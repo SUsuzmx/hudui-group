@@ -26,6 +26,7 @@ import { seedGroups, listGroups, getGroup, groupConvId, DEFAULT_GROUP_KIND, setG
 import { canAccessConversation } from './acl.js';
 import { mediaFromBodyJson, mediaFromMultipart, mediaFromRaw, normalizeKind } from './upload.js';
 import { mediaServeMiddleware } from './media-serve.js';
+import { mountFolia } from './folia.js';
 import { pushStatus, saveSubscription, removeSubscription, pushToUser } from './push.js';
 import { getBalance, listTx, debit } from './wallet.js';
 import { expirePendingPayments, RP_COVERS, redPacketPayload } from './rp.js';
@@ -1274,6 +1275,9 @@ if (fs.existsSync(path.join(PROTOTYPE, 'index.html'))) {
   app.use('/prototype', express.static(PROTOTYPE, { maxAge: '1h' }));
 }
 
+// 沉浸式听歌 (Folia): /folia/ 静态托管 + /ncm-api 内嵌网易云 API (发现页 → 沉浸式听歌)
+mountFolia(app, { ROOT, log, requireAuth });
+
 // 游戏中心: /games/ 托管 games/ 下的第三方游戏静态产物 (发现页 → 游戏入口)
 const GAMES_ROOT = path.join(ROOT, 'games');
 const GAME_APPS = [
@@ -1337,7 +1341,7 @@ if (fs.existsSync(DIST)) {
       }
     },
   }));
-  app.get(/^\/(?!api\/|avatars|media|prototype|games\/).*/, (req, res) => {
+  app.get(/^\/(?!api\/|avatars|media|prototype|games\/|folia|ncm-api|runtime-config\.js).*/, (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.sendFile(path.join(DIST, 'index.html'));
   });

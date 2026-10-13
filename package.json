@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:folia": "cd vendor/folia-major && npx vite build",
     "start": "node server/index.js",
     "gen:icons": "node scripts/gen-icons.js",
     "check:ai": "node scripts/check-ai.mjs",

@@ -50,6 +50,7 @@ const callSession = ref(null); // { target, callMode, role, callId, incoming, mi
 const callViewRef = ref(null);
 const GlobalSearchView = asyncPage(() => import('./components/GlobalSearchView.vue'));
 const ListenView = asyncPage(() => import('./components/ListenView.vue'));
+const ImmersiveListenView = asyncPage(() => import('./components/ImmersiveListenView.vue'));
 const LookView = asyncPage(() => import('./components/LookView.vue'));
 const MusicFloatBar = asyncPage(() => import('./components/MusicFloatBar.vue'));
 const ListenTogetherView = asyncPage(() => import('./components/ListenTogetherView.vue'));
@@ -74,7 +75,9 @@ const showMusicFloat = computed(() => {
   if (listenTogether.inRoom || musicPlayer.state.listenMode) return false;
   const onListen = view.value === 'sub' && subView.value?.type === 'listen';
   const onListenTogether = view.value === 'sub' && subView.value?.type === 'listen-together';
-  return Boolean(musicPlayer.state.current) && !onListen && !onListenTogether;
+  // 沉浸式听歌（Folia）自带播放器，宿主悬浮条退场避免双份控制
+  const onImmersive = view.value === 'sub' && subView.value?.type === 'immersive';
+  return Boolean(musicPlayer.state.current) && !onListen && !onListenTogether && !onImmersive;
 });
 const musicFloatForceShow = ref(false);
 function onFloatDismissed() {
@@ -890,6 +893,11 @@ async function onChatInfoToggle({ key, value }) {
       <ListenView
         v-else-if="view === 'sub' && subView?.type === 'listen'"
         key="listen"
+        @back="goBack"
+      />
+      <ImmersiveListenView
+        v-else-if="view === 'sub' && subView?.type === 'immersive'"
+        key="immersive-listen"
         @back="goBack"
       />
       <LookView
