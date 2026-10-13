@@ -15,9 +15,11 @@
 - **PWA / Web Push**：离线页与离线横幅、安装引导；VAPID 推送订阅，后台/关页仍可收新消息（需 HTTPS）
 - **本地曲库兜底**：可选 `music/<歌手>/<曲名>.mp3`，猜歌拉流超时自动兜底（`music/` 默认不入库）
 - **群聊信息页修复**：成员头像墙正确渲染并可进资料；群公告可编辑发布；「查找聊天记录」返回即开搜索；「我在群里的昵称」独立编辑并写入群成员昵称
+- **群成员制访问控制**：群聊改为**成员制**（`group_members` 表）；自建群（`custom`）严格成员制需被邀请，种子群（主群等）保持「全员在群」演示语义；群资料/成员/加人接口校验成员身份，全局搜索与未读统计按「我加入的群」收敛；群公告已读按**公告版本**（`announcement_at`）判定，新公告使旧已读失效
 - **猜歌抢答**：2–8 人实时猜歌；游戏中心「发起对战」→ 发邀请卡 → 点卡加入；听同步片段抢答歌名 + 歌手抢分；房主可选 5/10/15 首；断线恢复、一键再来一局；**不需要房间码**。详见下方「猜歌抢答」
 - **叠塔对战**：2–6 人实时叠塔比赛；游戏中心「发起对战」→ 选好友/群聊发邀请卡 → 点卡一键加入；90 秒一局、服务端权威判定、断线恢复、再来一局；**不需要房间码**。详见下方「叠塔对战」
 - **一起听**：群聊/私聊实时同听；聊天「+」面板或听一听「邀请好友一起听」创建房间并发送邀请卡片；服务器权威同步播放/暂停/切歌/进度；主持权限与「全员控制」；队列、歌词、表情互动、迷你状态条；详见下方「一起听」
+- **沉浸式听歌（Folia）**：发现页入口，以全屏 iframe 嵌入 [folia-major](https://github.com/chthollyphile/folia-major) 全屏歌词播放器；**网易云 / QQ 音乐 / 酷狗** 三音源，网易云复用服务端 `.netease-cookie`（无需二次扫码），QQ 在 Folia 内扫码登录，酷狗走服务端 `.kugou-cookie`；配套 `/api/lyric-proxy` 跨域出口与 AI 主题生成；详见 [docs/folia-integration.md](docs/folia-integration.md)
 - **听一听音源**：网易云 + QQ 音乐 + **酷狗**；Cookie 服务端持久化；播放地址探测与 restriction 引导；酷狗音频同源代理防盗链；详见 [docs/MUSIC-VISUAL.md](docs/MUSIC-VISUAL.md)
 - **Perry 歌单**：入口卡随音源切换标题；「我喜欢 / 自建收藏」可下钻曲目并播放；底部播放台进度条渐变填充
 - **视觉舞台**：粒子/预设/手势/3D 歌词；默认预设「丝绸/封面粒子」
@@ -47,6 +49,10 @@
 | GET | `/api/kugou/search` `/api/kugou/song/url` | 酷狗搜索 / 取流 |
 | GET | `/api/kugou/audio?u=` | 酷狗音频代理（**免鉴权**，仅 kugou CDN） |
 | GET | `/api/music/list?source=` | 听一听：`qq` / `netease` / `kugou` |
+| GET | `/api/groups/:id/announcement/state` | 当前公告 + 我的已读状态（按公告版本） |
+| ALL | `/api/lyric-proxy?url=` | 沉浸式听歌跨域出口（QQ/酷狗歌词、搜索、封面；白名单域名 + 同源闸门） |
+| GET | `/folia/` | 沉浸式听歌（Folia Web 版静态资源，需先 `npm run build:folia`） |
+| GET | `/qq-api/*` `/kugou-api/*` `/ncm-api/*` | 沉浸式听歌三音源网关（同源闸门；`/ncm-api` 另需 Bearer） |
 
 ### 叠塔对战（Tower Battle）
 
@@ -136,6 +142,40 @@ Socket：Cloudflare Tunnel 下 **polling 优先再升级 websocket**，减少握
 
 ---
 
+## 沉浸式听歌（Folia）
+
+发现页「沉浸式听歌」→ 全屏 iframe 嵌入 [folia-major](https://github.com/chthollyphile/folia-major)
+（全屏沉浸式歌词播放器）Web 版。**完整集成说明见 [docs/folia-integration.md](docs/folia-integration.md)。**
+
+| 项 | 说明 |
+|----|------|
+| **入口** | 发现页 →「沉浸式听歌」（`ImmersiveListenView.vue`，全屏 iframe `/folia/`） |
+| **网易云** | `/ncm-api` 内嵌 NeteaseCloudMusicApi，**复用服务端 `.netease-cookie`**，开箱即用无需二次扫码 |
+| **QQ 音乐** | `/qq-api` 反代内嵌 qq-music-api；**在 Folia 内扫码登录**（宿主 `.qq-cookie` 与它的会话不是同一套凭据） |
+| **酷狗** | `/kugou-api` 内嵌 kugoumusicapi；搜索/歌词走 `/api/lyric-proxy` 匿名直连，用户歌单需在 Folia 内登录 |
+| **跨域出口** | `/api/lyric-proxy`：白名单域名（QQ/酷狗/图床）+ 同源闸门；不发 CORS 头，避免变成公开代理 |
+| **AI 主题** | `/api/generate-theme_openai`，密钥只存服务端（`config/folia-ai.json` 或 `OPENAI_API_*` 环境变量） |
+| **同源闸门** | 三音源网关与 lyric-proxy 都要求 `Sec-Fetch-Site: same-origin` 或有效 Bearer |
+
+### 构建 Folia（`vendor/` 不入库，必须单独执行）
+
+```bash
+# 1. 克隆到 vendor/folia-major（保留其 .env.local / .npmrc / local-tars）
+git clone https://github.com/chthollyphile/folia-major vendor/folia-major
+# 2. 装依赖（.npmrc 已配 npmmirror；可加 ELECTRON_SKIP_BINARY_DOWNLOAD=1）
+cd vendor/folia-major && npm install
+# 3. 构建（base 固定 /folia/）
+npm run build:folia          # 或在 vendor/folia-major 下：npx vite build --base=/folia/
+```
+
+产物在 `vendor/folia-major/dist/`，服务器启动时自动托管。**没构建时服务器仍能正常启动**，
+只是 `/folia/` 返回 404 并在日志提示 `先运行 npm run build:folia`。
+
+`vendor/folia-major` 有几处本地补丁（更新版本后需重打，清单见集成文档）：`.env.local`
+把三个音源基址指向宿主网关、`.npmrc` 镜像、`src/services/netease.ts` 附带宿主 Bearer token。
+
+---
+
 ## 目录结构
 
 ```
@@ -158,14 +198,19 @@ Socket：Cloudflare Tunnel 下 **polling 优先再升级 websocket**，减少握
 ├── config/
 │   ├── app.json             # 群名、端口、AI 频率
 │   ├── ai.json              # AI 模型与密钥（勿提交公开仓库）
+│   ├── folia-ai.json        # 沉浸式听歌 AI 主题生成密钥（.gitignore）
 │   └── ai.example.json
 ├── data/                    # 运行时数据（.gitignore）
+├── docs/                    # 迁移手册 / 音源与视觉说明 / 沉浸式听歌集成说明
 ├── games/                   # 发现页小游戏静态产物（第三方体积大，.gitignore）
 ├── img/                     # 仅保留默认头像 amdin.png（AI 使用远程卡通 URL）
 ├── music/                   # 可选本地曲库（猜歌兜底；体积大，.gitignore）
 ├── prototype/               # 静态原型 https://chat.supeiji.top/prototype/
+├── vendor/                  # 第三方克隆仓库：folia-major（.gitignore，需自行构建）
 ├── scripts/
 │   ├── run-app.cmd          # Windows 守护进程
+│   ├── restart-server.ps1   # 一键重启主服务（杀旧实例 + 等端口就绪）
+│   ├── remove-task-time-limit.ps1 # 去掉计划任务执行时长上限
 │   ├── check-ai.mjs
 │   ├── e2e-test.mjs
 │   ├── regression-all.mjs
@@ -181,8 +226,10 @@ Socket：Cloudflare Tunnel 下 **polling 优先再升级 websocket**，减少握
 │   ├── db.js                # SQLite 连接与预编译语句
 │   ├── migrate.js           # 版本化表结构迁移
 │   ├── listen-together.js   # 一起听房间（服务器权威）
+│   ├── folia.js             # 沉浸式听歌：/folia 静态托管 + 三音源网关 + lyric-proxy
 │   ├── auth.js              # 注册/登录/资料/限流/统一鉴权
 │   ├── chat.js              # 群/私聊消息、红包转账、通话信令
+│   ├── acl.js               # 会话访问控制（群成员制 / 私聊双方）
 │   ├── providers/           # 音源：netease / qq / kugou（kugou-api.cjs 完整协议）
 │   ├── groups.js            # 群种子 + 成员表 + 群昵称
 │   ├── platform.js          # 账号安全/群治理/备份/反馈/运营
@@ -362,6 +409,16 @@ npm run build
 
 确认：`client-dist/index.html`、`config/ai.json` 或已设 `DASHSCOPE_API_KEY`。
 
+**可选：沉浸式听歌**需要额外构建第三方 Folia（`vendor/` 不入库）：
+
+```bash
+git clone https://github.com/chthollyphile/folia-major vendor/folia-major
+cd vendor/folia-major && npm install
+npm run build:folia
+```
+
+未构建不影响其它功能，只是发现页「沉浸式听歌」打开后提示未构建（`/folia/` 404）。
+
 Agent 文件生成依赖 Python（可选）：
 
 ```bash
@@ -455,6 +512,7 @@ Get-Content C:\perry\data\service.log -Tail 50
 |------|------|
 | `npm run dev` | Vite 开发 |
 | `npm run build` | 构建到 `client-dist/` |
+| `npm run build:folia` | 构建沉浸式听歌（Folia）到 `vendor/folia-major/dist/` |
 | `npm start` | 启动后端 |
 | `npm run check:ai` | AI 连通性 |
 | `npm run test:e2e` | 端到端 |
@@ -463,6 +521,8 @@ Get-Content C:\perry\data\service.log -Tail 50
 | `node scripts/accept-*.mjs` | 功能/权限/隐私验收 |
 | `node scripts/verify-group-fixes.mjs` | 群聊信息页修复验证 |
 | `node scripts/cleanup-test-accounts.mjs` | 清理测试账号 |
+| `pwsh -File scripts/restart-server.ps1` | 一键重启主服务（端口取 `config/app.json`，可传参） |
+| `pwsh -File scripts/remove-task-time-limit.ps1` | 去掉计划任务执行时长上限 |
 | `npm run rotate-logs` / `media:gc` | 日志轮转 / 媒体回收 |
 
 ---

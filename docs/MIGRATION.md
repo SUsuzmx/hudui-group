@@ -72,6 +72,7 @@ cd hudui-group
 - `.netease-cookie` `.qq-cookie` `.kugou-cookie`
 - `games/`（可选）
 - `music/`（可选，本地曲库 / 猜歌兜底，体积大）
+- `vendor/folia-major/`（可选，沉浸式听歌；**体积大且属第三方仓库，建议在新机重新克隆构建**，见 §2.1）
 
 ### 方案 C：空库全新装
 
@@ -100,6 +101,24 @@ npm run build
 # 有 MIMO_PYTHON 时优先使用
 python -c "import openpyxl, docx, pptx, reportlab; print('ok')"
 ```
+
+### 2.1 沉浸式听歌（Folia，可选）
+
+发现页「沉浸式听歌」依赖第三方仓库 [folia-major](https://github.com/chthollyphile/folia-major)，
+它**不入库**（`vendor/` 在 .gitignore 里），新机必须自行克隆并构建：
+
+```bash
+git clone https://github.com/chthollyphile/folia-major vendor/folia-major
+cd vendor/folia-major && npm install
+cd ../.. && npm run build:folia
+```
+
+> 构建前请先按 [folia-integration.md](folia-integration.md)「对 Folia 源码的本地补丁」一节
+> 配好 `.env.local`（三个音源基址指向宿主网关 `/ncm-api` `/qq-api` `/kugou-api`）与
+> `.npmrc`，否则 Folia 会去连 localhost:3000 之类的默认地址。
+
+**未构建不影响其它功能**：服务器照常启动，只是 `/folia/` 返回 404，日志会提示
+`先运行 npm run build:folia`。构建产物在 `vendor/folia-major/dist/`，重启进程后生效。
 
 ---
 
@@ -253,6 +272,7 @@ node scripts/verify-group-fixes.mjs
 - [ ] 音视频通话
 - [ ] **听一听**：搜索播放、Perry 歌单入口、「我喜欢」与自建/收藏曲目、底部播放台进度条
 - [ ] 音源 Cookie 导入后歌单可同步
+- [ ] **沉浸式听歌**：发现页入口打开不白屏；网易云直接可见账号（服务端 `.netease-cookie`）；QQ 扫码可登录；酷狗可搜索
 - [ ] **叠塔对战**：发起 → 邀请卡 → 点卡加入 → 准备开局 → 90 秒对局 → 结算再来一局
 - [ ] 发现页游戏（若已部署）
 - [ ] PWA / Service Worker 强刷后正常
@@ -270,6 +290,9 @@ node scripts/verify-group-fixes.mjs
 | 网易云歌单「网络异常」 | 确认 `MUSIC_U` 有效；看服务端日志里的 uid 与 SDK `e.body`；勿前端直连网易云 |
 | QQ「我喜欢」要重新授权 | Cookie 缺播放票据 `qm_keyst`，重新走官方 QQ 音乐登录窗口 |
 | 歌单接口 502 is not defined | 服务进程未加载最新 `server/providers/music-routes.js`，重启 Node |
+| 沉浸式听歌白屏 / 404 | `vendor/folia-major/dist` 未构建：按 §2.1 克隆并 `npm run build:folia`，再重启进程 |
+| 沉浸式听歌资料库「暂无内容」 | 网易云看 `/ncm-api/login/status` 是否返回账号；QQ/酷狗需在 Folia 内单独登录 |
+| `/api/lyric-proxy` 返回 401 | 该接口只放行同源页面请求，直接浏览器访问地址栏或 curl 会被拒（`Sec-Fetch-Site` 不匹配） |
 | AI 不回复 | `npm run check:ai`；密钥与额度 |
 | 两台机同时跑 | 必须停旧 Node + 旧 Tunnel，避免库写冲突与 DNS 切换失败 |
 

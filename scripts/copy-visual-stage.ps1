@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $src = 'C:\meiad\Mineradio-paused-main\public'
 $dst = 'C:\perry\client\public\visual'
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
