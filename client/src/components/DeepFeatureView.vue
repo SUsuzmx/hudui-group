@@ -211,6 +211,12 @@ async function load() {
     } catch {
       hasActiveGuessRoom.value = false;
     }
+    // 发现页游戏栏直达: payload.openGame 指定游戏 id 时自动开始
+    const wantGame = props.payload?.openGame;
+    if (wantGame) {
+      const target = games.value.find((g) => g.id === wantGame);
+      if (target) openGame(target);
+    }
   }
   if (props.type === 'cardDetail' && !card.value) {
     try {

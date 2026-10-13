@@ -240,7 +240,8 @@ async function refresh() {
       ];
     } else if (props.type === 'games') {
       demoList.value = [
-        { key: 'open', title: '游戏中心', sub: '叠塔挑战', action: 'open-deep', feature: 'gameHome' },
+        { key: 'open', title: '游戏中心', sub: '人物捏造 · 叠塔挑战', action: 'open-deep', feature: 'gameHome' },
+        { key: 'g2', title: '人物捏造', sub: '3D 熊熊工坊 · 捏身材换毛色摆动作', action: 'open-deep', feature: 'gameHome', payload: { openGame: 'character_forge' } },
         { key: 'g1', title: '叠塔挑战', sub: '发现页 → 游戏 → 开始', action: 'open-deep', feature: 'gameHome' },
       ];
     } else if (props.type === 'miniapp') {

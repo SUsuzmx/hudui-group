@@ -234,6 +234,7 @@ export const api = {
   setMemberRole: (id, userId, role) =>
     request(`/api/groups/${id}/members/role`, { body: { userId, role } }),
   announcementReads: (id) => request(`/api/groups/${id}/announcement/reads`, { method: 'GET' }),
+  announcementState: (id) => request(`/api/groups/${id}/announcement/state`, { method: 'GET' }),
   markAnnouncementRead: (id) => request(`/api/groups/${id}/announcement/read`, { body: {} }),
   groupMyRole: (id) => request(`/api/groups/${id}/my-role`, { method: 'GET' }),
 

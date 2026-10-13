@@ -5,6 +5,7 @@ import { toast } from '../toast.js';
 import { listenTogether, createRoom } from '../listen-together.js';
 import { musicPlayer, fmtAudioTime } from '../music-player.js';
 import SongDetailView from './SongDetailView.vue';
+import UserAvatar from './UserAvatar.vue';
 import { preloadVisualStage } from '../visual-stage.js';
 
 const showConvPick = ref(false);
@@ -54,6 +55,24 @@ async function openConvPick() {
   } finally {
     convLoading.value = false;
   }
+}
+
+/** 邀请列表头像：私聊用对方头像，群聊用群头像/emoji */
+function convAvatarProps(c) {
+  const name = c.name || c.nickname || '会话';
+  const avatars = Array.isArray(c.avatars) ? c.avatars : [];
+  const first = c.avatar || c.avatarUrl || avatars[0] || c.personaAvatar || null;
+  const isPath = Boolean(first) && typeof first === 'string'
+    && (first.startsWith('/') || first.startsWith('data:') || first.startsWith('http')
+      || /\.(png|jpe?g|webp|gif)$/i.test(first));
+  const isEmoji = Boolean(first) && !isPath && !String(first).startsWith('#') && String(first).length <= 4;
+  return {
+    name,
+    avatar: isPath ? first : null,
+    emoji: isEmoji ? first : (c.type === 'group' ? '👥' : null),
+    color: c.avatarColor || c.color || (c.type === 'group' ? '#07c160' : '#4f6ef7'),
+    size: 42,
+  };
 }
 
 watch(showConvPick, (v) => {
@@ -196,9 +215,8 @@ function isActive(t) {
 }
 function openDetail() { if (current.value) showDetail.value = true; }
 
-/** 3D 舞台底部「邀请一起听」：先收起舞台，再弹会话选择（否则选人面板被舞台盖住） */
+/** 3D 舞台「邀请一起听」：面板盖在播放器控制台之上，不收起舞台 */
 function onInviteFromStage() {
-  showDetail.value = false;
   inviteListenTogether();
 }
 
@@ -735,8 +753,11 @@ onMounted(() => {
           type="button"
           @click="pickConvForInvite(c)"
         >
-          <span class="lt-conv-name">{{ c.name || c.nickname }}</span>
-          <span class="lt-conv-sub">{{ c.type === 'private' ? '私聊' : '群聊' }}</span>
+          <UserAvatar v-bind="convAvatarProps(c)" />
+          <span class="lt-conv-main">
+            <span class="lt-conv-name">{{ c.name || c.nickname }}</span>
+            <span class="lt-conv-sub">{{ c.type === 'private' ? '私聊' : '群聊' }}</span>
+          </span>
         </button>
         <button class="lt-conv-cancel" type="button" @click="showConvPick = false">取消</button>
       </div>
@@ -1174,7 +1195,7 @@ onMounted(() => {
 .page main { overflow-y: auto !important; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; flex: 1 1 auto; min-height: 0; max-height: none; }
 
 /* 登录 */
-.login-mask { position: absolute; inset: 0; z-index: 50; background: rgba(0,0,0,.35); display: flex; align-items: flex-end; }
+.login-mask { position: absolute; inset: 0; z-index: 82; background: rgba(0,0,0,.35); display: flex; align-items: flex-end; }
 .login-panel { width: 100%; background: var(--white); border-radius: 16px 16px 0 0; padding: 16px 16px calc(16px + var(--safe-b)); color: var(--text); }
 .login-title { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
 .login-status { font-size: 12px; color: var(--text-2); line-height: 1.6; margin-bottom: 8px; }
@@ -1185,12 +1206,44 @@ onMounted(() => {
 .login-actions { margin-top: 10px; display: flex; gap: 8px; justify-content: flex-end; }
 .login-actions button { min-height: 36px; padding: 0 14px; border-radius: 8px; border: 0; font-size: 13px; background: var(--divider-soft); color: var(--text); }
 .login-actions button:last-child { background: var(--green); color: #fff; }
-.lt-conv-mask{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:40;display:flex;align-items:flex-end}
+.lt-conv-mask{
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,.45);
+  /* 必须盖过 .player(z-index 45) 与 .player-stage(z-index 40) */
+  z-index:80;
+  display:flex;
+  align-items:flex-end;
+}
 .lt-conv-sheet{width:100%;max-height:70vh;overflow:auto;background:#fff;border-radius:14px 14px 0 0;padding:14px 12px calc(16px + env(safe-area-inset-bottom,0px))}
 .lt-conv-title{font-size:15px;font-weight:600;margin-bottom:10px}
 .lt-conv-empty{font-size:12px;color:#999;padding:16px 0;text-align:center}
-.lt-conv-item{display:flex;justify-content:space-between;align-items:center;width:100%;border:0;border-bottom:1px solid #f2f2f2;padding:12px 4px;background:transparent;text-align:left}
-.lt-conv-name{font-size:14px;color:#1f1f1f}
+.lt-conv-item{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  width:100%;
+  border:0;
+  border-bottom:1px solid #f2f2f2;
+  padding:12px 4px;
+  background:transparent;
+  text-align:left;
+}
+.lt-conv-item:active { background: #f7f7f7; }
+.lt-conv-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.lt-conv-name{
+  font-size:14px;
+  color:#1f1f1f;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
 .lt-conv-sub{font-size:11px;color:#999}
 .lt-conv-cancel{margin-top:12px;width:100%;border:0;border-radius:8px;padding:12px;background:#f5f5f5;color:#576b95;font-size:14px}
 </style>

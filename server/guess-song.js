@@ -53,7 +53,9 @@ const DISCONNECT_GRACE_MS = 20_000;
 const WAITING_IDLE_MS = 15 * 60 * 1000;
 const FINISHED_EMPTY_MS = 3 * 60 * 1000;
 const CMD_CACHE_MS = 90_000;
-const LOAD_TIMEOUT_MS = 12_000;
+// 本地曲加载快，短超时；远程仍给足时间
+const LOAD_TIMEOUT_LOCAL_MS = 4_000;
+const LOAD_TIMEOUT_REMOTE_MS = 10_000;
 const BUZZ_COOLDOWN_MS = 400;
 
 /** @type {Map<string, object>} */
@@ -937,7 +939,10 @@ function startRound(room, index) {
   room.artistDeadline = 0;
   room.lastResult = null;
   for (const p of room.players) resetPlayerForRound(p);
-  setPhase(room, 'loading', now() + LOAD_TIMEOUT_MS);
+  const isLocalTrack = !!(track.url && String(track.url).startsWith('/music/'))
+    || String(track.source || '') === 'local';
+  const loadTimeout = isLocalTrack ? LOAD_TIMEOUT_LOCAL_MS : LOAD_TIMEOUT_REMOTE_MS;
+  setPhase(room, 'loading', now() + loadTimeout);
   broadcastRoom(room, 'guess:round', {
     roundIndex: index,
     total: room.songCount,
@@ -970,7 +975,7 @@ function startRound(room, index) {
       return;
     }
     beginPrep(room);
-  }, LOAD_TIMEOUT_MS);
+  }, loadTimeout);
   room.loadTimer.unref?.();
 }
 
@@ -990,8 +995,12 @@ function beginPrep(room) {
   if (!room.round || room.status !== 'playing') return;
   clearRoomTimers(room);
   const prepareAt = now();
+  const isLocalTrack = !!(room.round.track?.url && String(room.round.track.url).startsWith('/music/'))
+    || String(room.round.track?.source || '') === 'local';
+  // 本地曲已就绪，准备时间可更短
+  const prepMs = isLocalTrack ? Math.min(PREPARE_MS, 800) : PREPARE_MS;
   room.prepareAt = prepareAt;
-  room.audioStartAt = prepareAt + PREPARE_MS;
+  room.audioStartAt = prepareAt + prepMs;
   setPhase(room, 'prep', room.audioStartAt);
   broadcastRoom(room, 'guess:prep', {
     prepareAt,
@@ -1002,7 +1011,7 @@ function beginPrep(room) {
   });
   room.prepTimer = setTimeout(() => {
     if (room.roundPhase === 'prep' || room.roundPhase === 'loading') beginPlaying(room);
-  }, PREPARE_MS + 40);
+  }, prepMs + 40);
   room.prepTimer.unref?.();
 }
 
@@ -1090,7 +1099,7 @@ function revealMain(room, { mode, winner = null, chosenTitle = null } = {}) {
   room.artistTimer = setTimeout(() => {
     if (skipArtist) endArtistPhase(room);
     else beginArtistPhase(room);
-  }, 1100);
+  }, 900);
   room.artistTimer.unref?.();
 }
 
@@ -1131,7 +1140,7 @@ function endArtistPhase(room) {
     const next = room.round.index + 1;
     if (next >= room.songCount) finishMatch(room);
     else startRound(room, next);
-  }, 1400);
+  }, 1000);
   room.roundTimer.unref?.();
 }
 

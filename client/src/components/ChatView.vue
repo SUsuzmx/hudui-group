@@ -148,6 +148,7 @@ const collectNote = ref('');
 const collectingIds = ref({});
 const noticeShown = ref(false);
 const noticeDismissed = ref(false);
+const noticeUnread = ref(false);
 const showNoticeFull = ref(false);
 const showGroupTools = ref(false);
 const showFavPicker = ref(false);
@@ -246,17 +247,16 @@ const mentionableMembers = computed(() => {
       color: '#07c160',
     });
   }
-  if (isDefaultChat.value) {
-    for (const u of members.value.allUsers || []) {
-      if (u.nickname === props.me.nickname) continue;
-      list.push({
-        nickname: u.nickname,
-        avatar: u.avatar,
-        emoji: null,
-        color: u.avatarColor,
-        online: u.online,
-      });
-    }
+  // allUsers 已按群成员制下发(服务端过滤), 群成员均可 @
+  for (const u of members.value.allUsers || []) {
+    if (u.nickname === props.me.nickname) continue;
+    list.push({
+      nickname: u.nickname,
+      avatar: u.avatar,
+      emoji: null,
+      color: u.avatarColor,
+      online: u.online,
+    });
   }
   return list;
 });
@@ -269,6 +269,16 @@ const filteredMentions = computed(() => {
 
 function avatarProps(m) {
   return avatarFromMessage(m, aiAvatarMap.value);
+}
+
+/** 关闭公告条/公告全文: 本地立即收起, 并上报服务端已读(按公告版本), 重进不再弹出 */
+function dismissNotice() {
+  noticeDismissed.value = true;
+  const cid = conversationId.value || '';
+  const gid = cid.startsWith('grp_')
+    ? Number(cid.replace(/^grp_/, ''))
+    : (props.chat?.groupId || null);
+  if (gid) api.markAnnouncementRead(gid).catch(() => {});
 }
 
 function fmtTime(ts) {
@@ -2059,13 +2069,20 @@ onMounted(() => {
     : (props.chat?.groupId || null);
   if (gid) {
     api.groupInfo(gid).then((d) => {
-      const n = d?.group?.notice || '';
-      groupNotice.value = n;
-      if (n && !noticeShown.value) {
-        noticeShown.value = true;
-        showToast(`群公告：${String(n).slice(0, 60)}`);
-      }
+      groupNotice.value = d?.group?.notice || '';
     }).catch(() => {});
+    // 公告已读状态(服务端按公告版本判断): 只在未读时弹提示/显示公告条
+    api.announcementState(gid).then((s) => {
+      groupNotice.value = s?.notice || '';
+      noticeUnread.value = Boolean(s?.notice && s.read === false);
+      if (noticeUnread.value && !noticeShown.value) {
+        noticeShown.value = true;
+        showToast(`群公告：${String(s.notice).slice(0, 60)}`);
+      }
+    }).catch(() => {
+      // 状态接口异常时退回旧行为: 有公告就提示
+      noticeUnread.value = Boolean(groupNotice.value);
+    });
   }
 
   // 3) 共享 socket
@@ -2105,6 +2122,13 @@ onMounted(() => {
     appendIncoming(m);
   };
   const onMembers = (data) => {
+    // 只接受当前会话范围的成员数据: 全局广播是主群范围, 不能覆盖群聊页的定向数据
+    const dataGid = Number(data?.groupId || 0);
+    const cid = conversationId.value || '';
+    const myGid = cid.startsWith('grp_')
+      ? Number(cid.replace(/^grp_/, ''))
+      : Number(props.chat?.groupId || 0);
+    if (dataGid && myGid && dataGid !== myGid) return;
     members.value = data;
     emit('members', data);
     groupMemberCount.value = (data.onlineUsers?.length || 0) + (data.aiMembers?.length || 0) + (data.allUsers?.length || 0);
@@ -2205,10 +2229,10 @@ onBeforeUnmount(() => {
     />
 
     <div v-if="showConnHint" class="conn-bar">连接已断开，正在重连…</div>
-    <div v-else-if="groupNotice && !noticeDismissed" class="notice-bar" @click="showNoticeFull = true">
+    <div v-else-if="groupNotice && noticeUnread && !noticeDismissed" class="notice-bar" @click="showNoticeFull = true">
       <span class="notice-tag">公告</span>
       <span class="notice-text">{{ groupNotice }}</span>
-      <button class="notice-x" type="button" @click.stop="noticeDismissed = true">×</button>
+      <button class="notice-x" type="button" @click.stop="dismissNotice">×</button>
     </div>
 
     <div v-if="multiMode" class="multi-bar">
@@ -2666,7 +2690,7 @@ onBeforeUnmount(() => {
       <div class="pay-panel">
         <div class="pay-title">群公告</div>
         <div class="tr-text">{{ groupNotice }}</div>
-        <button class="pay-btn" @click="showNoticeFull = false; noticeDismissed = true">知道了</button>
+        <button class="pay-btn" @click="showNoticeFull = false; dismissNotice()">知道了</button>
       </div>
     </div>
 

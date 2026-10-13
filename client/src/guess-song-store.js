@@ -58,7 +58,16 @@ export const guessSong = {
     return state.ranking;
   },
   get canBuzz() {
-    return Boolean(state.round?.canBuzz) && !buzzLocked && state.audioStarted;
+    if (buzzLocked) return false;
+    const r = state.round;
+    if (!r) return false;
+    // 作答/揭晓阶段锁住，其余时间音频在响就可抢
+    const phase = r.phase;
+    if (phase === 'answering' || phase === 'main_reveal' || phase === 'artist' || phase === 'round_end') {
+      return false;
+    }
+    const playing = state.audioStarted || Boolean(audio && !audio.paused && !audio.ended);
+    return playing;
   },
 };
 
@@ -237,8 +246,27 @@ function ensureAudio() {
   } catch {
     /* ignore */
   }
+  // 以浏览器「正在播放」为准，避免 play() Promise 稍慢导致按钮迟迟不亮
+  const markPlaying = () => {
+    state.audioStarted = true;
+    state.preparing = false;
+    if (state.round) {
+      const ph = state.round.phase;
+      // prep/loading 一出声就视为可抢；answering 等锁定态不动
+      if (ph === 'prep' || ph === 'loading' || ph === 'playing' || !ph) {
+        state.round.phase = 'playing';
+        state.round.canBuzz = true;
+      }
+    }
+  };
+  audio.addEventListener('playing', markPlaying);
+  audio.addEventListener('play', markPlaying);
   audio.addEventListener('ended', () => {
     state.audioStarted = false;
+    if (state.round) state.round.canBuzz = false;
+  });
+  audio.addEventListener('pause', () => {
+    // 抢答暂停时不要立刻灭按钮逻辑，由 buzzed 流程控制
   });
   audio.addEventListener('error', () => {
     state.audioStarted = false;
@@ -451,32 +479,37 @@ async function doPreloadTrack(ref) {
   }
   if (!url) return false;
   const token = ++audioToken;
+  const isLocalFile = String(url).startsWith('/music/') || String(url).startsWith('/media/demo/');
 
-  const tryLoad = async (src) => {
+  const tryLoad = async (src, useBust) => {
     if (token !== audioToken) return false;
     try {
       el.pause();
     } catch {
       /* ignore */
     }
-    const sep = src.includes('?') ? '&' : '?';
-    const bust = `${src}${sep}_gs=${token}`;
+    // 本地文件走浏览器缓存；cache-buster 会让每题重下整首 mp3
+    let target = src;
+    if (useBust && !isLocalFile) {
+      const sep = src.includes('?') ? '&' : '?';
+      target = `${src}${sep}_gs=${token}`;
+    }
     try {
       el.removeAttribute('src');
       el.load();
-      el.src = bust;
+      el.src = target;
       el.load();
     } catch {
       return false;
     }
-    return waitAudioPlayable(el, 8000);
+    return waitAudioPlayable(el, isLocalFile ? 2500 : 8000);
   };
 
-  let ok = await tryLoad(url);
+  let ok = await tryLoad(url, false);
   if (!ok && token === audioToken) {
-    const fallback = localDemoUrl(ref?.id);
+    const fallback = isLocalFile ? '/media/demo/listen-bgm.mp3' : localDemoUrl(ref?.id);
     if (fallback && fallback.split('?')[0] !== String(url).split('?')[0]) {
-      ok = await tryLoad(fallback);
+      ok = await tryLoad(fallback, !isLocalFile);
     }
   }
   return ok && token === audioToken;
@@ -498,6 +531,11 @@ async function doPlayFrom(clipStartMs, myToken) {
   try {
     const el = ensureAudio();
     if (myToken !== playToken) return false;
+    // 已经在播就直接算成功，不再 seek 重播打断
+    if (!el.paused && !el.ended && el.readyState >= 2) {
+      state.audioStarted = true;
+      return true;
+    }
     if (el.readyState < 2) {
       state.audioStarted = false;
       flash('音频还没准备好…');
@@ -506,14 +544,15 @@ async function doPlayFrom(clipStartMs, myToken) {
     }
     try {
       const t = Number(clipStartMs) || 0;
-      if (t > 0) el.currentTime = t / 1000;
+      if (t > 0 && Math.abs(el.currentTime - t / 1000) > 0.35) el.currentTime = t / 1000;
     } catch {
       /* ignore */
     }
     const ok = await safePlay(el);
     if (myToken !== playToken) return false;
-    state.audioStarted = Boolean(ok);
-    return Boolean(ok);
+    const live = ok || Boolean(!el.paused && !el.ended);
+    state.audioStarted = live;
+    return live;
   } catch {
     state.audioStarted = false;
     return false;
@@ -572,14 +611,19 @@ function bindEvents() {
     void (async () => {
       if (state.round) {
         state.round.phase = 'playing';
-        state.round.canBuzz = false;
+        // 音频已在播则不灭按钮，避免 playFrom 晚到导致抢答锁死
+        const el = audio;
+        const already = Boolean(el && !el.paused && el.readyState >= 2);
+        if (!already) state.round.canBuzz = false;
       }
       const started = await playFrom(
         payload?.clipStartMs ?? state.round?.clipStartMs ?? 0,
         payload?.startAt || Date.now()
       );
-      if (state.round) state.round.canBuzz = Boolean(started);
-      state.audioStarted = Boolean(started);
+      const el = audio;
+      const live = started || Boolean(el && !el.paused && !el.ended && el.readyState >= 2);
+      if (state.round && state.round.phase === 'playing') state.round.canBuzz = live;
+      if (live) state.audioStarted = true;
       state.preparing = false;
     })().catch(() => {});
   });
@@ -587,14 +631,18 @@ function bindEvents() {
     void (async () => {
       if (state.round) {
         state.round.phase = 'playing';
-        state.round.canBuzz = false;
+        const el = audio;
+        const already = Boolean(el && !el.paused && el.readyState >= 2);
+        if (!already) state.round.canBuzz = false;
       }
       const started = await playFrom(
         payload?.clipStartMs ?? state.round?.clipStartMs ?? 0,
         payload?.startAt || Date.now()
       );
-      if (state.round) state.round.canBuzz = Boolean(started);
-      state.audioStarted = Boolean(started);
+      const el = audio;
+      const live = started || Boolean(el && !el.paused && !el.ended && el.readyState >= 2);
+      if (state.round && state.round.phase === 'playing') state.round.canBuzz = live;
+      if (live) state.audioStarted = true;
     })().catch(() => {});
   });
   on('guess:hint', (payload) => {

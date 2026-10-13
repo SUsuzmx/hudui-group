@@ -709,11 +709,14 @@ onMounted(loadAll);
     <div v-if="announcementReads" class="mask" @click.self="announcementReads = null">
       <div class="dialog">
         <div class="dialog-title">公告已读情况</div>
-        <p class="hint" style="padding:0 0 8px">已读 {{ announcementReads.reads?.length || 0 }} / {{ announcementReads.total || 0 }}</p>
-        <div class="read-list">
-          <div v-for="r in announcementReads.reads" :key="r.id" class="read-item ok">{{ r.nickname }} · 已读</div>
-          <div v-for="u in announcementReads.unread" :key="'u' + u.id" class="read-item">{{ u.nickname }} · 未读</div>
-        </div>
+        <p v-if="announcementReads.empty" class="hint" style="padding:0 0 8px">当前没有群公告</p>
+        <template v-else>
+          <p class="hint" style="padding:0 0 8px">已读 {{ announcementReads.reads?.length || 0 }} / {{ announcementReads.total || 0 }}（按当前公告统计）</p>
+          <div class="read-list">
+            <div v-for="r in announcementReads.reads" :key="r.id" class="read-item ok">{{ r.nickname }} · 已读</div>
+            <div v-for="u in announcementReads.unread" :key="'u' + u.id" class="read-item">{{ u.nickname }} · 未读</div>
+          </div>
+        </template>
         <div class="dialog-actions">
           <button type="button" @click="announcementReads = null">关闭</button>
         </div>

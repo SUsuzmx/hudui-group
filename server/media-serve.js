@@ -140,10 +140,19 @@ function profileHasMedia(userId, relUrl) {
   }
 }
 
+function avatarHasMedia(relUrl) {
+  try {
+    const row = db.prepare(`SELECT 1 FROM users WHERE avatar = ? LIMIT 1`).get(relUrl);
+    return Boolean(row);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Express 中间件：挂在 /media
  * - demo/ 资源公开
- * - 用户上传：需登录，且属于本人 / 可访问会话 / 可见朋友圈
+ * - 用户上传：需登录，且属于本人 / 可访问会话 / 可见朋友圈 / 用户头像
  * - 危险类型强制下载，绝不以 HTML/SVG/JS 页面执行
  */
 export function mediaServeMiddleware(req, res, next) {
@@ -183,7 +192,7 @@ export function mediaServeMiddleware(req, res, next) {
   }
 
   const relUrl = `/media/${name}`;
-  if (messageHasMedia(user.id, relUrl) || momentHasMedia(user.id, relUrl) || profileHasMedia(user.id, relUrl)) {
+  if (messageHasMedia(user.id, relUrl) || momentHasMedia(user.id, relUrl) || profileHasMedia(user.id, relUrl) || avatarHasMedia(relUrl)) {
     return sendProtected(res, full, ext);
   }
 

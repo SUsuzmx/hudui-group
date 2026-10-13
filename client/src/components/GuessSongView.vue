@@ -63,7 +63,11 @@ const onlineCount = computed(() => players.value.filter((p) => p.online !== fals
 const round = computed(() => state.round);
 const options = computed(() => state.options);
 const artistOptions = computed(() => state.artistOptions);
-const canBuzz = computed(() => guessSong.canBuzz);
+const canBuzz = computed(() => {
+  // 用 100ms tick 兜底刷新：audio.paused 等非响应式状态也能及时反映到按钮
+  void nowTick.value;
+  return guessSong.canBuzz;
+});
 
 const themeLabel = computed(() => room.value?.themeLabel || '曲库小王子');
 const themeDesc = computed(() => {
