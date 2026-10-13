@@ -371,6 +371,22 @@ export function markAnnouncementRead(groupId, userId) {
   return { ok: true };
 }
 
+/** 当前公告是否已被该用户读过(按 announcement_at 版本判断) */
+export function getAnnouncementState(groupId, userId) {
+  const g = stmts.groupById.get(Number(groupId));
+  if (!g) return { error: '群不存在' };
+  const notice = String(g.announcement || g.notice || '').trim();
+  const announcementAt = Number(g.announcement_at || 0) || null;
+  let read = true;
+  if (notice && announcementAt) {
+    const row = db.prepare(
+      'SELECT read_at FROM group_announcement_reads WHERE group_id = ? AND user_id = ?'
+    ).get(Number(groupId), Number(userId));
+    read = Boolean(row && Number(row.read_at) >= announcementAt);
+  }
+  return { notice, announcementAt, read };
+}
+
 export function listAnnouncementReads(groupId, requesterId) {
   const g = stmts.groupById.get(Number(groupId));
   if (!g) return { error: '群不存在' };
@@ -381,14 +397,22 @@ export function listAnnouncementReads(groupId, requesterId) {
   if (role !== 'owner' && role !== 'admin') {
     return { error: '仅群主或管理员可查看已读情况' };
   }
-  const reads = db.prepare(
+  const notice = String(g.announcement || g.notice || '').trim();
+  const announcementAt = Number(g.announcement_at || 0) || null;
+  const rows = db.prepare(
     `SELECT r.read_at, u.id, u.nickname, u.avatar FROM group_announcement_reads r
      JOIN users u ON u.id = r.user_id WHERE r.group_id = ? ORDER BY r.read_at DESC`
   ).all(Number(groupId));
+  // 只统计当前公告版本(announcement_at 之后)的已读, 旧公告的已读不算数
+  const currentReads = notice && announcementAt
+    ? rows.filter((r) => Number(r.read_at) >= announcementAt)
+    : [];
+  const readIds = new Set(currentReads.map((r) => Number(r.id)));
   const humanMembers = members.filter((m) => m.user_id);
-  const readIds = new Set(reads.map((r) => Number(r.id)));
   return {
-    reads: reads.map((r) => ({
+    announcementAt,
+    empty: !notice,
+    reads: currentReads.map((r) => ({
       id: r.id, nickname: r.nickname, avatar: r.avatar, readAt: r.read_at,
     })),
     unread: humanMembers

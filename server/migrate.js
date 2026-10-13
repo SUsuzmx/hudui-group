@@ -504,6 +504,25 @@ const migrations = [
       createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_error_logs_at ON error_logs(created_at DESC)');
     },
   },
+  {
+    id: 12,
+    name: 'group_members_dedupe_unique',
+    up(db) {
+      // group_members 表级 UNIQUE(group_id, user_id, persona_key) 在 persona_key 为 NULL 时
+      // 不去重(SQLite 中 NULL 互不相等), 成员回填会重复插入。先清历史重复行, 再补局部唯一索引。
+      db.exec(`
+        DELETE FROM group_members WHERE rowid NOT IN (
+          SELECT MIN(rowid) FROM group_members
+          GROUP BY group_id,
+            IFNULL(user_id, -1),
+            IFNULL(persona_key, ''),
+            CASE WHEN user_id IS NULL AND persona_key IS NULL THEN nickname ELSE '' END
+        )
+      `);
+      createIndex(db, 'CREATE UNIQUE INDEX IF NOT EXISTS ux_group_members_user ON group_members(group_id, user_id) WHERE user_id IS NOT NULL');
+      createIndex(db, 'CREATE UNIQUE INDEX IF NOT EXISTS ux_group_members_persona ON group_members(group_id, persona_key) WHERE persona_key IS NOT NULL');
+    },
+  },
 ];
 
 export function runMigrations(db) {

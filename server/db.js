@@ -127,6 +127,22 @@ export const stmts = {
   deleteGroupMemberByUser: db.prepare(
     'DELETE FROM group_members WHERE group_id = ? AND user_id = ?'
   ),
+  getGroupMemberRole: db.prepare(
+    'SELECT role FROM group_members WHERE group_id = ? AND user_id = ?'
+  ),
+  listGroupMemberIds: db.prepare(
+    'SELECT group_id FROM group_members WHERE user_id = ?'
+  ),
+  // 群的自然人成员(联 users 取实时资料; group_members.nickname 仅作群昵称)
+  listHumanGroupMembers: db.prepare(
+    `SELECT gm.group_id, gm.user_id, gm.role, u.nickname, u.avatar, u.avatar_color, u.wxid
+     FROM group_members gm JOIN users u ON u.id = gm.user_id
+     WHERE gm.group_id = ? ORDER BY gm.role DESC, u.nickname COLLATE NOCASE`
+  ),
+  listMemberGroups: db.prepare(
+    `SELECT g.* FROM groups g JOIN group_members gm ON gm.group_id = g.id
+     WHERE gm.user_id = ? ORDER BY g.id`
+  ),
   listUserCards: db.prepare(
     'SELECT * FROM user_cards WHERE user_id = ? ORDER BY id DESC'
   ),
@@ -162,7 +178,7 @@ export const stmts = {
       AND (p.cleared_before IS NULL OR m.id > p.cleared_before)
       AND (
         m.conversation_id IS NULL
-        OR m.conversation_id LIKE 'grp\\_%' ESCAPE '\\'
+        OR m.conversation_id IN (SELECT 'grp_' || group_id FROM group_members WHERE user_id = ?)
         OR m.conversation_id LIKE ? ESCAPE '\\'
         OR m.conversation_id LIKE ? ESCAPE '\\'
         OR m.conversation_id LIKE ? ESCAPE '\\'

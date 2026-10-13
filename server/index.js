@@ -22,7 +22,7 @@ import { createKugouRouter } from './providers/kugou.js';
 import { createLookApi } from './look-api.js';
 import { createMetaRouter, getUserSettings, setUserSettings } from './meta.js';
 import { canViewStatus, filterStatusForViewer } from './privacy.js';
-import { seedGroups, listGroups, getGroup, groupConvId, DEFAULT_GROUP_KIND, setGroupNotice, createGroup, listGroupMembers, addGroupMembers, leaveGroup, removeGroupMember, renameGroup, setMyGroupNickname } from './groups.js';
+import { seedGroups, listGroups, getGroup, groupConvId, DEFAULT_GROUP_KIND, setGroupNotice, createGroup, listGroupMembers, addGroupMembers, leaveGroup, removeGroupMember, renameGroup, setMyGroupNickname, isGroupMember } from './groups.js';
 import { canAccessConversation } from './acl.js';
 import { mediaFromBodyJson, mediaFromMultipart, mediaFromRaw, normalizeKind } from './upload.js';
 import { mediaServeMiddleware } from './media-serve.js';
@@ -37,7 +37,7 @@ import {
   createReport, listMyReports, handleReport,
   createFeedback, listMyFeedback, replyFeedback, FAQ_LIST,
   recordMomentVisit, listMomentVisitors,
-  markAnnouncementRead, listAnnouncementReads,
+  markAnnouncementRead, listAnnouncementReads, getAnnouncementState,
   setGroupJoinApproval, requestJoinGroup, listJoinRequests, handleJoinRequest,
   setMemberRole, canManageGroup, canKickMember, listGroupAlbum,
   exportChatHistory, saveCloudBackup, listCloudBackups, restoreCloudBackup,
@@ -394,7 +394,7 @@ app.get('/api/chat/search', (req, res) => {
   let rows = [];
   try {
     if (conv) {
-      if (!canAccessConversation(user.id, conv, getGroup)) {
+      if (!canAccessConversation(user.id, conv, getGroup, (gid) => isGroupMember(gid, user.id))) {
         return res.status(403).json({ error: '无权搜索该会话' });
       }
       rows = stmts.searchMessagesConv.all(user.id, conv, like);
@@ -403,6 +403,7 @@ app.get('/api/chat/search', (req, res) => {
       rows = stmts.searchMessagesScoped.all(
         user.id,
         like,
+        user.id,
         `pv\\_${uid}\\_%`,
         `pv\\_u\\_${uid}\\_%`,
         `pv\\_u\\_%\\_${uid}`
@@ -653,6 +654,13 @@ app.get('/api/groups/:id/announcement/reads', requireAuth, (req, res) => {
 
 app.post('/api/groups/:id/announcement/read', requireAuth, (req, res) => {
   res.json(markAnnouncementRead(req.params.id, req.user.id));
+});
+
+// 当前公告 + 我的已读状态(按公告版本)
+app.get('/api/groups/:id/announcement/state', requireAuth, (req, res) => {
+  const r = getAnnouncementState(req.params.id, req.user.id);
+  if (r.error) return res.status(404).json({ error: r.error });
+  res.json(r);
 });
 
 app.get('/api/groups/:id/my-role', requireAuth, (req, res) => {
@@ -1086,12 +1094,16 @@ app.get('/api/groups/:id', (req, res) => {
   if (!user) return;
   const g = getGroup(req.params.id);
   if (!g) return res.status(404).json({ error: '群不存在' });
+  if (!isGroupMember(g.id, user.id)) return res.status(403).json({ error: '你不是该群成员' });
   res.json({ group: g });
 });
 
 app.get('/api/groups/:id/members', (req, res) => {
   const user = requireUser(req, res);
   if (!user) return;
+  const g = getGroup(req.params.id);
+  if (!g) return res.status(404).json({ error: '群不存在' });
+  if (!isGroupMember(g.id, user.id)) return res.status(403).json({ error: '你不是该群成员' });
   const members = listGroupMembers(req.params.id);
   if (!members) return res.status(404).json({ error: '群不存在' });
   res.json({ members, count: members.length });
@@ -1102,6 +1114,7 @@ app.post('/api/groups/:id/members', (req, res) => {
   if (!user) return;
   const g = getGroup(req.params.id);
   if (!g) return res.status(404).json({ error: '群不存在' });
+  if (!isGroupMember(g.id, user.id)) return res.status(403).json({ error: '你不是该群成员' });
   const memberIds = Array.isArray(req.body?.userIds) ? req.body.userIds.slice(0, 50) : [];
   const aiNames = Array.isArray(req.body?.aiNames)
     ? req.body.aiNames.map((n) => String(n || '').trim()).filter(Boolean).slice(0, 20)
@@ -1218,7 +1231,7 @@ app.post('/api/search/global', (req, res) => {
   // AI 不再作为全局联系人搜索结果（仅群聊成员可见）；保留群搜索
   const aiContacts = [];
   // 群
-  const groups = listGroups()
+  const groups = listGroups(user.id)
     .filter((g) => String(g.name || '').includes(q) || String(g.kind || '').includes(q))
     .map((g) => ({
       id: g.id,
@@ -1236,6 +1249,7 @@ app.post('/api/search/global', (req, res) => {
     messages = stmts.searchMessagesScoped.all(
       user.id,
       like,
+      user.id,
       `pv\\_${uid}\\_%`,
       `pv\\_u\\_${uid}\\_%`,
       `pv\\_u\\_%\\_${uid}`

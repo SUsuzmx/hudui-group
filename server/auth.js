@@ -163,12 +163,20 @@ export function register(nickname, password, avatar) {
     nickname, hashPassword(password), color, Date.now(), avatarFile, wxid, '中国', ''
   );
   const user = stmts.userById.get(Number(r.lastInsertRowid));
+  // 新用户: 默认加入种子群(主群等 kind!=custom 的演示群, 保持全员在群语义);
+  // 自建群(custom)为严格成员制, 需被邀请, 新好友不会自动进群
+  try {
+    for (const g of stmts.allGroups.all()) {
+      if (String(g.kind || '') === 'custom') continue;
+      stmts.insertGroupMember.run(g.id, user.id, null, '', 'member', Date.now());
+    }
+  } catch { /* ignore */ }
   // 新用户: 把已有会话历史记为已读, 避免一上来刷几百条未读
   try {
     const now = Date.now();
     const mid = stmts.maxMessageIdNull.get()?.mid || 0;
     stmts.upsertChatRead.run(user.id, 'default', mid, 0, now);
-    for (const g of stmts.allGroups.all()) {
+    for (const g of stmts.listMemberGroups.all(user.id)) {
       const conv = `grp_${g.id}`;
       const gid = stmts.maxMessageId.get(conv)?.mid || 0;
       stmts.upsertChatRead.run(user.id, conv, gid, 0, now);

@@ -1,7 +1,7 @@
 // 会话偏好 / 未读 / 好友申请 / 标签 / 收藏 / 公众号 API
 import { stmts } from './db.js';
 import { publicProfile, requireAuth } from './auth.js';
-import { listGroups, groupConvId, getGroup } from './groups.js';
+import { listGroups, groupConvId, getGroup, isGroupMember } from './groups.js';
 import { personas } from './ai/personas.js';
 import { aiAvatarFile } from './ai/avatars.js';
 import { canAccessConversation } from './acl.js';
@@ -78,7 +78,7 @@ export function createMetaRouter({ notify } = {}) {
   function mergeChatsWithMeta(userId) {
     const chats = [];
 
-    for (const g of listGroups()) {
+    for (const g of listGroups(userId)) {
       const conv = g.conversationId || groupConvId(g.id);
       const prefRow = stmts.getChatPref.get(userId, conv);
       const prefs = prefRow || { muted: 0, pinned: 0, folded: 0, draft: '', bg_key: null, cleared_before: 0 };
@@ -296,7 +296,7 @@ export function createMetaRouter({ notify } = {}) {
     /** 清空会话记录 (仅本人视角, 不删除共享消息) */
     clearHistory(req, res) {
       const conv = normConv(req.body?.conversationId);
-      if (!canAccessConversation(req.user.id, conv, getGroup)) {
+      if (!canAccessConversation(req.user.id, conv, getGroup, (gid) => isGroupMember(gid, req.user.id))) {
         return res.status(403).json({ error: '无权清空该会话' });
       }
       const mid = conv === 'default'

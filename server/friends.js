@@ -32,6 +32,21 @@ export function tagsOfUserMap(ownerId) {
   return map;
 }
 
+/** 群成员范围: grp_N 用群成员表, default 视为全体用户(主群) */
+function groupScopeUsers(conv, excludeId) {
+  if (String(conv).startsWith('grp_')) {
+    const gid = Number(String(conv).slice(4));
+    try {
+      return (stmts.listHumanGroupMembers.all(gid) || [])
+        .map((r) => ({ id: r.user_id }))
+        .filter((u) => u.id !== excludeId);
+    } catch {
+      return [];
+    }
+  }
+  return stmts.allUsers.all().map((u) => ({ id: u.id })).filter((u) => u.id !== excludeId);
+}
+
 export function createFriendsRouter() {
   function friendRow(userId, friendId) {
     return stmts.getFriend.get(userId, friendId) || null;
@@ -257,7 +272,7 @@ export function createFriendsRouter() {
         : (stmts.maxMessageId.get(conv)?.mid || 0);
       stmts.upsertChatRead.run(req.user.id, conv, mid, 0, Date.now());
       try {
-        const others = stmts.allUsers.all().filter((u) => u.id !== req.user.id);
+        const others = groupScopeUsers(conv, req.user.id);
         let readCount = 0;
         for (const u of others) {
           const pr = stmts.getChatRead.get(u.id, conv);
@@ -276,7 +291,7 @@ export function createFriendsRouter() {
         ? (stmts.maxMessageIdNull.get()?.mid || 0)
         : (stmts.maxMessageId.get(conv)?.mid || 0);
       try {
-        const others = stmts.allUsers.all().filter((u) => u.id !== req.user.id);
+        const others = groupScopeUsers(conv, req.user.id);
         let readCount = 0;
         for (const u of others) {
           const pr = stmts.getChatRead.get(u.id, conv);

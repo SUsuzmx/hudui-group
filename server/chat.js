@@ -3,7 +3,7 @@ import { verifyToken } from './auth.js';
 import { stmts } from './db.js';
 import { personas, personasForGroup } from './ai/personas.js';
 import { aiAvatarFile } from './ai/avatars.js';
-import { groupConvId, DEFAULT_GROUP_KIND, getGroup } from './groups.js';
+import { groupConvId, DEFAULT_GROUP_KIND, getGroup, isGroupMember, groupHumanMembers } from './groups.js';
 import { canAccessPrivate as aclCanAccessPrivate, canAccessGroup as aclCanAccessGroup } from './acl.js';
 import { isBlockedEither } from './friends.js';
 import { getBalance, credit, debit } from './wallet.js';
@@ -189,11 +189,16 @@ export function initChat(io, { config, engine }) {
     } catch { /* ignore */ }
   };
 
-  const membersInfo = (groupKind = null) => {
-    const pool = groupKind ? personasForGroup(groupKind) : personas.filter((p) => !p.groups || p.groups.includes('main'));
+  const membersInfo = (group = null) => {
+    const groupKind = group?.kind || 'main';
+    const pool = group ? personasForGroup(groupKind) : personas.filter((p) => !p.groups || p.groups.includes('main'));
+    const gid = group?.id ?? defaultGroup?.id ?? null;
+    const humans = gid ? groupHumanMembers(gid) : [];
     return {
       groupName: config.groupName,
-      groupKind: groupKind || 'main',
+      groupKind,
+      groupId: gid,
+      conversationId: gid ? groupConvId(gid) : null,
       onlineUsers: [...online.values()].map((u) => ({
         nickname: u.nickname, avatarColor: u.avatarColor, avatar: u.avatar, online: true,
       })),
@@ -203,25 +208,32 @@ export function initChat(io, { config, engine }) {
         avatarEmoji: p.emoji,
         avatarUrl: aiAvatarFile(p.name),
       })),
-      allUsers: stmts.allUsers.all().map((u) => ({
-        id: u.id,
+      // 群的自然人成员(成员制): 不再把全体用户当成群成员
+      allUsers: humans.map((u) => ({
+        id: u.user_id,
         nickname: u.nickname,
         avatarColor: u.avatar_color,
         avatar: u.avatar,
         wxid: u.wxid,
-        online: online.has(u.id),
+        role: u.role,
+        online: online.has(u.user_id),
       })),
     };
   };
 
-  const broadcastMembers = () => io.emit('members:update', membersInfo());
+  const broadcastMembers = () => io.emit('members:update', membersInfo(defaultGroup));
 
   function getPersonaById(id) {
     return personas.find((p) => p.id === id);
   }
 
-  function canAccessGroup(conversationId) {
-    return aclCanAccessGroup(conversationId, (id) => stmts.groupById.get(id));
+  function canAccessGroup(conversationId, userId = null) {
+    // 成员制: 传入 userId 时要求在 group_members 中
+    return aclCanAccessGroup(
+      conversationId,
+      (id) => stmts.groupById.get(id),
+      userId != null ? (id) => isGroupMember(id, userId) : null
+    );
   }
 
   function clearedBeforeOf(userId, conv) {
@@ -273,10 +285,10 @@ export function initChat(io, { config, engine }) {
 
     // ── 群聊 ──
     socket.on('group:join', (conversationId) => {
-      if (!canAccessGroup(conversationId)) return;
+      if (!canAccessGroup(conversationId, user.id)) return;
       socket.join(conversationId);
       const g = getGroup(Number(String(conversationId).replace(/^grp_/, '')));
-      if (g) socket.emit('members:update', membersInfo(g.kind));
+      if (g) socket.emit('members:update', membersInfo(g));
     });
 
     socket.on('history:load', ({ beforeId, conversationId } = {}, ack) => {
@@ -289,7 +301,7 @@ export function initChat(io, { config, engine }) {
       const isPrivate = String(conv).startsWith('pv_');
       if (isPrivate) {
         if (!canAccessPrivate(conv)) return ack([]);
-      } else if (conv !== defaultConvId && !canAccessGroup(conv)) {
+      } else if (conv !== defaultConvId && !canAccessGroup(conv, user.id)) {
         return ack([]);
       }
 
@@ -352,9 +364,9 @@ export function initChat(io, { config, engine }) {
       } else if (!mediaUrl) {
         mediaType = null;
       }
-      // 默认群（含 default 别名）放行；其它群走 ACL
+      // 默认群（含 default 别名）放行；其它群走 ACL(成员制)
       const isDefaultConv = !conversationId || conversationId === defaultConvId || conversationId === 'default';
-      if (!isDefaultConv && !canAccessGroup(conversationId)) {
+      if (!isDefaultConv && !canAccessGroup(conversationId, user.id)) {
         if (typeof ack === 'function') ack({ error: '无效的群聊' });
         return;
       }
@@ -636,7 +648,7 @@ export function initChat(io, { config, engine }) {
       if (typeof conv !== 'string' || !conv.startsWith('pv_') && !conv.startsWith('grp_')) {
         return conv === defaultConvId;
       }
-      if (conv.startsWith('grp_')) return canAccessGroup(conv) || conv === defaultConvId;
+      if (conv.startsWith('grp_')) return canAccessGroup(conv, user.id) || conv === defaultConvId;
       const parts = conv.split('_');
       if (parts[1] === 'u') {
         const a = parseInt(parts[2], 10);
@@ -736,7 +748,7 @@ export function initChat(io, { config, engine }) {
     // 拍一拍
     socket.on('message:pat', ({ conversationId, targetName } = {}, ack) => {
       const conv = conversationId || defaultConvId;
-      if (conv !== defaultConvId && !canAccessGroup(conv)) {
+      if (conv !== defaultConvId && !canAccessGroup(conv, user.id)) {
         if (typeof ack === 'function') ack({ error: '无效会话' });
         return;
       }

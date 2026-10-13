@@ -166,14 +166,26 @@ export function seedGroups() {
           }
         }
       }
+      // 种子群(main/product/work)保持"全员在群"的演示语义: 全体用户落库为成员。
+      // 自建群(custom)为严格成员制, 只有被邀请/审批通过才在群内。
+      for (const u of stmts.allUsers.all()) {
+        stmts.insertGroupMember.run(row.id, u.id, null, '', 'member', now);
+      }
     } catch { /* ignore */ }
     created.push(row);
   }
   return created;
 }
 
-export function listGroups() {
-  return stmts.allGroups.all().map((g) => {
+export function listGroups(userId = null) {
+  let rows;
+  if (userId) {
+    // 成员制: 只返回我加入的群
+    rows = stmts.listMemberGroups.all(Number(userId));
+  } else {
+    rows = stmts.allGroups.all();
+  }
+  return rows.map((g) => {
     let avatars = [];
     try { avatars = JSON.parse(g.avatars || '[]'); } catch { avatars = []; }
     const last = stmts.lastGroupMessage.get(groupConvId(g.id));
@@ -217,8 +229,37 @@ export function getGroup(groupId) {
 
 export function setGroupNotice(groupId, notice) {
   const text = String(notice || '').trim().slice(0, 500);
-  stmts.setGroupNotice.run(text, Number(groupId));
+  // 记录公告版本时间: 已读状态按该时间判断, 新公告会让旧已读失效
+  if (text) {
+    db.prepare('UPDATE groups SET notice = ?, announcement_at = ? WHERE id = ?')
+      .run(text, Date.now(), Number(groupId));
+  } else {
+    stmts.setGroupNotice.run('', Number(groupId));
+  }
   return text;
+}
+
+/** 是否为群的自然人成员 */
+export function isGroupMember(groupId, userId) {
+  const gid = Number(groupId);
+  const uid = Number(userId);
+  if (!gid || !uid) return false;
+  try {
+    return Boolean(stmts.getGroupMemberRole.get(gid, uid));
+  } catch {
+    return false;
+  }
+}
+
+/** 群的自然人成员(实时资料), 供 socket 成员广播/已读统计使用 */
+export function groupHumanMembers(groupId) {
+  const gid = Number(groupId);
+  if (!gid) return [];
+  try {
+    return stmts.listHumanGroupMembers.all(gid) || [];
+  } catch {
+    return [];
+  }
 }
 
 export function renameGroup(groupId, name) {
