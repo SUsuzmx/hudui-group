@@ -111,21 +111,6 @@ watch(favType, () => {
 });
 
 function pickContact(c) {
-  if (c.isAI) {
-    // AI 不进私聊/通讯录，打开资料页说明群聊用法
-    emit('open-contact', {
-      id: c.personaId || c.id,
-      userId: null,
-      nickname: c.nickname,
-      avatar: c.avatar,
-      emoji: c.emoji,
-      isAI: true,
-      personaId: c.personaId || c.id,
-      isFriend: false,
-      local: true,
-    });
-    return;
-  }
   emit('open-contact', c);
 }
 
@@ -153,20 +138,20 @@ function pickChat(c) {
     || rawStr.startsWith('http')
     || /\.(png|jpe?g|webp|gif)$/i.test(rawStr)
   );
-  const avatar = isPath ? rawStr : (c.personaAvatar || c.avatar || null);
+  const avatar = isPath ? rawStr : (c.avatar || null);
   const emoji = !isPath && !isColor && rawStr && !rawStr.includes('.') && [...rawStr].length <= 4
     ? rawStr
-    : (c.isAI ? (c.personaEmoji || null) : null);
+    : null;
   const uid = Number(c.peerId ?? c.userId ?? 0);
   emit('open-private', {
-    isAI: Boolean(c.isAI),
+    isAI: false,
     nickname: c.remark || c.name,
     avatar,
     avatarUrl: avatar,
     emoji,
     avatarEmoji: emoji,
     color: c.avatarColor || (isColor ? rawStr : '#4f6ef7'),
-    personaId: c.personaId,
+    personaId: null,
     userId: Number.isInteger(uid) && uid > 0 ? uid : null,
     remark: c.remark || null,
   });
@@ -192,22 +177,17 @@ function pickMessage(m) {
   // 回退: 从会话 ID 解析 peerId
   const parts = String(conv).split('_');
   let userId = null;
-  let isAI = false;
-  let personaId = null;
   if (parts[1] === 'u') {
     const meId = Number(props.me?.id || 0);
     const a = Number(parts[2]);
     const b = Number(parts[3]);
     userId = meId && a === meId ? b : a;
-  } else {
-    isAI = true;
-    personaId = parts[3] || null;
   }
   emit('open-private', {
-    isAI,
+    isAI: false,
     nickname: m.senderName || '聊天',
     userId,
-    personaId,
+    personaId: null,
     avatar: m.avatar || null,
     color: m.avatarColor || '#4f6ef7',
   });
@@ -265,11 +245,11 @@ const hasAny = () => contacts.value.length || groups.value.length || messages.va
 
       <section v-if="contacts.length" class="sec">
         <div class="cat">联系人</div>
-        <button v-for="c in contacts" :key="'c' + c.id + (c.personaId || '')" class="item" @click="pickContact(c)">
+        <button v-for="c in contacts" :key="'c' + c.id" class="item" @click="pickContact(c)">
           <UserAvatar :name="c.nickname" :avatar="c.avatar" :emoji="c.emoji" :color="c.avatarColor || '#07c160'" :size="40" />
           <div class="main">
-            <div class="name">{{ c.nickname }}<span v-if="c.isAI" class="tag">AI</span></div>
-            <div class="sub">{{ c.remark || c.wxid || (c.isAI ? 'AI 群友 · 仅群聊' : '联系人') }}</div>
+            <div class="name">{{ c.nickname }}</div>
+            <div class="sub">{{ c.remark || c.wxid || '联系人' }}</div>
           </div>
         </button>
       </section>

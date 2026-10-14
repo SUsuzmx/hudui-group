@@ -10,7 +10,7 @@ const props = defineProps({
   groupName: { type: String, default: 'WeChat' },
   groupId: { type: [Number, String, null], default: null },
   conversationId: { type: String, default: null },
-  members: { type: Object, default: () => ({ onlineUsers: [], aiMembers: [], allUsers: [] }) },
+  members: { type: Object, default: () => ({ onlineUsers: [], allUsers: [] }) },
 });
 const emit = defineEmits(['back', 'open-private', 'open-profile', 'left-group', 'open-search']);
 
@@ -24,7 +24,6 @@ const renaming = ref(false);
 const nameDraft = ref('');
 const memberList = ref([]);
 const friends = ref([]);
-const aiList = ref([]);
 const picked = ref({});
 const prefs = ref({ muted: false, pinned: false, saved: false, folded: false, showNick: true, atRemind: true, remind: false, bgKey: '0' });
 const groupRemark = ref('');
@@ -51,7 +50,6 @@ function resolveGroupId() {
 }
 
 function memberKey(m) {
-  if (m.personaKey) return m.personaKey;
   if (m.userId) return 'u' + m.userId;
   return 'n:' + m.nickname;
 }
@@ -76,16 +74,16 @@ async function loadAll() {
       const d = await api.groupMembers(gid);
       memberList.value = (d.members || []).map((m) => ({
         ...m,
-        color: m.color || (m.isAI ? '#07c160' : '#4f6ef7'),
+        color: m.color || '#4f6ef7',
         avatar: m.avatar || null,
-        emoji: m.emoji || (m.isAI ? '🤖' : null),
+        emoji: m.emoji || null,
       }));
       const meId = Number(props.me?.id || 0);
       const mine = memberList.value.find((m) => meId && Number(m.userId) === meId);
       myGroupNick.value = (mine?.nickname || '').trim();
     } catch { memberList.value = []; }
   }
-  // 回退: socket 成员 + AI 联系人, 保证头像墙非空
+  // 回退: socket 成员, 保证头像墙非空
   if (!memberList.value.length) {
     const seen = new Set();
     const list = [];
@@ -95,30 +93,13 @@ async function loadAll() {
       seen.add(key);
       list.push(m);
     };
-    try {
-      const ai = await api.aiContacts().catch(() => ({ contacts: [] }));
-      for (const a of ai.contacts || []) {
-        push({
-          personaKey: 'ai:' + a.nickname,
-          nickname: a.nickname,
-          avatar: a.avatar,
-          emoji: a.avatarUrl ? null : (a.emoji || '🤖'),
-          color: '#07c160',
-          isAI: true,
-          personaId: a.personaId || a.id,
-          role: 'member',
-        });
-      }
-    } catch { /* ignore */ }
-    for (const a of props.members.aiMembers ?? []) {
+    for (const u of props.members.allUsers ?? props.members.onlineUsers ?? []) {
       push({
-        personaKey: 'ai:' + a.nickname,
-        nickname: a.nickname,
-        avatar: a.avatarUrl,
-        emoji: a.avatarUrl ? null : a.avatarEmoji,
-        color: '#07c160',
-        isAI: true,
-        personaId: a.id,
+        userId: u.id ?? u.userId ?? null,
+        nickname: u.nickname,
+        avatar: u.avatar,
+        color: u.avatarColor || '#4f6ef7',
+        isAI: false,
         role: 'member',
       });
     }
@@ -136,21 +117,12 @@ async function loadAll() {
   }
 
   try {
-    const [f, ai] = await Promise.all([
-      api.friends().catch(() => ({ friends: [] })),
-      api.aiContacts().catch(() => ({ contacts: [] })),
-    ]);
+    const f = await api.friends().catch(() => ({ friends: [] }));
     friends.value = (f.friends || []).map((x) => ({
       id: x.id,
       nickname: x.remark || x.nickname,
       avatar: x.avatar,
       color: x.avatarColor,
-    }));
-    aiList.value = (ai?.contacts || []).map((x) => ({
-      nickname: x.nickname,
-      avatar: x.avatar,
-      emoji: x.emoji,
-      isAI: true,
     }));
   } catch { /* ignore */ }
 
@@ -355,7 +327,7 @@ function copyGroupId() {
 }
 
 function togglePick(item) {
-  const key = item.isAI ? 'ai:' + item.nickname : 'u' + item.id;
+  const key = 'u' + item.id;
   picked.value = { ...picked.value, [key]: !picked.value[key] };
 }
 
@@ -363,20 +335,18 @@ async function doInvite() {
   const gid = resolveGroupId();
   if (!gid) return;
   const userIds = [];
-  const aiNames = [];
   for (const [k, on] of Object.entries(picked.value)) {
     if (!on) continue;
-    if (k.startsWith('ai:')) aiNames.push(k.slice(3));
-    else if (k.startsWith('u')) userIds.push(Number(k.slice(1)));
+    if (k.startsWith('u')) userIds.push(Number(k.slice(1)));
   }
-  if (!userIds.length && !aiNames.length) {
+  if (!userIds.length) {
     toast('请先选择成员');
     return;
   }
   busy.value = true;
   try {
-    const d = await api.inviteGroupMembers(gid, userIds, aiNames);
-    memberList.value = (d.members || []).map((m) => ({ ...m, color: m.isAI ? '#07c160' : (m.color || '#4f6ef7') }));
+    const d = await api.inviteGroupMembers(gid, userIds);
+    memberList.value = (d.members || []).map((m) => ({ ...m, color: m.color || '#4f6ef7' }));
     picked.value = {};
     showInvite.value = false;
     toast(`已邀请 ${d.added?.length || 0} 人`);
@@ -478,7 +448,7 @@ async function setAdmin(m, asAdmin) {
     const d = await api.groupMembers(gid);
     memberList.value = (d.members || []).map((x) => ({
       ...x,
-      color: x.color || (x.isAI ? '#07c160' : '#4f6ef7'),
+      color: x.color || '#4f6ef7',
     }));
   } catch (e) {
     toast(e.message || '设置失败');
@@ -487,10 +457,10 @@ async function setAdmin(m, asAdmin) {
 
 function openMember(m) {
   const uid = m.userId != null && Number(m.userId) > 0 ? Number(m.userId) : null;
-  // 无真实 userId（AI / 纯昵称成员）走本地资料，避免拉 /api/users 报「用户不存在」
-  const useLocal = !uid || Boolean(m.isAI) || Boolean(m.personaKey);
+  // 无真实 userId（纯昵称成员）走本地资料，避免拉 /api/users 报「用户不存在」
+  const useLocal = !uid;
   emit('open-profile', {
-    id: uid ?? m.personaId ?? memberKey(m),
+    id: uid ?? memberKey(m),
     userId: uid,
     nickname: m.nickname,
     avatar: m.avatar,
@@ -499,9 +469,9 @@ function openMember(m) {
     avatarEmoji: m.emoji,
     color: m.color,
     avatarColor: m.color,
-    isAI: Boolean(m.isAI),
-    personaId: m.personaId ?? (m.personaKey ? m.personaKey.replace(/^ai:/, '') : null),
-    isFriend: Boolean(uid) && !m.isAI,
+    isAI: false,
+    personaId: null,
+    isFriend: Boolean(uid),
     local: useLocal,
   });
 }
@@ -796,14 +766,7 @@ onMounted(loadAll);
             <span class="pick-name">{{ f.nickname }}</span>
             <span class="check" :class="{ on: picked['u'+f.id] }">✓</span>
           </button>
-          <div class="sec">AI 联系人</div>
-          <button v-for="a in aiList" :key="'ai'+a.nickname" class="pick-row" type="button" @click="togglePick(a)">
-            <UserAvatar :name="a.nickname" :avatar="a.avatar" :emoji="a.emoji" :color="'#07c160'" :size="40" />
-            <span class="pick-name">{{ a.nickname }}</span>
-            <span class="ai-tag">AI</span>
-            <span class="check" :class="{ on: picked['ai:'+a.nickname] }">✓</span>
-          </button>
-          <div v-if="!friends.length && !aiList.length" class="empty-tip" style="padding:24px">暂无可邀请对象</div>
+          <div v-if="!friends.length" class="empty-tip" style="padding:24px">暂无可邀请对象</div>
         </div>
       </div>
     </div>

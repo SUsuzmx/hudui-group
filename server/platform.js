@@ -1,6 +1,7 @@
 // 平台能力：账号安全、群治理、内容安全、备份、反馈、搜索、运营
 import crypto from 'node:crypto';
 import { db, stmts } from './db.js';
+import { canAccessPrivate, searchVisibilitySql } from './acl.js';
 
 function now() {
   return Date.now();
@@ -83,24 +84,31 @@ export function listLoginHistory(userId, limit = 30) {
 }
 
 // ---------- 找回密码 / 恢复码 ----------
+// 恢复码是「用户自行保存的备用凭据」，只能由已登录用户通过
+// /api/auth/recovery-code 自助生成（免登录的 forgot-password 绝不回传）。
+// 有效期取 30 天：足够用户抄存备用，又避免长期有效凭据堆积在库里。
+export const RECOVERY_CODE_TTL_MS = 30 * 86400_000;
+
 export function generateRecoveryCode(userId) {
   const code = crypto.randomBytes(6).toString('hex').toUpperCase();
   db.prepare(
     'INSERT INTO password_resets (user_id, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?)'
-  ).run(Number(userId), sha256(code), now() + 365 * 86400_000, now());
+  ).run(Number(userId), sha256(code), now() + RECOVERY_CODE_TTL_MS, now());
   return code;
 }
 
 export function requestPasswordReset(nickname) {
   const user = stmts.userByName.get(String(nickname || '').trim());
-  if (!user) return { ok: true, message: '若昵称存在，已生成找回指引' };
-  // 真实产品应走邮件/短信；演示环境生成一次性找回码（存 hash）
-  const code = generateRecoveryCode(user.id);
+  // 安全约束：本接口免登录，响应里绝不能出现找回码，
+  // 否则「知道昵称」即可接管任意账号（历史缺陷）。
+  // 本部署没有邮件/短信投递通道，因此不生成无法送达的找回码
+  // （避免在 password_resets 里留下长期有效的凭据）；
+  // 需要找回码的用户请在已登录状态下用 /api/auth/recovery-code 自助生成。
+  // 无论账号是否存在都返回同一文案，避免昵称枚举。
+  void user;
   return {
     ok: true,
-    message: '已生成找回码，请使用找回码重置密码',
-    // 仅演示返回；生产应走带外渠道
-    recoveryCode: code,
+    message: '若该昵称存在，请通过绑定的联系方式找回；已登录用户可在「设置 → 账号与安全」生成恢复码。',
   };
 }
 
@@ -577,10 +585,9 @@ export function exportChatHistory(userId, { conversationId = null, limit = 500 }
   const lim = Math.min(Number(limit) || 500, 2000);
   let messages = [];
   if (conversationId) {
-    messages = db.prepare(
-      'SELECT * FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?'
-    ).all(String(conversationId), lim).reverse();
-    // 权限：私聊双方 / 群成员
+    // 权限：私聊双方 / 群成员。必须先校验再取数。
+    // 注意：私聊前缀是 pv_（见 chat.js 的 privateConvId），早先误写成 'p:' 导致
+    // 校验整段被跳过，任意登录用户都能导出他人私聊全文。
     const conv = String(conversationId);
     if (conv.startsWith('grp_')) {
       const gid = Number(conv.replace(/^grp_/, ''));
@@ -588,10 +595,13 @@ export function exportChatHistory(userId, { conversationId = null, limit = 500 }
       if (!members.some((m) => Number(m.user_id) === uid)) {
         return { error: '无权导出该会话' };
       }
-    } else if (conv.startsWith('p:')) {
-      const parts = conv.split(':').map(Number).filter(Boolean);
-      if (!parts.includes(uid)) return { error: '无权导出该会话' };
+    } else if (!canAccessPrivate(uid, conv)) {
+      // 覆盖 pv_u_a_b 与 pv_<owner>_ai_* 两类；其余未知前缀一律拒绝
+      return { error: '无权导出该会话' };
     }
+    messages = db.prepare(
+      'SELECT * FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?'
+    ).all(conv, lim).reverse();
   } else {
     // 本人相关：私聊会话 + 所在群
     const prefs = db.prepare(
@@ -666,26 +676,18 @@ export function searchMessagesEnhanced(userId, { q, conversationId, mediaType, f
   const uid = Number(userId);
   const lim = Math.min(Number(limit) || 30, 100);
   const like = `%${String(q || '').replace(/[%_]/g, (m) => '\\' + m)}%`;
-  const params = [uid];
+  // 可见范围统一走 acl.searchVisibilitySql（与 /api/search/global 同一套判定）。
+  // 早先这里用 `m.conversation_id LIKE 'grp\_%'` 对任意群直接放行，未校验成员身份，
+  // 且私聊前缀误写为 'p:'，导致群消息越权可搜、私聊消息永远搜不到。
+  const vis = searchVisibilitySql(uid);
+  const params = [uid, ...vis.params];
   let sql = `
     SELECT m.* FROM messages m
     LEFT JOIN chat_prefs p ON p.conversation_id = m.conversation_id AND p.user_id = ?
     WHERE m.recalled = 0
       AND (p.cleared_before IS NULL OR m.id > p.cleared_before)
-      AND (
-        m.conversation_id IS NULL
-        OR m.conversation_id LIKE 'grp\\_%' ESCAPE '\\'
-        OR EXISTS (
-          SELECT 1 FROM group_members gm
-          WHERE gm.user_id = ? AND ('grp_' || gm.group_id) = m.conversation_id
-        )
-        OR (
-          m.conversation_id LIKE ? ESCAPE '\\'
-          OR m.conversation_id LIKE ? ESCAPE '\\'
-        )
-      )
+      AND ${vis.sql}
   `;
-  params.push(uid, `p:${uid}:%`, `%:p:${uid}`);
   if (q) {
     sql += ' AND (m.content LIKE ? OR m.sender_name LIKE ?)';
     params.push(like, like);

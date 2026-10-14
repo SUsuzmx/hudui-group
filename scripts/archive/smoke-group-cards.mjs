@@ -16,18 +16,19 @@ const nick = '群管验收' + Date.now().toString(36).slice(-4);
 const reg = await api('/api/register', { body: { nickname: nick, password: 'test1234' } });
 console.log('register', reg.status, !!reg.data.token);
 const token = reg.data.token;
-const ai = await api('/api/ai-contacts', { method: 'GET', token });
-console.log('ai contacts', ai.status, ai.data.contacts?.length);
-const a1 = ai.data.contacts?.[0]?.nickname || '思琪';
-const a2 = ai.data.contacts?.[1]?.nickname || 'Perry';
-const g = await api('/api/groups', { body: { name: '验收测试群', memberIds: [], aiMembers: [a1, a2] }, token });
+// 群聊已去掉 AI 群友: 建群需要 2 位真人
+const r1 = await api('/api/register', { body: { nickname: nick + 'b', password: 'test1234' } });
+const r2 = await api('/api/register', { body: { nickname: nick + 'c', password: 'test1234' } });
+const uid1 = r1.data.user?.id;
+const uid2 = r2.data.user?.id;
+const g = await api('/api/groups', { body: { name: '验收测试群', memberIds: [uid1, uid2] }, token });
 console.log('create group', g.status, g.data.group?.id, g.data.error || '');
 const gid = g.data.group?.id;
 if (gid) {
   const mem = await api(`/api/groups/${gid}/members`, { method: 'GET', token });
   console.log('members', mem.status, mem.data.count, (mem.data.members || []).map((m) => m.nickname).join(','));
-  const inv = await api(`/api/groups/${gid}/members`, { body: { userIds: [], aiNames: ['小辣椒'] }, token });
-  console.log('invite', inv.status, inv.data.added?.length, inv.data.error || '');
+  const inv = await api(`/api/groups/${gid}/members`, { body: { userIds: [] }, token });
+  console.log('invite empty rejected', inv.status, inv.data.error || '');
   const mem2 = await api(`/api/groups/${gid}/members`, { method: 'GET', token });
   console.log('members after invite', mem2.data.count);
   const rn = await api(`/api/groups/${gid}/rename`, { body: { name: '验收改名群' }, token });

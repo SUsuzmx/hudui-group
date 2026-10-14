@@ -86,7 +86,7 @@ const savedTab = (() => {
 
 const tab = ref(props.initialTab || savedTab);
 const chats = ref([]);
-const members = ref({ aiMembers: [], allUsers: [] });
+const members = ref({ allUsers: [] });
 const friends = ref([]);
 const showSearch = ref(false);
 const showMore = ref(false);
@@ -203,7 +203,7 @@ const showNav = computed(() => tab.value !== 'me');
 // 星标朋友：仅显示手动设为星标的好友，新增好友默认不展示
 const starFriends = computed(() => {
   starRevision.value;
-  return contactPeople().filter((p) => !p.isAI && isStarFriend(p.userId ?? p.id));
+  return contactPeople().filter((p) => isStarFriend(p.userId ?? p.id));
 });
 const contactLetterIds = computed(() => {
   const map = {};
@@ -215,7 +215,6 @@ const contactLetterIds = computed(() => {
 });
 const refreshing = ref(false);
 const chatsPull = ref(0);
-const extraAi = ref([]);
 const contactIndexLetters = computed(() => {
   const has = new Set(contactGroups.value.map((g) => g.letter));
   return 'ABCDEFGHIJKLMNOPQRSTUVWXYZ#'.split('').map((L) => ({ L, on: has.has(L) }));
@@ -253,7 +252,7 @@ function toggleFloatChat(c) {
   if (floatChats.value.length >= 3) {
     floatChats.value = floatChats.value.slice(1);
   }
-  floatChats.value = [...floatChats.value, { id: c.id, name: c.name, type: c.type, conversationId: c.conversationId, peerId: c.peerId, personaId: c.personaId, isAI: c.isAI, remark: c.remark, personaAvatar: c.personaAvatar, personaEmoji: c.personaEmoji, kind: c.kind, isDefault: c.isDefault, groupId: c.groupId }];
+  floatChats.value = [...floatChats.value, { id: c.id, name: c.name, type: c.type, conversationId: c.conversationId, peerId: c.peerId, remark: c.remark, kind: c.kind, isDefault: c.isDefault, groupId: c.groupId }];
 }
 function openFloat(c) {
   floatChats.value = floatChats.value.filter((x) => x.id !== c.id);
@@ -330,10 +329,6 @@ onMounted(async () => {
   loadChats();
   loadFriends();
   loadFriendRequests();
-  try {
-    // AI 不进通讯录；群成员数据里仍保留 AI 供群聊展示
-    extraAi.value = [];
-  } catch { extraAi.value = []; }
   // 复用全局 Socket, 避免主界面再开一条连接
   getSocket();
   const on = (event, fn) => { unbindSocketFns.push(bindSocket(event, fn)); };
@@ -422,14 +417,8 @@ function privateAvatarParts(c) {
     || /\.(png|jpe?g|webp|gif)$/i.test(rawStr)
   );
   const isEmoji = Boolean(rawStr) && !isColor && !isPath && !rawStr.includes('.') && [...rawStr].length <= 4;
-  const avatar = isPath
-    ? rawStr
-    : (c.personaAvatar && !String(c.personaAvatar).startsWith('#') && !String(c.personaAvatar).startsWith('rgb')
-      ? c.personaAvatar
-      : null);
-  const emoji = isEmoji
-    ? rawStr
-    : (c.isAI && c.personaEmoji ? c.personaEmoji : null);
+  const avatar = isPath ? rawStr : null;
+  const emoji = isEmoji ? rawStr : null;
   const color = c.avatarColor
     || c.color
     || (isColor ? rawStr : '#4f6ef7');
@@ -458,21 +447,6 @@ function openChatItem(c) {
   if (c.type === 'private') {
     const av = privateAvatarParts(c);
     const uid = Number(c.peerId ?? c.userId ?? 0);
-    const isAi = Boolean(c.isAI);
-    if (isAi) {
-      emit('open-private-chat', {
-        nickname: c.name,
-        avatar: av.avatar,
-        avatarUrl: av.avatar,
-        emoji: av.emoji,
-        avatarEmoji: av.emoji,
-        color: av.color || '#07c160',
-        isAI: true,
-        key: 'ai-' + (c.personaId || c.id),
-        personaId: c.personaId || 'siqi',
-      });
-      return;
-    }
     emit('open-private-chat', {
       nickname: c.remark || c.name,
       avatar: av.avatar,
@@ -533,7 +507,6 @@ function pickSearchPerson(p) {
     local: false,
   });
 }
-
 function openFeature(key, title) {
   emit('open-view', { type: 'feature', feature: key, title });
 }
@@ -641,10 +614,10 @@ function openContact(c) {
       color: c.color,
       avatarColor: c.avatarColor || c.color,
       wxid: c.wxid,
-      isAI: Boolean(c.isAI),
-      personaId: c.personaId || null,
-      isFriend: c.isFriend ?? !c.isAI,
-      local: Boolean(c.isAI),
+      isAI: false,
+      personaId: null,
+      isFriend: c.isFriend ?? true,
+      local: false,
       remark: c.remark || null,
     },
   });
@@ -679,8 +652,7 @@ function contactPeople() {
     seen.add(key);
     list.push(p);
   };
-  const aiMembers = []; // AI 仅出现在群聊, 不进通讯录
-  // 通讯录仅展示好友（AI 群友不作为联系人）
+  // 通讯录仅展示好友
   const friendList = friends.value || [];
   const tagFilterId = contactTagFilter.value;
   const tagMemberSet = contactTagMemberSet.value;

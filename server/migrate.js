@@ -523,6 +523,70 @@ const migrations = [
       createIndex(db, 'CREATE UNIQUE INDEX IF NOT EXISTS ux_group_members_persona ON group_members(group_id, persona_key) WHERE persona_key IS NOT NULL');
     },
   },
+  {
+    id: 13,
+    name: 'admin_console',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS admin_accounts (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+          password_hash TEXT NOT NULL,
+          display_name  TEXT NOT NULL DEFAULT '',
+          role          TEXT NOT NULL DEFAULT 'operator',
+          permissions   TEXT NOT NULL DEFAULT '[]',
+          status        TEXT NOT NULL DEFAULT 'active',
+          last_login_at INTEGER,
+          last_login_ip TEXT NOT NULL DEFAULT '',
+          created_at    INTEGER NOT NULL,
+          updated_at    INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS admin_sessions (
+          token        TEXT PRIMARY KEY,
+          admin_id     INTEGER NOT NULL REFERENCES admin_accounts(id),
+          ip           TEXT NOT NULL DEFAULT '',
+          user_agent   TEXT NOT NULL DEFAULT '',
+          created_at   INTEGER NOT NULL,
+          last_seen_at INTEGER NOT NULL,
+          expires_at   INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS admin_audit_logs (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          admin_id    INTEGER,
+          admin_name  TEXT NOT NULL DEFAULT '',
+          module      TEXT NOT NULL DEFAULT '',
+          action      TEXT NOT NULL DEFAULT '',
+          target_type TEXT NOT NULL DEFAULT '',
+          target_id   TEXT NOT NULL DEFAULT '',
+          detail      TEXT NOT NULL DEFAULT '',
+          ip          TEXT NOT NULL DEFAULT '',
+          created_at  INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS app_settings (
+          key        TEXT PRIMARY KEY,
+          value      TEXT NOT NULL DEFAULT '',
+          updated_at INTEGER NOT NULL,
+          updated_by TEXT NOT NULL DEFAULT ''
+        );
+      `);
+      // 用户封禁状态
+      addColumnIfMissing(db, 'users', 'banned', 'INTEGER NOT NULL DEFAULT 0');
+      addColumnIfMissing(db, 'users', 'ban_reason', 'TEXT NOT NULL DEFAULT ""');
+      addColumnIfMissing(db, 'users', 'banned_at', 'INTEGER');
+      addColumnIfMissing(db, 'users', 'banned_by', 'TEXT NOT NULL DEFAULT ""');
+      // 举报处置留痕
+      addColumnIfMissing(db, 'reports', 'handler_id', 'INTEGER');
+      addColumnIfMissing(db, 'reports', 'handled_at', 'INTEGER');
+      // 反馈处置留痕
+      addColumnIfMissing(db, 'feedback', 'handled_by', 'TEXT NOT NULL DEFAULT ""');
+      addColumnIfMissing(db, 'feedback', 'closed_at', 'INTEGER');
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_admin_sessions_admin ON admin_sessions(admin_id, expires_at DESC)');
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_admin_audit_at ON admin_audit_logs(created_at DESC)');
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_admin_audit_admin ON admin_audit_logs(admin_id, created_at DESC)');
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_admin_audit_module ON admin_audit_logs(module, created_at DESC)');
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_users_banned ON users(banned)');
+    },
+  },
 ];
 
 export function runMigrations(db) {

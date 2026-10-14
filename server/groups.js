@@ -1,7 +1,5 @@
-// 群聊种子数据: 默认主群 + 多个业务群。非默认群 AI 不主动插话。
+// 群聊种子数据: 仅保留默认主群(纯真人)。群聊不再有 AI 群友, 业务演示群已移除。
 import { stmts, db } from './db.js';
-import { personas, personasForGroup } from './ai/personas.js';
-import { aiAvatarFile } from './ai/avatars.js';
 
 export const DEFAULT_GROUP_KIND = 'main';
 
@@ -9,32 +7,15 @@ export const SEED_GROUPS = [
   {
     kind: 'main',
     name: 'WeChat',
-    avatars: ['思琪', 'Perry', '小辣椒', '阿强'],
+    avatars: ['👥'],
     seed: [],
-  },
-  {
-    kind: 'product',
-    name: '产品设计小分队（8）',
-    avatars: ['💅', '🎮', '🧋', '🍜', '📐', '🎧', '📷', '🚀'],
-    seed: [
-      { from: 'ai', name: '思琪', emoji: '💅', content: '这版首页改稿我传群里了, 大家看看', ago: 3 * 3600000 },
-      { from: 'ai', name: 'Perry', emoji: '🎮', content: '导航层级有点深, 建议再压一压', ago: 2.5 * 3600000 },
-      { from: 'ai', name: '小辣椒', emoji: '🌶', content: '同意, 二级入口上提一层就行', ago: 2.4 * 3600000 },
-    ],
-  },
-  {
-    kind: 'work',
-    name: '工作对接群',
-    avatars: ['💼', '📊', '📎', '🗓️', '✅', '🖥️', '📞', '📝', '📈'],
-    seed: [
-      { from: 'ai', name: '方圆', emoji: '📐', content: '@所有人 明天上午十点例会', ago: 5 * 3600000 },
-    ],
   },
 ];
 
 // 启动时清理的无关/测试群（按名称或 kind）
-const UNWANTED_GROUP_KINDS = new Set(['family', 'climb', 'game']);
-const UNWANTED_GROUP_NAME_RE = /(验收改名|爬山|开黑|家庭群)/;
+// product / work 为早期带 AI 群友的演示群, 现已下线, 启动时一并清掉。
+const UNWANTED_GROUP_KINDS = new Set(['family', 'climb', 'game', 'product', 'work']);
+const UNWANTED_GROUP_NAME_RE = /(验收改名|爬山|开黑|家庭群|产品设计小分队|工作对接群)/;
 
 function deleteGroupDeep(groupId, convId) {
   try { db.prepare('DELETE FROM group_members WHERE group_id = ?').run(groupId); } catch { /* ignore */ }
@@ -42,6 +23,31 @@ function deleteGroupDeep(groupId, convId) {
   try { db.prepare('DELETE FROM chat_prefs WHERE conversation_id = ?').run(convId); } catch { /* ignore */ }
   try { db.prepare('DELETE FROM chat_reads WHERE conversation_id = ?').run(convId); } catch { /* ignore */ }
   try { db.prepare('DELETE FROM groups WHERE id = ?').run(groupId); } catch { /* ignore */ }
+}
+
+/** 清掉历史遗留的 AI 群成员(早期版本写入过 persona_key), 群聊只保留真人 */
+function cleanupAiGroupMembers() {
+  try {
+    return db.prepare("DELETE FROM group_members WHERE persona_key IS NOT NULL AND user_id IS NULL").run().changes || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 清掉群会话里的历史 AI 消息(早期版本 AI 群友发的), 群聊变成干净的真人会话。
+ * 只删群会话: grp_* 以及旧版无 conversation_id(NULL) 的默认群消息; 私聊 AI 会话不动。
+ */
+function cleanupAiGroupMessages() {
+  try {
+    return db.prepare(
+      `DELETE FROM messages
+        WHERE sender_type = 'ai'
+          AND (conversation_id LIKE 'grp\\_%' ESCAPE '\\' OR conversation_id IS NULL)`
+    ).run().changes || 0;
+  } catch {
+    return 0;
+  }
 }
 
 function cleanupUnwantedGroups() {
@@ -64,18 +70,6 @@ export function groupConvId(groupId) {
 
 function enrichMember(m) {
   const name = m.nickname;
-  if (m.isAI || m.personaKey) {
-    const p = personas.find((x) => x.name === name) || personas.find((x) => m.personaKey === `ai:${x.name}`);
-    return {
-      ...m,
-      nickname: p?.name || name,
-      avatar: aiAvatarFile(p?.name || name),
-      emoji: p?.emoji || m.emoji || '🤖',
-      isAI: true,
-      personaId: p?.id || (m.personaKey || '').replace(/^ai:/, ''),
-      color: '#07c160',
-    };
-  }
   if (m.userId) {
     const u = stmts.userById.get(Number(m.userId));
     return {
@@ -89,25 +83,13 @@ function enrichMember(m) {
       isAI: false,
     };
   }
-  // 纯昵称: 优先匹配 AI 人设/头像文件
-  const p = personas.find((x) => x.name === name);
-  if (p) {
-    return {
-      ...m,
-      avatar: aiAvatarFile(p.name),
-      emoji: p.emoji,
-      isAI: true,
-      personaId: p.id,
-      personaKey: m.personaKey || `ai:${p.name}`,
-      color: '#07c160',
-    };
-  }
+  // 纯昵称成员(建群时登记的展示名), 群聊不再有 AI 人设
   return {
     ...m,
-    avatar: aiAvatarFile(name) || null,
+    avatar: null,
     emoji: /^\p{Extended_Pictographic}$/u.test(String(name)) ? name : null,
-    color: '#07c160',
-    isAI: Boolean(m.isAI),
+    color: '#4f6ef7',
+    isAI: false,
   };
 }
 
@@ -120,6 +102,10 @@ export function seedGroups() {
       // 同步打日志, 便于运维确认清理结果
       console.log(`[groups] 已移除无关群: ${removed.join(', ')}`);
     }
+    const dropped = cleanupAiGroupMembers();
+    if (dropped) console.log(`[groups] 已移除历史 AI 群成员: ${dropped} 条`);
+    const droppedMsgs = cleanupAiGroupMessages();
+    if (droppedMsgs) console.log(`[groups] 已移除群内历史 AI 消息: ${droppedMsgs} 条`);
   } catch (e) {
     console.log(`[groups] 清理无关群失败: ${e.message}`);
   }
@@ -139,35 +125,9 @@ export function seedGroups() {
         );
       }
     }
-    // 播种成员表, 保证详情页能展示头像
+    // 主群保持"全员在群"的演示语义: 全体用户落库为成员。
+    // 自建群(custom)为严格成员制, 只有被邀请/审批通过才在群内。
     try {
-      const existing = stmts.listGroupMembers.all(row.id) || [];
-      if (!existing.length) {
-        const pool = personasForGroup(g.kind);
-        const names = new Set((g.avatars || []).map(String));
-        // 种子消息里的人名也进成员
-        for (const s of g.seed || []) {
-          if (s.from === 'ai' && s.name) names.add(s.name);
-        }
-        for (const p of pool) {
-          if (!names.size || names.has(p.name) || names.has(p.emoji)) {
-            stmts.insertGroupMember.run(row.id, null, `ai:${p.name}`, p.name, 'member', now);
-          }
-        }
-        // 若 names 里还有未覆盖的 emoji/昵称, 也写入
-        for (const n of names) {
-          const already = stmts.listGroupMembers.all(row.id).some((m) => m.nickname === n);
-          if (already) continue;
-          const p = personas.find((x) => x.name === n || x.emoji === n);
-          if (p) {
-            stmts.insertGroupMember.run(row.id, null, `ai:${p.name}`, p.name, 'member', now);
-          } else {
-            stmts.insertGroupMember.run(row.id, null, null, String(n).slice(0, 32), 'member', now);
-          }
-        }
-      }
-      // 种子群(main/product/work)保持"全员在群"的演示语义: 全体用户落库为成员。
-      // 自建群(custom)为严格成员制, 只有被邀请/审批通过才在群内。
       for (const u of stmts.allUsers.all()) {
         stmts.insertGroupMember.run(row.id, u.id, null, '', 'member', now);
       }
@@ -299,11 +259,12 @@ function memberRowToApi(r) {
     personaKey: r.persona_key || null,
     nickname: r.nickname,
     role: r.role || 'member',
-    isAI: Boolean(r.persona_key) && !r.user_id,
+    isAI: false,
   };
 }
 
-export function addGroupMembers(groupId, { userIds = [], aiNames = [], ownerNickname = null, ownerId = null } = {}) {
+/** 邀请群成员。群聊已去掉 AI 群友, 这里只接受真人 userIds。 */
+export function addGroupMembers(groupId, { userIds = [], ownerNickname = null, ownerId = null } = {}) {
   const gid = Number(groupId);
   const now = Date.now();
   const added = [];
@@ -320,14 +281,6 @@ export function addGroupMembers(groupId, { userIds = [], aiNames = [], ownerNick
     stmts.insertGroupMember.run(gid, uid, null, u.nickname, 'member', now);
     added.push({ userId: uid, nickname: u.nickname, isAI: false });
   }
-  for (const n of aiNames || []) {
-    const name = String(n || '').trim().slice(0, 32);
-    if (!name) continue;
-    if (ownerNickname && name === ownerNickname) continue;
-    const key = 'ai:' + name;
-    stmts.insertGroupMember.run(gid, null, key, name, 'member', now);
-    added.push({ personaKey: key, nickname: name, isAI: true });
-  }
   return added;
 }
 
@@ -339,16 +292,18 @@ export function listGroupMembers(groupId) {
   const seen = new Set();
   const out = [];
   const push = (m) => {
-    const key = m.personaKey || (m.userId ? `u${m.userId}` : `n:${m.nickname}`);
+    const key = m.userId ? `u${m.userId}` : `n:${m.nickname}`;
     if (seen.has(key) || seen.has(`n:${m.nickname}`)) return;
     seen.add(key);
     seen.add(`n:${m.nickname}`);
     out.push(m);
   };
-  if (rows.length) {
-    for (const r of rows) push(enrichMember(memberRowToApi(r)));
-    return out;
+  // 历史 AI 成员行直接跳过(启动时已清理, 这里兜底)
+  for (const r of rows) {
+    if (!r.user_id && r.persona_key) continue;
+    push(enrichMember(memberRowToApi(r)));
   }
+  if (out.length) return out;
   try {
     const avatars = JSON.parse(g.avatars || '[]');
     for (const a of avatars) {
@@ -379,8 +334,8 @@ export function removeGroupMember(groupId, key) {
   return { ok: true };
 }
 
-// 用户自建群聊
-export function createGroup({ name, memberNames, userIds = [], aiNames = [], creatorNickname = null, creatorId = null }) {
+// 用户自建群聊（仅真人成员）
+export function createGroup({ name, memberNames, userIds = [], creatorNickname = null, creatorId = null }) {
   const cleanName = String(name || '').trim().slice(0, 20) || '新建群聊';
   const avatars = (memberNames || []).slice(0, 9).map((n) => String(n).slice(0, 12));
   const r = stmts.insertGroup.run(cleanName, 'custom', JSON.stringify(avatars), Date.now());
@@ -393,12 +348,11 @@ export function createGroup({ name, memberNames, userIds = [], aiNames = [], cre
   if (creatorNickname || creatorId) {
     addGroupMembers(gid, {
       userIds,
-      aiNames,
       ownerNickname: creatorNickname,
       ownerId: creatorId,
     });
   } else {
-    addGroupMembers(gid, { userIds, aiNames });
+    addGroupMembers(gid, { userIds });
   }
   return getGroup(gid);
 }

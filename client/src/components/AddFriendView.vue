@@ -43,10 +43,7 @@ async function search() {
 }
 
 function openVerify(u) {
-  if (u.isFriend || u.isAI) {
-    if (u.isAI) message.value = 'AI 群友仅在群聊中互动，无法添加为好友';
-    return;
-  }
+  if (u.isFriend || u.isAI) return;
   pendingUser.value = u;
   greeting.value = '我是' + '';
 }

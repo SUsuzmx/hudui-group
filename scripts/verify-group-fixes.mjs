@@ -41,13 +41,24 @@ try {
   const token = rj.token;
   const H = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token };
 
+  // 群聊已去掉 AI 群友: 该接口恒为空
   const ais = await fetch(BASE + '/api/ai-contacts', { headers: H }).then((r) => r.json());
-  const aiNames = (ais.contacts || []).slice(0, 2).map((c) => c.nickname);
-  ok('AI 联系人', aiNames.length >= 1, aiNames.join(','));
+  ok('AI 联系人已下线', (ais.contacts || []).length === 0, `n=${(ais.contacts || []).length}`);
+
+  // 建群需要至少 2 位真人好友, 这里先注册两位
+  const mk = async (name) => {
+    const r = await fetch(BASE + '/api/register', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nickname: name, password: 'pass1234' }),
+    }).then((x) => x.json());
+    return r.user?.id;
+  };
+  const uidB = await mk('fB' + String(Date.now()).slice(-7));
+  const uidC = await mk('fC' + String(Date.now()).slice(-7));
 
   const cg = await fetch(BASE + '/api/groups', {
     method: 'POST', headers: H,
-    body: JSON.stringify({ name: '修复验证群', memberIds: [], aiMembers: aiNames }),
+    body: JSON.stringify({ name: '修复验证群', memberIds: [uidB, uidC] }),
   }).then((r) => r.json());
   const gid = cg.group?.id;
   ok('创建群', Boolean(gid), `gid=${gid}`);
@@ -56,7 +67,8 @@ try {
   const list = mem.members || [];
   ok('成员列表非空', list.length >= 2, `n=${list.length}`);
   ok('成员含头像字段', list.every((m) => 'avatar' in m), list.map((m) => `${m.nickname}:${m.avatar}`).join(' | '));
-  ok('真人成员有 userId', list.some((m) => m.userId), JSON.stringify(list.map((m) => ({ u: m.userId, n: m.nickname }))));
+  ok('真人成员有 userId', list.every((m) => m.userId), JSON.stringify(list.map((m) => ({ u: m.userId, n: m.nickname }))));
+  ok('成员里没有 AI', list.every((m) => !m.isAI), JSON.stringify(list.map((m) => m.isAI)));
 
   const nn = await fetch(BASE + `/api/groups/${gid}/my-nickname`, {
     method: 'POST', headers: H, body: JSON.stringify({ nickname: '群内小名X' }),

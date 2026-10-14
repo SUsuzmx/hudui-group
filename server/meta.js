@@ -2,8 +2,6 @@
 import { stmts } from './db.js';
 import { publicProfile, requireAuth } from './auth.js';
 import { listGroups, groupConvId, getGroup, isGroupMember } from './groups.js';
-import { personas } from './ai/personas.js';
-import { aiAvatarFile } from './ai/avatars.js';
 import { canAccessConversation } from './acl.js';
 
 function normConv(id) {
@@ -92,16 +90,14 @@ export function createMetaRouter({ notify } = {}) {
       const cleared = Number(prefs.cleared_before || 0);
       const lastId = g.lastId || 0;
       const lastVisible = !cleared || lastId > cleared;
-      const aiAvatars = g.isDefault
-        ? personas.slice(0, 9).map((p) => aiAvatarFile(p.name) ?? p.emoji)
-        : (g.avatars || []).slice(0, 9);
+      const groupAvatars = (g.avatars || []).slice(0, 9);
       chats.push({
         id: conv,
         type: 'group',
         groupId: g.id,
         kind: g.kind,
         name: g.name,
-        avatars: aiAvatars.length ? aiAvatars : ['👥'],
+        avatars: groupAvatars.length ? groupAvatars : ['👥'],
         lastMessage: lastVisible ? g.lastMessage : '暂无消息',
         lastTime: g.lastTime,
         isDefault: g.isDefault,

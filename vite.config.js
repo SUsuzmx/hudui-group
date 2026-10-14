@@ -1,5 +1,17 @@
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
+import fs from 'node:fs';
+
+// 后端端口以 config/app.json 为准，避免 dev 代理写死导致端口漂移
+function backendPort() {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(new URL('./config/app.json', import.meta.url), 'utf8'));
+    return Number(process.env.PORT) || Number(cfg.port) || 3010;
+  } catch {
+    return Number(process.env.PORT) || 3010;
+  }
+}
+const API_TARGET = `http://localhost:${backendPort()}`;
 
 export default defineConfig({
   plugins: [vue()],
@@ -24,8 +36,8 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://localhost:3000',
-      '/socket.io': { target: 'http://localhost:3000', ws: true },
+      '/api': API_TARGET,
+      '/socket.io': { target: API_TARGET, ws: true },
     },
   },
 });

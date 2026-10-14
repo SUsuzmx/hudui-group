@@ -219,34 +219,54 @@ WantedBy=multi-user.target
 
 ---
 
-## 5. Cloudflare Tunnel（继续用 chat.supeiji.top）
+## 5. Cloudflare Tunnel（继续用 chat.supeiji.top + admin.supeiji.top）
+
+> **重要**：本项目当前以「**远程托管**」模式运行隧道
+> （`cloudflared tunnel run --token-file C:\ProgramData\cloudflared\token`）。
+> 该模式下 ingress 与 DNS 由 Cloudflare 后台下发，**本地 `config.yml` 不生效**。
+> 下面的 YAML 仅在切换到本地托管模式（`cloudflared tunnel run werewolf`）时才被读取。
 
 1. **先停旧机隧道**（同一时间只能一台机器宣告该域名）
 2. 新机安装 `cloudflared` 并登录 Cloudflare
 3. 复用旧 Tunnel（推荐）：
    - 拷贝旧机 `cloudflared` 配置目录（Windows 通常在 `%USERPROFILE%\.cloudflared\`，含 `credentials-<tunnelid>.json` 与 `config.yml`）
    - 或 `cloudflared tunnel create werewolf` 新建后改 DNS
-4. ingress **必须**指向应用端口：
+4. ingress **必须**指向应用端口（本地托管模式）：
 
 ```yaml
 ingress:
   - hostname: chat.supeiji.top
     service: http://localhost:3010
+  - hostname: admin.supeiji.top
+    service: http://localhost:3010
   - service: http_status:503
 ```
 
-5. DNS：`chat` CNAME → `<TunnelID>.cfargotunnel.com`（Proxied）  
+5. **远程托管模式**下改为在 Cloudflare 后台配置：
+   `Networks → Tunnels → werewolf → Public Hostname → Add`，分别添加
+   `chat.supeiji.top` 与 `admin.supeiji.top`，Type `HTTP`、URL `localhost:3010`。
+   Cloudflare 会自动创建对应 CNAME。
+   也可用助手脚本一次完成（需 `CLOUDFLARE_API_TOKEN`）：
+   `CLOUDFLARE_API_TOKEN=xxx npm run admin:domain -- --apply`
+
+6. DNS（本地托管模式需手动建）：`chat` 与 `admin` CNAME → `<TunnelID>.cfargotunnel.com`（Proxied）  
    本项目曾用隧道 ID 示例：`71d22e72-82d6-437c-84a2-c7044320137c`（以你账号实际为准）
-6. 启动隧道：`cloudflared tunnel run werewolf`
-7. 验收：
+7. 启动隧道：`cloudflared tunnel run werewolf`（或 `--token-file`）
+8. 验收：
 
 ```bash
 curl -I https://chat.supeiji.top/
 curl -I https://chat.supeiji.top/sw.js
 curl -I https://chat.supeiji.top/api/games
+curl -I https://admin.supeiji.top/          # 运营后台独立域名
+curl -I https://chat.supeiji.top/admin      # 运营后台备用入口
 # 听一听歌单（需先登录应用拿 Token，或在页面里点「Perry的…歌单」）
 curl -I https://chat.supeiji.top/api/netease/playlists
 ```
+
+9. 后台域名自检：`npm run admin:domain`（只读检查解析与 Host 路由是否就绪）
+
+> 换新域名时只需改 `config/app.json` 的 `adminHosts` / `siteHost`，服务端无需改代码。
 
 ---
 

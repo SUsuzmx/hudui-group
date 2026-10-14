@@ -28,7 +28,7 @@ const emit = defineEmits(['back', 'logout']);
 
 const appearance = ref(getAppearance());
 const section = ref('root');
-// root | appearance | about | notify | chat | account | privacy | security | general | blacklist | storage | help | admin
+// root | appearance | about | notify | chat | account | privacy | security | general | blacklist | storage | help
 
 const bgPresets = [
   { key: 'default', label: '默认', value: null },
@@ -52,7 +52,6 @@ const sectionTitle = {
   blacklist: '通讯录黑名单',
   storage: '存储空间',
   help: '帮助与反馈',
-  admin: '运营后台',
   backup: '聊天记录备份',
   loginHistory: '登录记录',
 };
@@ -179,7 +178,6 @@ const feedbackCategory = ref('suggestion');
 const feedbackBusy = ref(false);
 const cloudBackups = ref([]);
 const exportBusy = ref(false);
-const adminData = ref(null);
 const highContrast = ref(Boolean(getAppearance().highContrast));
 
 function toggleVoiceLock() {
@@ -377,149 +375,7 @@ function toggleHighContrast() {
   toast(highContrast.value ? '已开启高对比度' : '已关闭高对比度');
 }
 
-// ── 管理后台 ──
-const isAdmin = ref(Boolean(props.me?.isAdmin));
-const adminTab = ref('overview'); // overview | reports | feedback | errors
-const adminReports = ref([]);
-const adminFeedbacks = ref([]);
-const adminErrors = ref([]);
-const adminUsers = ref([]);
-const adminBusy = ref(false);
-const adminFlags = ref({});
-const replyDraft = reactive({});
-const adminNoteOpen = ref(false);
-const adminNoteTarget = ref(null); // { id, status, type: 'report' | 'feedback' }
-const adminNoteText = ref('');
-
-function menuTitles() {
-  const base = [
-    '账号与安全', '新消息通知', '聊天', '通用', '隐私', '通讯录黑名单', '存储空间', '帮助与反馈', '关于',
-  ];
-  if (isAdmin.value) base.splice(base.length - 1, 0, '运营后台');
-  return base;
-}
-
-async function refreshAdminLists() {
-  if (!isAdmin.value) return;
-  try {
-    const [rep, fb, err, users] = await Promise.all([
-      api.adminReports().catch(() => ({ reports: [] })),
-      api.adminFeedback().catch(() => ({ feedbacks: [] })),
-      api.adminErrors().catch(() => ({ errors: [] })),
-      api.adminUsers().catch(() => ({ users: [] })),
-    ]);
-    adminReports.value = rep?.reports || [];
-    adminFeedbacks.value = fb?.feedbacks || [];
-    adminErrors.value = err?.errors || [];
-    adminUsers.value = users?.users || [];
-    const flags = await api.adminFlags().catch(() => ({ flags: {} }));
-    adminFlags.value = flags?.flags || {};
-  } catch { /* ignore */ }
-}
-
-async function openAdmin() {
-  if (!isAdmin.value) {
-    toast('需要管理员权限');
-    return;
-  }
-  section.value = 'admin';
-  adminTab.value = 'overview';
-  try {
-    adminData.value = await api.adminOverview();
-    await refreshAdminLists();
-  } catch (e) {
-    adminData.value = null;
-    toast(e.message || '需要管理员权限');
-  }
-}
-
-async function handleAdminReport(id, status) {
-  adminNoteTarget.value = { id, status, type: 'report' };
-  adminNoteText.value = '';
-  adminNoteOpen.value = true;
-}
-
-function closeAdminNote() {
-  adminNoteOpen.value = false;
-  adminNoteTarget.value = null;
-  adminNoteText.value = '';
-}
-
-async function confirmAdminNote() {
-  const t = adminNoteTarget.value;
-  if (!t || adminBusy.value) return;
-  adminBusy.value = true;
-  try {
-    if (t.type === 'report') {
-      await api.adminHandleReport(t.id, {
-        status: t.status,
-        handlerNote: adminNoteText.value.trim(),
-      });
-      toast('举报已更新');
-    } else {
-      const text = (adminNoteText.value || '').trim();
-      if (!text) {
-        toast('请填写回复内容');
-        adminBusy.value = false;
-        return;
-      }
-      await api.adminReplyFeedback(t.id, text);
-      replyDraft[String(t.id)] = '';
-      toast('已回复反馈');
-    }
-    closeAdminNote();
-    await refreshAdminLists();
-    if (adminData.value) adminData.value = await api.adminOverview();
-  } catch (e) {
-    toast(e.message || '操作失败');
-  } finally {
-    adminBusy.value = false;
-  }
-}
-
-function openFeedbackReply(id) {
-  adminNoteTarget.value = { id, status: 'replied', type: 'feedback' };
-  adminNoteText.value = replyDraft[String(id)] || '';
-  adminNoteOpen.value = true;
-}
-
-async function replyAdminFeedback(id) {
-  openFeedbackReply(id);
-}
-
-const FLAG_LABELS = {
-  accountSecurity: '账号安全（找回/设备/注销）',
-  groupGovernance: '群治理（管理员/入群验证）',
-  momentsSafety: '朋友圈安全（访客/举报/过滤）',
-  backupCloud: '备份与云端恢复',
-  feedbackFaq: '反馈与 FAQ',
-  searchEnhanced: '搜索增强',
-  adminPanel: '运营后台',
-};
-
-async function toggleFlag(key) {
-  const next = !adminFlags.value[key];
-  try {
-    const d = await api.adminSetFlags({ [key]: next });
-    adminFlags.value = d?.flags || { ...adminFlags.value, [key]: next };
-    toast(next ? '已开启' : '已关闭');
-  } catch (e) {
-    toast(e.message || '设置失败');
-  }
-}
-
-async function checkAdminAccess() {
-  try {
-    const d = await api.adminOverview();
-    if (d && typeof d.users === 'number') {
-      isAdmin.value = true;
-      titles.value = menuTitles();
-    }
-  } catch {
-    // 以 me.isAdmin 为准
-  }
-}
-
+// ── 本地缓存清理 ──
 function fmtTime(ts) {
   if (!ts) return '';
   try {
@@ -567,7 +423,6 @@ function goSection(label) {
     '通讯录黑名单': 'blacklist',
     '存储空间': 'storage',
     '帮助与反馈': 'help',
-    '运营后台': 'admin',
     '关于': 'about',
     '关于微信': 'about',
   };
@@ -575,17 +430,12 @@ function goSection(label) {
   if (!s) return;
   if (s === 'blacklist') openBlacklist();
   else if (s === 'help') openHelp();
-  else if (s === 'admin') openAdmin();
   else if (s === 'general') section.value = 'general';
   else section.value = s;
 }
 
 onMounted(() => {
   appearance.value = getAppearance();
-  isAdmin.value = Boolean(props.me?.isAdmin);
-  titles.value = menuTitles();
-  // me 未带 isAdmin 时用接口探测（仅成功才显示入口）
-  if (!isAdmin.value) checkAdminAccess();
 });
 </script>
 
@@ -938,130 +788,6 @@ onMounted(() => {
       </section>
     </main>
 
-    <main v-else-if="section === 'admin'" class="content scroll-y">
-      <template v-if="adminData">
-        <div class="admin-tabs">
-          <button
-            v-for="t in [['overview','概览'],['reports','举报'],['feedback','反馈'],['errors','错误'],['flags','开关']]"
-            :key="t[0]"
-            type="button"
-            class="admin-tab"
-            :class="{ on: adminTab === t[0] }"
-            @click="adminTab = t[0]"
-          >{{ t[1] }}</button>
-        </div>
-
-        <template v-if="adminTab === 'overview'">
-          <section class="card">
-            <div class="row"><span class="label">用户数</span><span class="value">{{ adminData.users }}</span></div>
-            <div class="row"><span class="label">群组数</span><span class="value">{{ adminData.groups }}</span></div>
-            <div class="row"><span class="label">消息数</span><span class="value">{{ adminData.messages }}</span></div>
-            <div class="row"><span class="label">朋友圈</span><span class="value">{{ adminData.moments }}</span></div>
-          </section>
-          <section class="card">
-            <div class="row"><span class="label">待处理举报</span><span class="value">{{ adminData.pendingReports }}</span></div>
-            <div class="row"><span class="label">待回复反馈</span><span class="value">{{ adminData.openFeedback }}</span></div>
-            <div class="row"><span class="label">24h 错误</span><span class="value">{{ adminData.errors24h }}</span></div>
-            <div class="row"><span class="label">24h 登录 / 异常</span><span class="value">{{ adminData.logins24h }} / {{ adminData.anomalies24h }}</span></div>
-          </section>
-          <section class="card">
-            <div class="row"><span class="label">最近注册</span></div>
-            <div v-for="u in adminData.recentUsers" :key="u.id" class="row">
-              <span class="label">#{{ u.id }} {{ u.nickname }}</span>
-              <span class="value">{{ fmtTime(u.createdAt) }}</span>
-            </div>
-          </section>
-          <section class="card">
-            <div class="row"><span class="label">用户检索（{{ adminUsers.length }}）</span></div>
-            <div v-for="u in adminUsers.slice(0, 20)" :key="'u' + u.id" class="row">
-              <span class="label">#{{ u.id }} {{ u.nickname }}</span>
-              <span class="value">{{ u.wxid || '' }}</span>
-            </div>
-          </section>
-        </template>
-
-        <template v-else-if="adminTab === 'reports'">
-          <section class="card">
-            <div v-for="r in adminReports" :key="r.id" class="row col">
-              <div class="row-head">
-                <span class="label">#{{ r.id }} {{ r.category }} · {{ r.targetType }}</span>
-                <span class="value">{{ r.statusLabel }}</span>
-              </div>
-              <p class="faq-a">{{ r.detail || '（无描述）' }}</p>
-              <div class="meta-line">
-                <span class="ua">举报人 #{{ r.reporterId || '—' }} · {{ fmtTime(r.createdAt) }}</span>
-              </div>
-              <div class="admin-actions" v-if="r.status === 'pending' || r.status === 'processing'">
-                <button type="button" class="action-btn" :disabled="adminBusy" @click="handleAdminReport(r.id, 'processing')">处理中</button>
-                <button type="button" class="action-btn primary" :disabled="adminBusy" @click="handleAdminReport(r.id, 'done')">已处理</button>
-                <button type="button" class="action-btn" :disabled="adminBusy" @click="handleAdminReport(r.id, 'rejected')">未违规</button>
-              </div>
-              <p v-if="r.handlerNote" class="faq-a">处理备注：{{ r.handlerNote }}</p>
-            </div>
-            <div v-if="!adminReports.length" class="empty-tip" style="padding:16px">暂无举报</div>
-          </section>
-        </template>
-
-        <template v-else-if="adminTab === 'feedback'">
-          <section class="card">
-            <div v-for="f in adminFeedbacks" :key="f.id" class="row col">
-              <div class="row-head">
-                <span class="label">#{{ f.id }} {{ f.category }}</span>
-                <span class="value">{{ f.status }}</span>
-              </div>
-              <p class="faq-a">{{ f.content }}</p>
-              <p v-if="f.reply" class="faq-a">已回复：{{ f.reply }}</p>
-              <div class="admin-actions">
-                <input
-                  :value="replyDraft[String(f.id)] || ''"
-                  class="input"
-                  type="text"
-                  placeholder="输入回复内容"
-                  @input="replyDraft[String(f.id)] = $event.target.value"
-                />
-                <button type="button" class="action-btn primary" :disabled="adminBusy" @click="replyAdminFeedback(f.id)">回复</button>
-              </div>
-            </div>
-            <div v-if="!adminFeedbacks.length" class="empty-tip" style="padding:16px">暂无反馈</div>
-          </section>
-        </template>
-
-        <template v-else-if="adminTab === 'errors'">
-          <section class="card">
-            <div v-for="e in adminErrors" :key="e.id" class="row col">
-              <div class="row-head">
-                <span class="label">{{ e.feature || 'client' }}</span>
-                <span class="value">{{ fmtTime(e.createdAt) }}</span>
-              </div>
-              <p class="faq-a">{{ e.message }}</p>
-            </div>
-            <div v-if="!adminErrors.length" class="empty-tip" style="padding:16px">暂无错误记录</div>
-          </section>
-        </template>
-
-        <template v-else>
-          <section class="card">
-            <div class="row"><span class="label">功能开关（可随时关闭）</span></div>
-            <div v-for="(label, key) in FLAG_LABELS" :key="key" class="row">
-              <span class="label">{{ label }}</span>
-              <button
-                class="switch"
-                :class="{ on: adminFlags[key] !== false }"
-                type="button"
-                :aria-label="label"
-                @click="toggleFlag(key)"
-              ></button>
-            </div>
-          </section>
-          <p class="hint">关闭后对应接口返回 503，便于出问题时快速止血。</p>
-        </template>
-      </template>
-      <div v-else class="empty-wrap">
-        <div class="empty-icon">🔒</div>
-        <div class="empty-text">需要管理员权限</div>
-        <div class="empty-tip">仅授权管理员账号可访问</div>
-      </div>
-    </main>
 
     <main v-else class="content scroll-y">
       <section class="card">
@@ -1072,26 +798,6 @@ onMounted(() => {
       </section>
       <p class="about-foot">希望你和朋友在这里玩得开心。— Perry</p>
     </main>
-
-    <div v-if="adminNoteOpen" class="mask" @click.self="closeAdminNote">
-      <div class="dialog">
-        <div class="dialog-title">
-          {{ adminNoteTarget?.type === 'feedback' ? '回复反馈' : '处理举报' }}
-        </div>
-        <textarea
-          v-model="adminNoteText"
-          class="input area"
-          rows="3"
-          :placeholder="adminNoteTarget?.type === 'feedback' ? '请输入回复内容' : '处理说明（可选）'"
-        ></textarea>
-        <div class="dialog-actions">
-          <button type="button" @click="closeAdminNote">取消</button>
-          <button type="button" class="ok" :disabled="adminBusy" @click="confirmAdminNote">
-            {{ adminBusy ? '提交中…' : '确定' }}
-          </button>
-        </div>
-      </div>
-    </div>
 
     <div v-if="showDeleteAccount" class="mask" @click.self="showDeleteAccount = false">
       <div class="dialog">
@@ -1216,22 +922,6 @@ onMounted(() => {
   margin-bottom: 8px;
 }
 .input.area { resize: vertical; min-height: 80px; }
-.admin-tabs {
-  display: flex; gap: 6px; padding: 10px 12px 0;
-}
-.admin-tab {
-  flex: 1; min-height: 36px; border: 0; border-radius: 8px;
-  background: var(--divider-soft); color: var(--text-2); font-size: 13px;
-}
-.admin-tab.on {
-  background: var(--green); color: #fff; font-weight: 600;
-}
-.admin-actions {
-  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px;
-}
-.admin-actions .input {
-  flex: 1; min-width: 140px; margin-bottom: 0;
-}
 .action-btn {
   border: 0; border-radius: 8px; min-height: 36px; padding: 0 14px;
   background: var(--divider-soft); color: var(--text); font-size: 13px;

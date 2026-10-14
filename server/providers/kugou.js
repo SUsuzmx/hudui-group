@@ -281,6 +281,25 @@ function sendJSON(res, data, status = 200) {
   res.status(status).json(data);
 }
 
+/**
+ * 音频代理只允许酷狗自有 CDN。
+ * 必须按 hostname 判定：早先用 /kugou\.com/ 匹配整个 URL，
+ * 导致 http://169.254.169.254/...?kugou.com、http://evil.com/?kugou.com 之类
+ * 任意地址都能借这个免鉴权接口被代理（SSRF）。
+ * 注：proxyKugouAudio 用 http(s).request 直连且不跟随重定向，不存在 302 绕过。
+ */
+export function isAllowedKugouAudioUrl(raw) {
+  let u;
+  try {
+    u = new URL(String(raw || ''));
+  } catch {
+    return false;
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  const host = u.hostname.toLowerCase();
+  return host === 'kugou.com' || host.endsWith('.kugou.com');
+}
+
 function proxyKugouAudio(req, res, audioUrl) {
   const referer = kugou.kugouAudioReferer(audioUrl);
   const u = new URL(audioUrl);
@@ -316,10 +335,10 @@ export function createKugouRouter({ requireAuth } = {}) {
   const auth = typeof requireAuth === 'function' ? requireAuth : (req, res, next) => next();
 
   // 音频代理必须免鉴权：<audio src> 不会带 Authorization，鉴权会 401 导致整份歌单播不了。
-  // 仅允许酷狗 CDN 域名，不做开放代理。
+  // 仅允许酷狗自有域名（按 hostname 判定，见 isAllowedKugouAudioUrl），不做开放代理。
   router.get('/audio', (req, res) => {
     const audioUrl = String(req.query.u || req.query.url || '');
-    if (!audioUrl || !/^https?:\/\/[^\s]*kugou\.com/i.test(audioUrl)) {
+    if (!isAllowedKugouAudioUrl(audioUrl)) {
       return sendJSON(res, { error: 'Invalid kugou audio url' }, 400);
     }
     proxyKugouAudio(req, res, audioUrl);

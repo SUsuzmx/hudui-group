@@ -53,11 +53,9 @@ async function requestForgot() {
   forgotBusy.value = true;
   try {
     const d = await api.forgotPassword(forgotNickname.value.trim());
+    // 服务端不再回传找回码（免登录接口回传等于任意账号接管），
+    // 这里只展示指引文案，用户需用此前自行保存的恢复码。
     forgotMsg.value = d?.message || '已生成找回指引';
-    if (d?.recoveryCode) {
-      forgotMsg.value += `（演示找回码：${d.recoveryCode}）`;
-      forgotCode.value = d.recoveryCode;
-    }
   } catch (e) {
     forgotMsg.value = e.message || '请求失败';
   } finally {

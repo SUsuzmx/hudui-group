@@ -3,11 +3,24 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "dev": "vite",
+    "dev:admin": "vite --config vite.admin.config.js",
     "build": "vite build",
+    "build:admin": "vite build --config vite.admin.config.js",
+    "build:all": "npm run build && npm run build:admin",
     "build:folia": "cd vendor/folia-major && npx vite build",
     "start": "node server/index.js",
+    "admin:domain": "node scripts/admin-domain-setup.mjs",
+    "admin:reset": "node scripts/admin-reset-password.mjs",
+    "admin:cleanup": "node scripts/cleanup-smoke-data.mjs",
+    "test:admin": "node scripts/smoke-admin.mjs",
+    "test:admin-ops": "node scripts/smoke-admin-ops.mjs",
+    "test:admin-host": "node scripts/smoke-admin-host.mjs",
+    "test:admin-public": "node scripts/verify-admin-public.mjs",
     "gen:icons": "node scripts/gen-icons.js",
     "check:ai": "node scripts/check-ai.mjs",
     "test:e2e": "node scripts/e2e-test.mjs",
@@ -15,6 +28,7 @@
     "test:security": "node scripts/smoke-security.mjs",
     "build:visual": "node scripts/build-visual-bundle.mjs",
     "test:music": "node --test server/tests/music-providers.test.mjs",
+    "test:unit": "node --test \"server/tests/*.test.mjs\"",
     "test:listen": "node scripts/test-listen-together.mjs",
     "test:private-listen": "node scripts/test-private-listen.mjs",
     "test:invite-card": "node scripts/test-invite-card.mjs",
@@ -28,6 +42,7 @@
     "media:gc": "node scripts/media-gc.mjs"
   },
   "dependencies": {
+    "compression": "^1.8.2",
     "express": "^4.21.2",
     "NeteaseCloudMusicApi": "^4.32.0",
     "socket.io": "^4.8.1",

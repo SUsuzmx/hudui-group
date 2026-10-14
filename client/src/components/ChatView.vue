@@ -61,20 +61,9 @@ const emit = defineEmits(['back', 'open-chat-info', 'members', 'search-used', 'o
 const conversationId = computed(() => props.chat?.conversationId || null);
 const chatTitle = computed(() => props.chat?.name || members.value.groupName || 'WeChat');
 const isDefaultChat = computed(() => props.chat?.isDefault !== false);
-const groupKind = computed(() => props.chat?.kind || (isDefaultChat.value ? 'main' : null));
-
-// 仅本群相关人设 + 真人成员; 私聊不走本组件
-const GROUP_PERSONA_IDS = {
-  main: ['siqi', 'perry', 'niunai', 'xiaolajiao', 'aqiang'],
-  product: ['siqi', 'perry', 'xiaolajiao', 'fangyuan'],
-  family: ['mama', 'baba'],
-  climb: ['wangye', 'yezi'],
-  work: ['fangyuan', 'siqi'],
-  game: ['yezi', 'aqiang', 'perry'],
-};
 
 const messages = ref([]);
-const members = ref({ groupName: 'WeChat', onlineUsers: [], aiMembers: [], allUsers: [] });
+const members = ref({ groupName: 'WeChat', onlineUsers: [], allUsers: [] });
 const draft = ref('');
 const connected = ref(false);
 const everConnected = ref(false);
@@ -219,17 +208,7 @@ function onKeyDown(e) {
   send();
 }
 
-const aiAvatarMap = computed(() => {
-  const m = {};
-  for (const a of members.value.aiMembers) {
-    m[a.nickname] = a.avatarUrl ? { avatar: a.avatarUrl, emoji: null } : { avatar: null, emoji: a.avatarEmoji };
-  }
-  return m;
-});
-
 const mentionableMembers = computed(() => {
-  const kind = groupKind.value || 'main';
-  const allow = new Set(GROUP_PERSONA_IDS[kind] || GROUP_PERSONA_IDS.main);
   const list = [];
   list.push({
     nickname: '所有人',
@@ -238,15 +217,6 @@ const mentionableMembers = computed(() => {
     color: '#fa9d3b',
     isAll: true,
   });
-  for (const a of members.value.aiMembers || []) {
-    if (!isDefaultChat.value && !allow.has(a.id)) continue;
-    list.push({
-      nickname: a.nickname,
-      avatar: a.avatarUrl,
-      emoji: a.avatarUrl ? null : a.avatarEmoji,
-      color: '#07c160',
-    });
-  }
   // allUsers 已按群成员制下发(服务端过滤), 群成员均可 @
   for (const u of members.value.allUsers || []) {
     if (u.nickname === props.me.nickname) continue;
@@ -268,7 +238,7 @@ const filteredMentions = computed(() => {
 });
 
 function avatarProps(m) {
-  return avatarFromMessage(m, aiAvatarMap.value);
+  return avatarFromMessage(m);
 }
 
 /** 关闭公告条/公告全文: 本地立即收起, 并上报服务端已读(按公告版本), 重进不再弹出 */
@@ -1774,8 +1744,10 @@ async function onChatFile(e) {
 }
 
 async function sendCard() {
-  const membersList = members.value.aiMembers || [];
-  const target = membersList.find((a) => a.nickname !== props.me.nickname) || membersList[0];
+  const membersList = (members.value.allUsers || []).filter(
+    (u) => u.nickname && u.nickname !== props.me.nickname
+  );
+  const target = membersList[0];
   if (!target) {
     showToast('暂无可推荐名片');
     return;
@@ -1786,8 +1758,8 @@ async function sendCard() {
     mediaType: 'card',
     ext: {
       nickname: target.nickname,
-      personaId: target.id,
-      avatar: target.avatarUrl || null,
+      userId: target.id ?? target.userId ?? null,
+      avatar: target.avatar || null,
     },
   }, (res) => {
     if (res?.error) showToast(res.error);
@@ -1864,23 +1836,6 @@ function onAvatarDbl(m) {
 }
 
 function findMemberByName(name) {
-  const ai = (members.value.aiMembers || []).find((a) => a.nickname === name || a.name === name);
-  if (ai) {
-    return {
-      id: ai.personaId || ai.id,
-      userId: null,
-      nickname: ai.nickname || name,
-      avatar: ai.avatarUrl || ai.avatar || null,
-      emoji: ai.emoji || null,
-      color: ai.color || '#07c160',
-      avatarColor: ai.color || '#07c160',
-      isAI: true,
-      personaId: ai.personaId || ai.id,
-      isFriend: false,
-      local: true,
-      wxid: null,
-    };
-  }
   const human = (members.value.allUsers || members.value.onlineUsers || []).find(
     (u) => u.nickname === name || u.name === name
   );
@@ -1953,7 +1908,7 @@ function onBodyTouchEnd(e) {
   pullY.value = 0;
 }
 
-const onlineCount = computed(() => members.value.onlineUsers.length + members.value.aiMembers.length);
+const onlineCount = computed(() => members.value.onlineUsers.length);
 
 const seenMsgIds = new Set();
 
@@ -2131,7 +2086,7 @@ onMounted(() => {
     if (dataGid && myGid && dataGid !== myGid) return;
     members.value = data;
     emit('members', data);
-    groupMemberCount.value = (data.onlineUsers?.length || 0) + (data.aiMembers?.length || 0) + (data.allUsers?.length || 0);
+    groupMemberCount.value = (data.onlineUsers?.length || 0) + (data.allUsers?.length || 0);
   };
   const onTypingStart = (p) => {
     if (p?.conversationId && conversationId.value && p.conversationId !== conversationId.value) return;

@@ -101,6 +101,8 @@ export const api = {
   register: (nickname, password, avatar) => request('/api/register', { body: { nickname, password, avatar } }),
   login: (nickname, password) => request('/api/login', { body: { nickname, password } }),
   me: () => request('/api/me', { method: 'GET' }),
+  // 全局公告（后台「系统设置 → 公告」下发；公开端点，登录前后都能拉）
+  siteNotice: () => request('/api/site/notice', { method: 'GET' }),
   updateMe: (payload) => request('/api/me', { method: 'PUT', body: payload }),
   avatars: () => request('/api/avatars', { method: 'GET' }),
   chats: () => request('/api/chats', { method: 'GET' }),
@@ -184,11 +186,11 @@ export const api = {
   groupNotice: (groupId, notice) =>
     request(`/api/groups/${groupId}/notice`, { body: { notice } }),
   groupInfo: (groupId) => request(`/api/groups/${groupId}`, { method: 'GET' }),
-  createGroup: (name, memberIds, aiMembers) =>
-    request('/api/groups', { body: { name, memberIds, aiMembers } }),
+  createGroup: (name, memberIds) =>
+    request('/api/groups', { body: { name, memberIds } }),
   groupMembers: (id) => request(`/api/groups/${id}/members`, { method: 'GET' }),
-  inviteGroupMembers: (id, userIds, aiNames) =>
-    request(`/api/groups/${id}/members`, { body: { userIds, aiNames } }),
+  inviteGroupMembers: (id, userIds) =>
+    request(`/api/groups/${id}/members`, { body: { userIds } }),
   leaveGroup: (id) => request(`/api/groups/${id}/leave`, { body: {} }),
   renameGroup: (id, name) => request(`/api/groups/${id}/rename`, { body: { name } }),
   setMyGroupNickname: (id, nickname) =>
@@ -252,17 +254,8 @@ export const api = {
   searchMessages: (params) => request('/api/search/messages', { method: 'GET', query: params }),
   favoritesByType: (type) => request('/api/favorites/by-type', { method: 'GET', query: { type } }),
 
-  // 错误上报 / 管理
+  // 错误上报（运营后台已抽离为独立应用 /admin）
   reportClientError: (payload) => request('/api/client-error', { body: payload }),
-  adminOverview: () => request('/api/admin/overview', { method: 'GET' }),
-  adminUsers: (q) => request('/api/admin/users', { method: 'GET', query: { q } }),
-  adminReports: (status) => request('/api/admin/reports', { method: 'GET', query: { status } }),
-  adminHandleReport: (id, payload) => request(`/api/admin/reports/${id}`, { body: payload }),
-  adminFeedback: (status) => request('/api/admin/feedback', { method: 'GET', query: { status } }),
-  adminReplyFeedback: (id, reply) => request(`/api/admin/feedback/${id}/reply`, { body: { reply } }),
-  adminErrors: (feature) => request('/api/admin/errors', { method: 'GET', query: { feature } }),
-  adminFlags: () => request('/api/admin/flags', { method: 'GET' }),
-  adminSetFlags: (flags) => request('/api/admin/flags', { method: 'POST', body: { flags } }),
   checkContent: (text) => request('/api/content/check', { body: { text } }),
 
   // 发现页: 听一听 — 网易云 / QQ / 酷狗

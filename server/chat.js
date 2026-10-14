@@ -1,8 +1,7 @@
-// Socket.IO 聊天处理: 多群 + 私聊。默认群可主动插话, 其他群仅在真人发言/@ 时由 AI 回应。
+// Socket.IO 聊天处理: 多群 + 私聊。群聊为纯真人会话, 不再有 AI 群友插话/@提及。
 import { verifyToken } from './auth.js';
 import { stmts } from './db.js';
-import { personas, personasForGroup } from './ai/personas.js';
-import { aiAvatarFile } from './ai/avatars.js';
+import { personas } from './ai/personas.js';
 import { groupConvId, DEFAULT_GROUP_KIND, getGroup, isGroupMember, groupHumanMembers } from './groups.js';
 import { canAccessPrivate as aclCanAccessPrivate, canAccessGroup as aclCanAccessGroup } from './acl.js';
 import { isBlockedEither } from './friends.js';
@@ -113,13 +112,6 @@ export function initChat(io, { config, engine }) {
     } catch { /* ignore */ }
   };
 
-  const addAIMessage = (persona, content, mediaType = null, mediaUrl = null, convId = null) => {
-    const target = convId ?? defaultConvId;
-    const r = stmts.insertMessage.run('ai', null, persona.name, persona.emoji, content, Date.now(), mediaType, mediaUrl, target);
-    const msg = pushTo(target, stmts.messageById.get(Number(r.lastInsertRowid)));
-    emitGroup(target, msg);
-  };
-
   const addSystemMessage = (text, convId = null) => {
     const target = convId ?? defaultConvId;
     const r = stmts.insertMessage.run('system', null, '', '', text, Date.now(), null, null, target);
@@ -191,7 +183,6 @@ export function initChat(io, { config, engine }) {
 
   const membersInfo = (group = null) => {
     const groupKind = group?.kind || 'main';
-    const pool = group ? personasForGroup(groupKind) : personas.filter((p) => !p.groups || p.groups.includes('main'));
     const gid = group?.id ?? defaultGroup?.id ?? null;
     const humans = gid ? groupHumanMembers(gid) : [];
     return {
@@ -202,12 +193,7 @@ export function initChat(io, { config, engine }) {
       onlineUsers: [...online.values()].map((u) => ({
         nickname: u.nickname, avatarColor: u.avatarColor, avatar: u.avatar, online: true,
       })),
-      aiMembers: pool.map((p) => ({
-        id: p.id,
-        nickname: p.name,
-        avatarEmoji: p.emoji,
-        avatarUrl: aiAvatarFile(p.name),
-      })),
+      // 群聊为纯真人会话: 不再下发 AI 群友
       // 群的自然人成员(成员制): 不再把全体用户当成群成员
       allUsers: humans.map((u) => ({
         id: u.user_id,
@@ -279,7 +265,6 @@ export function initChat(io, { config, engine }) {
       if (Date.now() - last > 86400_000) {
         announcedAt.set(user.id, Date.now());
         addSystemMessage(`欢迎新成员「${user.nickname}」加入群聊`, defaultConvId);
-        engine.onUserJoin(user);
       }
     }
 
@@ -499,15 +484,7 @@ export function initChat(io, { config, engine }) {
         }
       }
 
-      // 纯媒体消息不触发 AI 接话
-      if (!mediaType) {
-        const group = getGroup(Number(String(conversationId).replace(/^grp_/, '')));
-        engine.onUserMessage(msg, {
-          conversationId,
-          isDefault: !group || group.isDefault,
-          groupName: group?.name,
-        });
-      }
+      // 群聊为纯真人会话: 不再触发 AI 接话/插嘴
     });
 
     // 领取红包
@@ -1222,12 +1199,9 @@ export function initChat(io, { config, engine }) {
   });
 
   return {
-    addAIMessage,
     addSystemMessage,
     addPrivateSystemMessage,
     addPrivateAIMessage,
-    getRecentContext: (n) => recentCache.slice(-n),
-    getConvContext: (convId, n) => (convCaches.get(convId) ?? []).slice(-n),
     getPrivateContext: (convId, n) => (convCaches.get(convId) ?? []).slice(-n),
     membersInfo,
     defaultConvId,

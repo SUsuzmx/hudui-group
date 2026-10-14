@@ -8,6 +8,7 @@ import { notifyMessage } from './notify.js';
 import ToastHost from './components/ToastHost.vue';
 import LoginView from './components/LoginView.vue';
 import OfflineBanner from './components/OfflineBanner.vue';
+import SiteNoticeBanner from './components/SiteNoticeBanner.vue';
 import PwaConsentModal from './components/PwaConsentModal.vue';
 import { registerServiceWorker } from './push-client.js';
 
@@ -65,7 +66,7 @@ const me = ref(null);
 const justRegistered = ref(false);
 const privateTarget = ref(null);
 const subView = ref(null);
-const groupMembers = ref({ onlineUsers: [], aiMembers: [], allUsers: [] });
+const groupMembers = ref({ onlineUsers: [], allUsers: [] });
 const transitionName = ref('page-fade');
 const activeChat = ref(null);
 const pendingSearch = ref(false);
@@ -274,29 +275,16 @@ function openChat(chat = null) {
 function openPrivateChat(contact) {
   nav.push();
   const uid = Number(contact.userId ?? contact.id ?? contact.peerId ?? 0);
-  if (contact.isAI) {
-    privateTarget.value = {
-      nickname: contact.nickname,
-      avatar: contact.avatar ?? contact.avatarUrl ?? null,
-      avatarUrl: contact.avatar ?? contact.avatarUrl ?? null,
-      avatarEmoji: contact.emoji ?? contact.avatarEmoji ?? null,
-      emoji: contact.emoji ?? contact.avatarEmoji ?? null,
-      color: contact.color ?? '#07c160',
-      isAI: true,
-      personaId: contact.personaId ?? contact.key?.replace('ai-', ''),
-    };
-  } else {
-    privateTarget.value = {
-      nickname: contact.nickname,
-      avatar: contact.avatar ?? contact.avatarUrl ?? null,
-      color: contact.color ?? contact.avatarColor ?? '#4f6ef7',
-      isAI: false,
-      userId: Number.isInteger(uid) && uid > 0 ? uid : contact.userId,
-      remark: contact.remark || null,
-    };
-    const conv = privateConvIdOf(me.value?.id, uid);
-    unhideChatPref(conv);
-  }
+  privateTarget.value = {
+    nickname: contact.nickname,
+    avatar: contact.avatar ?? contact.avatarUrl ?? null,
+    color: contact.color ?? contact.avatarColor ?? '#4f6ef7',
+    isAI: false,
+    userId: Number.isInteger(uid) && uid > 0 ? uid : contact.userId,
+    remark: contact.remark || null,
+  };
+  const conv = privateConvIdOf(me.value?.id, uid);
+  unhideChatPref(conv);
   transitionName.value = 'page-push';
   view.value = 'private-chat';
 }
@@ -417,7 +405,6 @@ function openMomentsForUser(user) {
           nickname: user.nickname || user.remark || '',
           avatar: user.avatar ?? user.avatarUrl ?? null,
           avatarColor: user.avatarColor ?? user.color ?? null,
-          isAI: Boolean(user.isAI),
         },
   });
 }
@@ -721,6 +708,8 @@ async function onChatInfoToggle({ key, value }) {
   <div class="app-shell">
     <ToastHost />
     <OfflineBanner />
+    <!-- 全局公告：公开端点，登录页/主界面都展示；维护公告是主要用途 -->
+    <SiteNoticeBanner />
     <PwaConsentModal :ready="view === 'main' && Boolean(me)" />
     <!-- 主页顶部轻量提示（聊天页内用各自导航下的条，避免盖住返回） -->
     <ListenTogetherBar

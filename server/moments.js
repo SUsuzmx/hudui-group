@@ -237,7 +237,7 @@ export function createMomentsRouter({ notify } = {}) {
       const row = stmts.momentById.get(Number(r.lastInsertRowid));
       const user = stmts.userById.get(req.user.id);
       const momentId = Number(r.lastInsertRowid);
-      // 异步: AI 群友点赞/评论
+      // 异步: 人设点赞/评论
       try { scheduleAiMomentReact(momentId, req.user.id); } catch { /* ignore */ }
       emitMoment({ type: 'created', momentId, userId: req.user.id });
       res.json({

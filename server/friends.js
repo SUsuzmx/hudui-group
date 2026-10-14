@@ -79,9 +79,9 @@ export function createFriendsRouter() {
         return res.status(400).json({ error: '参数不合法' });
       }
       if (friendId === req.user.id) return res.status(400).json({ error: '不能添加自己' });
-      // AI 群友不是用户账号, 禁止加为好友
+      // 人设不是用户账号, 禁止把非法 id 当成好友
       if (friendId < 0 || req.body?.isAI || req.body?.personaId) {
-        return res.status(400).json({ error: 'AI 群友仅在群聊中互动，无法添加为好友' });
+        return res.status(400).json({ error: '该账号无法添加为好友' });
       }
       const target = stmts.userById.get(friendId);
       if (!target) return res.status(404).json({ error: '用户不存在' });

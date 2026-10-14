@@ -62,6 +62,20 @@ function readRequestBody(req) {
 
 // ---------- 音频代理（关键：酷狗 CDN 校验 Referer，前端直连必 403） ----------
 
+// 按 hostname 判定，勿改回 URL 正则：/kugou\.com/ 会放行
+// http://169.254.169.254/...?kugou.com 这类任意地址（SSRF）。
+function isAllowedKugouAudioUrl(raw) {
+  let u;
+  try {
+    u = new URL(String(raw || ''));
+  } catch (_) {
+    return false;
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  const host = u.hostname.toLowerCase();
+  return host === 'kugou.com' || host.endsWith('.kugou.com');
+}
+
 function proxyKugouAudio(req, res, audioUrl) {
   const referer = kugou.kugouAudioReferer(audioUrl);
   const u = new URL(audioUrl);
@@ -188,7 +202,7 @@ async function kugouRoutes(req, res, url) {
   // GET /api/kugou/audio?u=<编码后的酷狗CDN地址>
   if (pn === '/api/kugou/audio') {
     const audioUrl = sp.get('u');
-    if (!audioUrl || !/^https?:\/\/[^\s]*kugou\.com/i.test(audioUrl)) {
+    if (!isAllowedKugouAudioUrl(audioUrl)) {
       sendJSON(res, { error: 'Invalid kugou audio url' }, 400);
       return true;
     }

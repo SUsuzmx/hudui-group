@@ -344,8 +344,11 @@ export function mountFolia(app, { ROOT, log, requireAuth }) {
       return;
     }
     if (p === '/register/anonimous') {
+      // 安全：绝不能把服务端 .netease-cookie（含 MUSIC_U 账号凭据）回传给客户端，
+      // 否则任何登录用户都能取走并冒用共享账号。
+      // Folia 只需知道「已就绪」；实际凭据由下面的服务端注入路径使用。
       if (serverCookie) {
-        res.json({ code: 200, cookie: serverCookie });
+        res.json({ code: 200 });
         return;
       }
       ncmApp(req, res, next);

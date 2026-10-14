@@ -5,8 +5,21 @@ import { fileURLToPath } from 'node:url';
 import { runMigrations } from './migrate.js';
 
 export const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const DATA_DIR = path.join(ROOT, 'data');
+// PERRY_DATA_DIR 允许隔离出独立数据目录（冒烟测试用），默认仍是 <root>/data
+const DATA_DIR = process.env.PERRY_DATA_DIR || path.join(ROOT, 'data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
+
+// node:sqlite 需要 Node >= 22.13（22.5–22.12 需 --experimental-sqlite，20.x 无此模块）。
+// 提前给出可读提示，避免只看到 ERR_UNKNOWN_BUILTIN_MODULE。
+{
+  const [maj, min] = process.versions.node.split('.').map(Number);
+  if (maj < 22 || (maj === 22 && min < 13)) {
+    console.error(
+      `[db] 需要 Node >= 22.13（node:sqlite 无需实验标志），当前为 ${process.versions.node}。`
+    );
+    process.exit(1);
+  }
+}
 
 export const db = new DatabaseSync(path.join(DATA_DIR, 'chat.db'));
 db.exec('PRAGMA journal_mode = WAL;');

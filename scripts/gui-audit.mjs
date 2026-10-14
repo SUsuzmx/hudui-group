@@ -2,7 +2,7 @@
 // 记录: 占位页(StubView), 死按钮, JS 报错, 关键流程是否走通
 import { chromium } from 'playwright';
 
-const BASE = 'http://127.0.0.1:3000';
+const BASE = process.env.BASE || 'http://127.0.0.1:3010';
 const results = [];
 const pageErrors = [];
 function check(name, ok, detail = '') {
@@ -194,32 +194,11 @@ for (const label of ['账号与安全', '新消息通知', '聊天', '通用 / �
 await page.locator('.nav-back').first().click();
 await page.waitForTimeout(500);
 
-// ── 7. 私聊: 打开 AI 联系人 ──
+// ── 7. 群聊无 AI: 群成员/@列表只应有真人 ──
 await page.locator('.tab-item').filter({ hasText: '通讯录' }).click();
 await page.waitForTimeout(400);
 const aiContact = page.locator('.contact-row').filter({ hasText: 'AI 联系人' }).first();
-if (await aiContact.isVisible().catch(() => false)) {
-  await aiContact.click();
-  await page.waitForTimeout(600);
-  const sendBtn = page.locator('button').filter({ hasText: '发消息' }).first();
-  if (await sendBtn.isVisible().catch(() => false)) {
-    await sendBtn.click();
-    await page.waitForTimeout(1000);
-  }
-  const pi = page.locator('input[type="text"]').last();
-  if (await pi.isVisible().catch(() => false)) {
-    await pi.fill('你好呀, 私聊测试');
-    await pi.press('Enter');
-    await page.waitForTimeout(2500);
-    check('私聊消息发出', await page.locator('.bubble').filter({ hasText: '私聊测试' }).first().isVisible().catch(() => false));
-  } else {
-    check('私聊输入框', false, '未找到输入框');
-  }
-  await page.locator('.nav-back').first().click();
-  await page.waitForTimeout(500);
-} else {
-  check('AI 联系人入口', false, '通讯录无 AI 联系人');
-}
+check('通讯录无 AI 联系人入口', !(await aiContact.isVisible().catch(() => false)));
 
 // ── 汇总 ──
 console.log('\n===== GUI 审查结果 =====');

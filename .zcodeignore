@@ -1,0 +1,81 @@
+# deps
+node_modules/
+
+# build
+client-dist/
+client/client-dist/
+
+# third-party games (cloned repos) & local toolchain
+games/
+toolchain/
+
+# third-party app (folia-major, cloned repo)
+vendor/
+
+# runtime data & secrets
+data/
+config/ai.json
+config/ai.local.json
+.env
+.env.*
+
+# local music library (large audio files; optional guess-song fallback)
+music/
+
+# logs / local artifacts
+*.log
+*.err
+lt-test-server.err
+server.pid
+img/*.png
+img/*.jpg
+img/*.jpeg
+img/*.webp
+img/*.gif
+!img/.gitkeep
+
+# editor / os / local agent
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.zcode/
+
+# accidental local artifacts (do not commit)
+/[A-Za-z]
+/rel.json
+.netease-cookie
+.qq-cookie
+.kugou-cookie
+server.pid
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+__pycache__/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

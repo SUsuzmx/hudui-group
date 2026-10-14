@@ -3,15 +3,18 @@
 | 项目 | 说明 |
 |------|------|
 | **线上地址** | https://chat.supeiji.top/ |
+| **运营后台** | **https://admin.supeiji.top/** ✅ 已上线（备用 https://chat.supeiji.top/admin） |
 | **GitHub** | https://github.com/SUsuzmx/hudui-group |
 | **技术栈** | Node.js + Express + Socket.IO + SQLite（`node:sqlite`）+ Vue 3 + Vite |
 | **AI** | 阿里云百炼 DashScope（聊天 / 生图 / 视频 / **Agent 任务**），多模型故障转移 |
 | **默认端口** | `3010`（`config/app.json` 或环境变量 `PORT`） |
-| **域名接入** | Cloudflare Tunnel（域名 `chat.supeiji.top`，隧道名 `werewolf`） |
+| **域名接入** | Cloudflare Tunnel（隧道名 `werewolf`；`chat.supeiji.top` + `admin.supeiji.top`） |
 
 ### 近期功能要点
 
-- **平台能力（账号安全 / 群治理 / 内容安全 / 备份 / 运营）**：登录记录与异常提醒、找回密码与注销、群管理员/入群验证/公告已读/群相册、朋友圈访客与举报、聊天记录导出与云备份、反馈 FAQ、增强搜索、运营后台；可用 **功能开关**（`server/feature-flags.js` + `data/feature-flags.json`）一键回退
+- **群聊去掉 AI 群友**：群聊改为**纯真人会话**——不再有 AI 人设成员、欢迎/插话/冷场/@提及与群内 Agent；建群与邀请面板只接受真人好友；早期预置的「产品设计小分队 / 工作对接群」等 AI 演示群与历史 AI 群成员行会在启动时自动清理，只保留 **WeChat 主群**。AI 仅保留在私聊与朋友圈互动
+- **平台能力（账号安全 / 群治理 / 内容安全 / 备份 / 运营）**：登录记录与异常提醒、找回密码与注销、群管理员/入群验证/公告已读/群相册、朋友圈访客与举报、聊天记录导出与云备份、反馈 FAQ、增强搜索；可用 **功能开关**（`server/feature-flags.js` + `data/feature-flags.json`）一键回退
+- **独立运营后台**：已从用户端**完全抽离**为独立 SPA（独立域名 **https://admin.supeiji.top/**，同域备用 `/admin`，构建产物 `admin-dist/`，接口 `/api/admin/*`）。含概览仪表盘、用户管理、举报管理、反馈管理、错误监控、内容治理、功能开关、系统设置、审计日志、管理员账号十大模块；独立管理员账号体系（`admin_accounts`）与用户端登录态完全隔离，支持角色 + 细粒度权限、全量操作审计、用户封禁、维护模式。详见下方「运营后台」
 - **PWA / Web Push**：离线页与离线横幅、安装引导；VAPID 推送订阅，后台/关页仍可收新消息（需 HTTPS）
 - **本地曲库兜底**：可选 `music/<歌手>/<曲名>.mp3`，猜歌拉流超时自动兜底（`music/` 默认不入库）
 - **群聊信息页修复**：成员头像墙正确渲染并可进资料；群公告可编辑发布；「查找聊天记录」返回即开搜索；「我在群里的昵称」独立编辑并写入群成员昵称
@@ -31,7 +34,7 @@
 - **状态**：选择状态 → 编辑页（背景图/视频、位置、话题、可见性）→「我」页整块头图展示；底部菜单：设个新状态 / 修改状态 / 结束状态
 - **通讯录**：拼音 A–Z 锚点（固定字母索引）、标签筛选、黑名单联动
 - **非好友会话**：删除好友后进入聊天，顶部提示「你们还不是朋友」，可发送朋友验证
-- **头像**：AI 使用远程卡通 URL；本地仅保留默认 `amdin.png`
+- **头像**：本地仅保留默认 `amdin.png`
 - **设置与详情页按钮**：账号安全（改密/下线设备/声音锁）、隐私与通用项服务端持久化（`/api/settings`）、群备注/@提醒/查聊天记录、私聊免打扰/清空记录、看一看在看收藏分享、公众号资料/活动/留言与文章详情等均已接通真实逻辑
 
 ### 关键 API（便于联调）
@@ -180,6 +183,14 @@ npm run build:folia          # 或在 vendor/folia-major 下：npx vite build --
 
 ```
 项目根目录（示例 Windows: C:\perry）
+├── admin/                   # 运营后台独立前端源码（Vue 3，独立于 client/）
+│   ├── index.html
+│   └── src/
+│       ├── App.vue          # 后台外壳：侧栏导航 + 权限过滤
+│       ├── api.js           # 后台 HTTP 封装（独立 token: hudui_admin_token）
+│       ├── views/           # 概览/用户/举报/反馈/错误/内容/开关/设置/审计/管理员/账号
+│       └── components/      # ToastHost / BarChart / Pager
+├── admin-dist/              # 后台构建产物（npm run build:admin，不入库）
 ├── client/                  # Vue 3 前端源码
 │   ├── index.html
 │   ├── public/              # manifest.json / sw.js / offline.html / PWA 图标
@@ -216,6 +227,10 @@ npm run build:folia          # 或在 vendor/folia-major 下：npx vite build --
 │   ├── regression-all.mjs
 │   ├── smoke-security.mjs
 │   ├── smoke-platform.mjs   # 平台能力冒烟
+│   ├── smoke-admin.mjs      # 运营后台全模块冒烟（102 项）
+│   ├── smoke-admin-ops.mjs  # 维护模式/注册开关/开关解耦/审计（15 项）
+│   ├── smoke-admin-host.mjs # 后台独立域名 Host 路由（21 项）
+│   ├── admin-domain-setup.mjs # 后台独立域名接入助手（Cloudflare Tunnel）
 │   ├── accept-*.mjs         # 功能/权限/隐私验收
 │   ├── verify-*.mjs         # 管理端/清理/群聊修复等校验
 │   ├── test-listen-together.mjs
@@ -232,21 +247,24 @@ npm run build:folia          # 或在 vendor/folia-major 下：npx vite build --
 │   ├── acl.js               # 会话访问控制（群成员制 / 私聊双方）
 │   ├── providers/           # 音源：netease / qq / kugou（kugou-api.cjs 完整协议）
 │   ├── groups.js            # 群种子 + 成员表 + 群昵称
-│   ├── platform.js          # 账号安全/群治理/备份/反馈/运营
+│   ├── platform.js          # 账号安全/群治理/备份/反馈
+│   ├── admin.js             # 运营后台全部接口 /api/admin/*
+│   ├── admin-store.js       # 后台账号/会话/权限/审计/系统设置/封禁
 │   ├── feature-flags.js     # 功能开关（可热关闭）
 │   ├── push.js              # Web Push（VAPID）
 │   ├── local-music.js       # 本地曲库扫描
 │   ├── rp.js                # 红包拆分/领取/超时退回
 │   ├── wallet.js            # 演示钱包
 │   ├── ai/
-│   │   ├── engine.js        # 群聊触发 + Agent 调度
+│   │   ├── engine.js        # 私聊 AI 回复 + Agent 调度（群聊已无 AI）
 │   │   ├── agent.js         # 提醒 / 办公文件生成
 │   │   ├── agent_gen.py     # xlsx/docx/pptx/pdf 生成脚本
 │   │   ├── personas.js      # AI 人设
 │   │   └── provider.js      # LLM / 多模型
 │   └── ...
 ├── package.json
-└── vite.config.js
+├── vite.config.js           # 用户端构建
+└── vite.admin.config.js     # 运营后台独立构建
 ```
 
 ---
@@ -255,7 +273,7 @@ npm run build:folia          # 或在 vendor/folia-major 下：npx vite build --
 
 | 项目 | 要求 |
 |------|------|
-| Node.js | **≥ 20**（`node:sqlite`） |
+| Node.js | **≥ 22.13**（`node:sqlite`；22.5–22.12 需加 `--experimental-sqlite`，20.x 无此模块） |
 | Python | **可选**（Agent 生成 Excel/Word/PPT/PDF；环境变量 `MIMO_PYTHON` 或 `python`） |
 | 磁盘 | ≥ 1GB |
 | 网络 | `dashscope.aliyuncs.com`；可出站 Cloudflare |
@@ -270,7 +288,7 @@ Python 侧常用库（Agent 文件生成）：`openpyxl`、`python-docx`、`pyth
 ### 主界面 UI（对齐微信截图）
 
 - **微信**：标题居中 `微信(n)`；会话行、未读角标、免打扰铃、折叠的聊天、下拉刷新；底栏 SVG 图标
-- **通讯录**：功能入口（新的朋友/群聊/标签/公众号/服务号）+ 企业微信 + 星标朋友 + **拼音 A–Z 分组** + 右侧索引可点击跳转；**仅展示好友**（AI 群友不进通讯录）
+- **通讯录**：功能入口（新的朋友/群聊/标签/公众号/服务号）+ 企业微信 + 星标朋友 + **拼音 A–Z 分组** + 右侧索引可点击跳转；**仅展示好友**
 - **发现**：朋友圈 / 视频号 / 直播 / 扫一扫 / 听一听 / 看一看 / 附近的人 / 游戏 / 小程序 等分组入口
 - **我**：头图区随状态显示渐变或背景图/视频；二维码下方箭头；状态行 +「···」弹出「设个新状态 / 修改状态 / 结束状态」
 - **聊天页点头像**：群聊/私聊均可点击头像进入资料页（对方或自己）
@@ -280,7 +298,6 @@ Python 侧常用库（Agent 文件生成）：`openpyxl`、`python-docx`、`pyth
 
 - 好友列表、**拼音 A–Z 索引（固定不随列表滚动）**、标签筛选、黑名单
 - 添加好友、申请、备注、标签、黑名单联动（拉黑后不进列表，可在黑名单页管理）
-- AI 群友不进通讯录好友列表（仅群聊互动）
 ### 账号与个人中心
 
 - 注册 / 登录（限流）；资料：昵称、头像（预置 `amdin.png` 或**上传**）、微信号、地区、签名、性别
@@ -291,8 +308,8 @@ Python 侧常用库（Agent 文件生成）：`openpyxl`、`python-docx`、`pyth
 
 ### 会话与消息
 
-- 预置群：WeChat / 产品设计小分队 / 工作对接群（启动播种；无关测试群会自动清理）
-- 自定义群：创建、邀请（好友，可在群设置中管理 AI 成员）、退群、改名、群公告
+- 预置群：仅 **WeChat 主群**（启动播种；早期带 AI 群友的演示群与无关测试群会自动清理）
+- 自定义群：创建、邀请（仅好友）、退群、改名、群公告；**群聊为纯真人会话，不含任何 AI 群友**
 - 会话偏好：置顶 / 免打扰 / 折叠 / 浮窗 / 草稿 / 会话背景 / 清空 / 保存到通讯录 / 显示群成员昵称
 - 消息类型：文字、表情、图、语音（进度/上滑取消）、视频、文件、名片、位置、**红包**、**转账**、**群接龙**、**群收款**、**合并转发卡片**
 - 操作：复制、引用、撤回、转发、合并转发展开、多选、收藏、拍一拍、@所有人
@@ -332,21 +349,20 @@ Python 侧常用库（Agent 文件生成）：`openpyxl`、`python-docx`、`pyth
 - **表情详情**：收藏表情，聊天表情面板可发送
 - **游戏中心**（发现页）：首位为**叠塔对战**（项目内 Vue 实时对战，不走 iframe）；若本地存在 `games/tower_game`，额外显示「叠塔练习」单人 iframe；其他第三方小游戏由 `GAME_APPS` + `/games/<id>/` 静态托管。`games/` 体积大默认不入库；**没有 `games/` 时实时对战仍可用**。
 
-### AI 群友（仅群聊 + Agent）
+### AI 能力（私聊 + 朋友圈）
 
-- **出现范围**：AI 人设主要出现在**群聊**（欢迎 / 插话 / 冷场 / @提及 / 媒体生成）
-- **不可加好友**：通讯录、全局搜索不把 AI 当联系人；好友添加接口拒绝 AI/persona 参数
-- **资料页说明**：从群成员/历史会话进入 AI 资料时，提示「仅在群聊中互动」
-- **Agent 能力**（群内 `@人设名` + 指令，`server/ai/agent.js`）：
+群聊已**彻底去掉 AI 群友**：群内不再有人设成员、不再有欢迎/插话/冷场/@提及，建群与邀请面板也只接受真人好友（`server/groups.js` 启动时会清理历史遗留的 AI 群成员行）。AI 人设仅保留在**私聊**（历史遗留的 `pv_*_ai_*` 会话）与**朋友圈互动**中。
+
+- **私聊 Agent 能力**（`server/ai/agent.js`，人设私聊会话内直接发指令）：
 
   | 指令示例 | 行为 |
   |----------|------|
-  | `@思琪 提醒我明天 10:30 开会` | 创建提醒；到点在会话推送 |
-  | `@思琪 提醒我 5分钟后 喝水` | 相对时间提醒 |
-  | `@思琪 帮我生成一份关于产品路线的ppt` | 生成 `.pptx` 文件消息 |
-  | `@思琪 做个excel 关于销售数据` | 生成 `.xlsx` |
-  | `@思琪 写一份word 关于会议纪要` | 生成 `.docx` |
-  | `@思琪 导出 pdf 关于通知` | 生成 `.pdf` |
+  | `提醒我明天 10:30 开会` | 创建提醒；到点在会话推送 |
+  | `提醒我 5分钟后 喝水` | 相对时间提醒 |
+  | `帮我生成一份关于产品路线的ppt` | 生成 `.pptx` 文件消息 |
+  | `做个excel 关于销售数据` | 生成 `.xlsx` |
+  | `写一份word 关于会议纪要` | 生成 `.docx` |
+  | `导出 pdf 关于通知` | 生成 `.pdf` |
 
 - 生成文件写入 `data/media/`，以聊天 **文件消息** 发出；提醒持久化在 `data/ai-reminders.json`
 - 无 LLM Key 时仍可走 Agent 确认文案；普通闲聊回退 canned 台词
@@ -371,7 +387,7 @@ Python 侧常用库（Agent 文件生成）：`openpyxl`、`python-docx`、`pyth
 
 ### 功能开关（Feature Flags）
 
-`server/feature-flags.js` 提供可热关闭的能力，对应 `requireFeature('xxx')` 中间件；关闭后接口返回 503。运维可在后台或直接改 `data/feature-flags.json`：
+`server/feature-flags.js` 提供可热关闭的能力，对应 `requireFeature('xxx')` 中间件；关闭后接口返回 503。运维可在**运营后台 → 功能开关**中切换（会记入审计日志），也可直接改 `data/feature-flags.json`：
 
 | 开关 | 覆盖能力 |
 |------|----------|
@@ -381,7 +397,207 @@ Python 侧常用库（Agent 文件生成）：`openpyxl`、`python-docx`、`pyth
 | `backupCloud` | 聊天记录导出 / 云端备份 |
 | `feedbackFaq` | 反馈 / FAQ / 举报进度 |
 | `searchEnhanced` | 消息搜索筛选 / 收藏分类 |
-| `adminPanel` | 运营后台（`/api/admin/*`） |
+| `adminPanel` | 用户端是否展示旧版「运营后台」入口（后台 `/admin` 本身始终可访问） |
+
+> 注意：`adminPanel` 仅控制用户端入口，**不影响**独立后台 `/admin` 与 `/api/admin/*`，避免误操作把自己锁在门外。
+
+---
+
+## 运营后台
+
+运营后台已从用户端**完全抽离**为独立单页应用，与主站共用同一个 Node 进程但**独立构建、独立登录态、独立账号体系**。
+
+### 访问地址
+
+后台提供**两个入口**，共用同一份构建产物：
+
+| 入口 | 地址 | 说明 |
+|------|------|------|
+| 独立域名（推荐） | **https://admin.supeiji.top/** | 根路径直接进后台登录页，像主站一样独立 |
+| 同域备用 | https://chat.supeiji.top/admin | 主站域名下的备用入口，始终可用 |
+| 本地开发 | http://localhost:3010/admin | 未配置域名时使用 |
+
+独立域名通过 **Host 路由**实现：服务识别请求的 `Host` 头，命中 `adminHosts` 配置时把后台 SPA 挂到根路径 `/`，其余主机名仍走用户端。配置在 [`config/app.json`](config/app.json)：
+
+```json
+{
+  "siteHost": "chat.supeiji.top",
+  "adminHosts": ["admin.supeiji.top"]
+}
+```
+
+可用环境变量覆盖（无需改文件）：
+
+```bash
+ADMIN_HOSTS=admin.example.com,ops.example.com npm start
+SITE_HOST=chat.example.com npm start
+```
+
+> 想换域名只改 `adminHosts` 即可，服务端无需改代码。
+
+### 配置独立域名（Cloudflare Tunnel）
+
+本项目隧道为**远程托管**模式（`cloudflared tunnel run --token-file`），ingress 与 DNS 都在 Cloudflare 侧，**改本地 `config.yml` 不生效**。
+
+先自检现状（只读，安全）：
+
+```bash
+npm run admin:domain
+```
+
+若 `admin.supeiji.top` 显示「尚未解析」，按提示在 Cloudflare 后台操作：
+
+1. 打开 https://one.dash.cloudflare.com/
+2. **Networks → Tunnels** → 选择隧道 `werewolf`
+3. 切到 **Public Hostname** 标签 → **Add a public hostname**
+   - Subdomain：`admin`　Domain：`supeiji.top`　Path：留空
+   - Type：`HTTP`　URL：`localhost:3010`
+4. 保存 —— Cloudflare 会自动创建 `admin.supeiji.top` 的 CNAME（Proxied）
+
+有 API 凭据时可全自动完成（会保留已有 ingress 规则，仅追加）。脚本会按以下顺序自动发现凭据：
+
+| 方式 | 写法 |
+|------|------|
+| A. 环境变量 | `CLOUDFLARE_API_TOKEN=xxx` |
+| B. `.env` | `CLOUDFLARE_API_TOKEN=xxx` |
+| C. 单行文件 | `data/cloudflare-api-token.txt` |
+| D. Global Key | `CLOUDFLARE_EMAIL=you@x.com` + `CLOUDFLARE_API_KEY=xxx` |
+
+```bash
+npm run admin:domain -- --apply
+```
+
+Token 权限：`Account → Cloudflare Tunnel → Edit`，`Zone → DNS → Edit`。
+
+> **注意**：`C:\ProgramData\cloudflared\token` 里的隧道 token **不是** API 凭据，
+> 它只能用于启动隧道（`cloudflared tunnel run --token-file`），无法创建 DNS 记录或修改 ingress。
+> 这是设计使然，已实测会被 API 拒绝。
+
+验证：
+
+```bash
+curl -I https://admin.supeiji.top/
+npm run test:admin-host        # Host 路由矩阵（21 项）
+```
+
+> DNS 未生效前，可用 `C:\Windows\System32\drivers\etc\hosts` 临时把 `admin.supeiji.top` 指向 `127.0.0.1` 做本地验证。
+
+### 架构与目录
+
+| 位置 | 说明 |
+|------|------|
+| `admin/` | 后台前端源码（Vue 3 + Vite，独立于 `client/`） |
+| `admin-dist/` | 后台构建产物，由 Express 挂在 `/admin` 与后台独立域名根路径 |
+| `vite.admin.config.js` | 后台独立构建配置（`base: /admin/`） |
+| `server/admin.js` | 后台全部 HTTP 接口（`/api/admin/*`） |
+| `server/admin-store.js` | 后台核心：账号、会话、权限、审计、系统设置、封禁 |
+| `server/migrate.js` 迁移 13 | `admin_accounts` / `admin_sessions` / `admin_audit_logs` / `app_settings` + 用户封禁列 |
+
+### 构建与启动
+
+```bash
+npm run build:admin     # 仅构建后台 → admin-dist/
+npm run build:all       # 构建用户端 + 后台
+npm run dev:admin       # 后台开发模式（5174，/api 代理到 config/app.json 的端口）
+npm start               # 启动服务，后台入口 http://localhost:3010/admin
+```
+
+> 端口以 `config/app.json` 的 `port` 为准（本项目为 **3010**，不是 3000）。
+
+> 未构建 `admin-dist/` 时访问 `/admin` 会返回一段提示页，接口 `/api/admin/*` 依然可用。
+
+### 首次登录（账号引导）
+
+服务启动时自动初始化后台账号（`bootstrapAdmins()`）：
+
+1. **迁移旧管理员**：把用户端已有 `users.settings.isAdmin === true` 的账号迁移为**后台超级管理员**，**沿用原密码**，用户名即原昵称；
+2. **无任何旧管理员时**：创建初始账号 `admin`，随机密码写入 `data/admin-bootstrap.txt`。
+
+```bash
+cat data/admin-bootstrap.txt   # 仅在「无旧管理员」时生成
+```
+
+> 本项目当前处于**迁移路径**：后台账号为 `小苏`，沿用其用户端原密码，因此没有生成 `admin-bootstrap.txt`。
+> 登录后请立即在 **我的账号 → 修改密码** 中改密（后台强制 ≥8 位且含字母+数字）。
+
+**忘记密码怎么办**：后台账号独立于用户端，不能用用户端的「找回密码」。用离线工具重置：
+
+```bash
+npm run admin:reset                          # 列出所有后台账号
+npm run admin:reset -- 小苏 'NewPass123'      # 重置并踢下线该账号所有会话
+```
+
+该工具直连 `data/chat.db`，仅在本机可用，且会写入审计日志，是唯一的后台自救通道。
+
+### 模块一览
+
+| 模块 | 能力 |
+|------|------|
+| 📊 概览 | 待办聚合（举报/反馈/错误/异常登录）、实时指标、7/14/30 天趋势图、分类分布、高频错误 Top、最近注册与后台操作 |
+| 👥 用户管理 | 昵称/微信号/ID 检索、状态筛选、详情（统计/群组/登录记录/被举报记录）、封禁与解封、重置密码、强制下线、平台管理员标记、删除账号（需昵称二次确认）、CSV 导出 |
+| 🚨 举报管理 | 状态/分类/关键词筛选、详情含被举报对象上下文、处置（处理中/已处理/未违规 + 备注）、一键连带封禁、批量处置、CSV 导出 |
+| 💬 反馈管理 | 状态/分类筛选、回复、关闭/重开、按状态与分类统计、CSV 导出 |
+| 🐞 错误监控 | 趋势图、模块分布（点击下钻）、高频错误信息聚合、按模块/关键词筛选、单条删除、按时间/模块批量清理、堆栈与 meta 详情、CSV 导出 |
+| 🧹 内容治理 | 消息/朋友圈/群组三视图检索与删除；删消息支持「撤回」或「彻底删除」；删群需群名二次确认 |
+| 🎚️ 功能开关 | 按业务分组展示全部开关，一键切换，变更留痕 |
+| ⚙️ 系统设置 | 站点名称、全局公告、**维护模式**、注册开关、上传上限；修改即时生效 |
+| 📜 审计日志 | 全部后台写操作留痕（管理员/模块/操作/对象/详情/IP），支持模块与关键词筛选、CSV 导出 |
+| 🔑 管理员 | 新建/编辑/停用/删除管理员、重置密码、强制下线、角色与细粒度权限勾选 |
+| 👤 我的账号 | 个人信息与权限清单、修改本人密码、查看与退出登录会话 |
+
+### 权限模型
+
+角色预设 + 可额外勾选的细粒度权限（`server/admin-store.js` 的 `PERMISSIONS` / `ROLES`）：
+
+| 角色 | 说明 |
+|------|------|
+| `super` 超级管理员 | 全部权限；**系统始终保留至少一个启用的超管**（无法降级/停用/删除最后一个） |
+| `operator` 运营 | 日常举报/反馈/用户/内容处置 + 只读开关、审计、设置；不能改开关与设置 |
+| `viewer` 只读 | 仅可查看概览/用户/举报/反馈/错误/内容/开关；无系统设置与管理员账号权限 |
+
+安全约束：
+
+- 后台 token 存 `localStorage.hudui_admin_token`，与用户端 `hudui_token` **完全隔离**；用户端 token 无法访问 `/api/admin/*`（返回 401）。
+- 会话 12 小时滑动过期，每 30 分钟清理过期会话；停用账号或改密后旧会话立即失效。
+- 登录限流：同一 IP + 用户名 10 分钟内最多 8 次失败。
+- 密码策略：至少 8 位且同时包含字母和数字。
+- 危险操作（删除用户/群组）需二次确认；批量清理错误记录必须指定范围，防止误删全量。
+
+### 维护模式与封禁
+
+- **维护模式**（`site.maintenance`）：用户端所有 `/api/*` 业务接口返回 503（可自定义文案）；`/api/login`、`/api/me`、`/api/admin/*` 与静态页面不受影响，**保证管理员始终能进后台恢复**。
+- **用户封禁**：封禁立即清除该用户全部会话；登录时密码正确也会被拒（403）；对已登录的漏网会话有兜底中间件强制下线。管理员账号不可被封禁。
+
+### 后台接口速查
+
+全部挂在 `/api/admin` 下，除 `auth/login` 外均需 `Authorization: Bearer <adminToken>`，并按权限校验。
+
+| 分组 | 接口 |
+|------|------|
+| 元信息 | `GET /meta` |
+| 会话 | `POST /auth/login` `POST /auth/logout` `GET /auth/me` `POST /auth/password` `GET /auth/sessions` |
+| 概览 | `GET /dashboard?days=14` |
+| 用户 | `GET /users` `GET /users/:id` `POST /users/:id/ban` `POST /users/:id/unban` `POST /users/:id/password` `POST /users/:id/platform-admin` `POST /users/:id/logout-all` `DELETE /users/:id` |
+| 举报 | `GET /reports` `GET /reports/:id` `POST /reports/:id` `POST /reports/bulk` |
+| 反馈 | `GET /feedback` `POST /feedback/:id/reply` `POST /feedback/:id/close` `POST /feedback/:id/reopen` |
+| 错误 | `GET /errors` `GET /errors/stats` `DELETE /errors/:id` `POST /errors/purge` |
+| 内容 | `GET /content/messages` `DELETE /content/messages/:id` `GET /content/moments` `DELETE /content/moments/:id` `GET /content/groups` `DELETE /content/groups/:id` |
+| 开关 | `GET /flags` `POST /flags` |
+| 设置 | `GET /settings` `POST /settings` |
+| 审计 | `GET /audit` `GET /audit/modules` |
+| 管理员 | `GET /admins` `POST /admins` `PATCH /admins/:id` `POST /admins/:id/password` `DELETE /admins/:id` `POST /admins/:id/revoke-sessions` |
+
+### 后台回归测试
+
+```bash
+# 覆盖十大模块读写、鉴权隔离、封禁生效、权限边界、审计留痕（102 项）
+ADMIN_TEST_BASE=http://127.0.0.1:3010 ADMIN_TEST_USER=<超管> ADMIN_TEST_PASS=<密码> \
+  node scripts/smoke-admin.mjs
+
+# 覆盖维护模式、注册开关、adminPanel 解耦、审计完整性（15 项）
+ADMIN_TEST_BASE=http://127.0.0.1:3010 ADMIN_TEST_USER=<超管> ADMIN_TEST_PASS=<密码> \
+  node scripts/smoke-admin-ops.mjs
+```
 
 ---
 
@@ -488,7 +704,7 @@ node scripts/accept-permissions.mjs
 node scripts/verify-group-fixes.mjs
 ```
 
-人工：登录、群聊、私聊红包/转账、朋友圈封面、群详情头像墙、音视频通话、通讯录 A–Z、群内 @AI 提醒/生成文件、聊天点头像进资料页、发现页游戏、群公告与「我在群里的昵称」、查找聊天记录。
+人工：登录、群聊（纯真人，无 AI）、私聊红包/转账、朋友圈封面、群详情头像墙、音视频通话、通讯录 A–Z、私聊内提醒/生成文件、聊天点头像进资料页、发现页游戏、群公告与「我在群里的昵称」、查找聊天记录。
 
 ---
 
@@ -510,17 +726,27 @@ Get-Content C:\perry\data\service.log -Tail 50
 
 | 命令 | 说明 |
 |------|------|
-| `npm run dev` | Vite 开发 |
+| `npm run dev` | Vite 开发（用户端） |
+| `npm run dev:admin` | Vite 开发（运营后台，5174） |
 | `npm run build` | 构建到 `client-dist/` |
+| `npm run build:admin` | 构建运营后台到 `admin-dist/` |
+| `npm run build:all` | 同时构建用户端 + 运营后台 |
 | `npm run build:folia` | 构建沉浸式听歌（Folia）到 `vendor/folia-major/dist/` |
 | `npm start` | 启动后端 |
 | `npm run check:ai` | AI 连通性 |
 | `npm run test:e2e` | 端到端 |
 | `npm run test:smoke` / `test:security` | 回归 / 安全冒烟 |
 | `node scripts/smoke-platform.mjs` | 平台能力冒烟 |
+| `npm run test:admin` | 运营后台全模块冒烟（102 项，对任意 BASE，含线上域名） |
+| `npm run test:admin-ops` | 维护模式/注册开关/开关解耦/审计（15 项） |
+| `npm run test:admin-host` | 后台独立域名 Host 路由矩阵（21 项） |
+| `npm run test:admin-public` | 线上独立域名真实浏览器端到端验证 |
+| `npm run admin:domain` | 后台独立域名接入助手（检查 + 可选 API 自动配置） |
+| `npm run admin:reset` | **忘记后台密码时离线重置**（列出账号 / 重置指定账号） |
+| `npm run admin:cleanup` | 定向清理 `smoke_*` 测试数据（默认 dry-run，`-- --apply` 生效） |
 | `node scripts/accept-*.mjs` | 功能/权限/隐私验收 |
 | `node scripts/verify-group-fixes.mjs` | 群聊信息页修复验证 |
-| `node scripts/cleanup-test-accounts.mjs` | 清理测试账号 |
+| `node scripts/cleanup-test-accounts.mjs` | 重置演示库（**会删除除保留账号外的全部用户**，慎用） |
 | `pwsh -File scripts/restart-server.ps1` | 一键重启主服务（端口取 `config/app.json`，可传参） |
 | `pwsh -File scripts/remove-task-time-limit.ps1` | 去掉计划任务执行时长上限 |
 | `npm run rotate-logs` / `media:gc` | 日志轮转 / 媒体回收 |
@@ -541,7 +767,8 @@ Get-Content C:\perry\data\service.log -Tail 50
 | `POST /api/auth/forgot-password` `/reset-password` | 找回密码 |
 | `GET /api/backup/export` `POST /api/backup/cloud` | 聊天记录导出 / 云备份 |
 | `GET /api/push/public-key` `POST /api/push/subscribe` | Web Push |
-| `GET /api/admin/overview` `GET /api/admin/flags` | 运营后台 / 功能开关（管理员） |
+| `GET /admin` | 独立运营后台 SPA（同域备用入口；独立域名见上方「运营后台」） |
+| `/api/admin/*` | 运营后台接口（独立管理员账号，需 `adminToken`） |
 
 ---
 
@@ -553,7 +780,9 @@ Get-Content C:\perry\data\service.log -Tail 50
 - 迁移后建议轮换 AI 密钥  
 - 钱包/红包/转账均为**演示**，非真实支付  
 - AI 生成的提醒与文件保存在本机 `data/`，勿当真实协作存储  
-- 运营后台仅平台管理员可访问；功能开关关闭后对应接口返回 503，便于紧急止血  
+- 运营后台为**独立账号体系**（`admin_accounts`），独立域名 `admin.supeiji.top`（同域备用 `/admin`）；首登后请立即改密并删除 `data/admin-bootstrap.txt`
+- 后台全部写操作记入 `admin_audit_logs`；危险操作需二次确认；维护模式不影响 `/admin`，保证可自救
+- 功能开关关闭后对应接口返回 503，便于紧急止血  
 
 ---
 
@@ -565,8 +794,8 @@ Get-Content C:\perry\data\service.log -Tail 50
 | 旧前端 | `npm run build` 后重启；浏览器强刷（SW 已对 `/games/**` 强制走网络） |
 | 登录失败 | `data/app.log`；`chat.db` 可写性 |
 | 歌单 502 / 网络异常 | 重启 Node 加载最新 `music-routes`；网易云 Cookie 含 `MUSIC_U` 且 uid 有效 |
-| AI 不回复 | `npm run check:ai`；密钥与额度 |
-| AI 不在通讯录 | **预期行为**：AI 仅群聊；请在群内 @TA |
+| AI 不回复 | `npm run check:ai`；密钥与额度。**注意：群聊已无 AI，请在私聊会话中测试** |
+| 群里看不到 AI 群友 | **预期行为**：群聊为纯真人；AI 只在私聊与朋友圈 |
 | Agent 生成文件失败 | 检查 `MIMO_PYTHON`/`python` 与 openpyxl 等依赖；看 `data/app.log` |
 | 游戏打不开 | `curl /api/games`；确认 `games/<id>/index.html` 存在且已在 `GAME_APPS` 注册 |
 | 换服务器 | 严格按 [docs/MIGRATION.md](docs/MIGRATION.md) 执行 |

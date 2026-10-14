@@ -1,4 +1,4 @@
-// 全功能回归: 认证/好友/AI联系人/多群/引用撤回拍一拍/媒体/搜索/朋友圈
+// 全功能回归: 认证/好友/默认主群/引用撤回拍一拍/媒体/搜索/朋友圈/私聊 AI
 import { io } from 'socket.io-client';
 
 const BASE = process.env.BASE || 'http://127.0.0.1:3000';
@@ -49,7 +49,7 @@ const upd = await http('/api/me', {
 });
 check('更新资料', upd.status === 200 && upd.data.user?.signature === '回归签名');
 
-// ── 2. 好友 + AI联系人 ──
+// ── 2. 好友 ──
 const friendSeed = await http('/api/register', {
   body: { nickname: '好友乙' + meId, password: 'test1234' },
 });
@@ -61,13 +61,14 @@ check('好友列表', listF.status === 200 && listF.data.friends?.some((f) => f.
 const delF = await http(`/api/friends/${friendId}`, { method: 'DELETE', token: authToken });
 check('删除好友', delF.status === 200);
 
+// 群聊已去掉 AI 群友: 该接口恒为空
 const aiC = await http('/api/ai-contacts', { method: 'GET', token: authToken });
-check('AI联系人', aiC.status === 200 && (aiC.data.contacts?.length || 0) >= 10, `n=${aiC.data.contacts?.length}`);
+check('AI 联系人已下线', aiC.status === 200 && (aiC.data.contacts?.length || 0) === 0, `n=${aiC.data.contacts?.length}`);
 
-// ── 3. 会话列表多群 ──
+// ── 3. 会话列表（仅保留默认主群） ──
 const chats = await http('/api/chats', { method: 'GET', token: authToken });
 const groups = (chats.data.chats || []).filter((c) => c.type === 'group');
-check('多群会话', groups.length >= 5, groups.map((g) => g.name).join('/'));
+check('默认主群存在', groups.length >= 1 && groups.some((g) => g.kind === 'main'), groups.map((g) => g.name).join('/'));
 
 function connect(token) {
   return new Promise((resolve, reject) => {
@@ -85,7 +86,7 @@ async function emit(ev, payload) {
 }
 
 // ── 4. 群消息 + 引用 + 撤回 + 拍一拍 + 媒体 ──
-const conv = groups.find((g) => g.kind === 'product')?.conversationId || groups[0]?.conversationId || 'grp_1';
+const conv = groups.find((g) => g.kind === 'main')?.conversationId || groups[0]?.conversationId || 'grp_1';
 sock.emit('group:join', conv);
 
 const s1 = await emit('message:send', { content: '回归文本消息', conversationId: conv });
@@ -173,7 +174,7 @@ check('取消赞', unlike.status === 200 && unlike.data.likes?.length === 0);
 const delM = await http(`/api/moments/${mid}`, { method: 'DELETE', token: authToken });
 check('删朋友圈', delM.status === 200);
 
-// ── 6. 私聊 AI ──
+// ── 6. 私聊 AI（历史遗留会话, 仍兼容回复） ──
 const convPv = `pv_${meId}_ai_siqi`;
 const pvMsgs = [];
 sock.on('private:message', (m) => {
@@ -195,20 +196,17 @@ check('头像列表', avatars.status === 200 && avatars.data.avatars?.length > 1
 const userPage = await http(`/api/users/${friendId}`, { method: 'GET', token: authToken });
 check('用户资料', userPage.status === 200 && userPage.data.user?.id === friendId);
 
-// ── 8. 群AI接话(非默认群) ──
-const climb = groups.find((g) => g.kind === 'climb')?.conversationId || 'grp_4';
-const climbAI = [];
-const onClimb = (m) => {
-  if (m.conversationId === climb && m.senderType === 'ai') climbAI.push(m);
+// ── 8. 群聊不再有 AI 接话（含非默认群） ──
+const conv2 = groups[0]?.conversationId || conv;
+const groupAI = [];
+const onGroupAI = (m) => {
+  if (m.conversationId === conv2 && m.senderType === 'ai') groupAI.push(m);
 };
-sock.on('group:message', onClimb);
-sock.emit('group:join', climb);
-await emit('message:send', { content: '这周爬山还去吗 @王也', conversationId: climb });
-for (let i = 0; i < 20; i++) {
-  await sleep(2000);
-  if (climbAI.length) break;
-}
-check('非默认群AI接话', climbAI.length > 0, (climbAI[0]?.senderName || '') + ':' + ((climbAI[0]?.content || '').slice(0, 20)));
+sock.on('group:message', onGroupAI);
+sock.emit('group:join', conv2);
+await emit('message:send', { content: '思琪 你在吗 @小辣椒', conversationId: conv2 });
+await sleep(6000);
+check('群聊无 AI 接话', groupAI.length === 0, groupAI.map((m) => `${m.senderName}:${m.content}`).join(' | ').slice(0, 120));
 
 sock.close();
 

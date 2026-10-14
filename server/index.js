@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import express from 'express';
+import compression from 'compression';
 import { Server } from 'socket.io';
 import { ROOT, stmts, db } from './db.js';
 import { register, login, verifyToken, publicUser, listAvatars, updateProfile, IMG_DIR, loginRateLimited, registerRateLimited, publicProfile, parseUserStatus, changePassword, keepOnlyCurrentSession, requireAuth, userFromRequest, extractBearerToken } from './auth.js';
@@ -12,8 +13,6 @@ import { initTowerBattle } from './tower-battle.js';
 import { initGuessSong } from './guess-song.js';
 import { createEngine } from './ai/engine.js';
 import { isAiEnabled } from './ai/provider.js';
-import { aiAvatarFile } from './ai/avatars.js';
-import { personas } from './ai/personas.js';
 import { createFriendsRouter } from './friends.js';
 import { createMomentsRouter } from './moments.js';
 import { createMediaApi } from './media-api.js';
@@ -26,6 +25,7 @@ import { seedGroups, listGroups, getGroup, groupConvId, DEFAULT_GROUP_KIND, setG
 import { canAccessConversation } from './acl.js';
 import { mediaFromBodyJson, mediaFromMultipart, mediaFromRaw, normalizeKind } from './upload.js';
 import { mediaServeMiddleware } from './media-serve.js';
+import { parseAllowedMediaUrl, fetchAllowedMedia, userFromCookieOrBearer } from './media-proxy.js';
 import { mountFolia } from './folia.js';
 import { pushStatus, saveSubscription, removeSubscription, pushToUser } from './push.js';
 import { getBalance, listTx, debit } from './wallet.js';
@@ -35,18 +35,19 @@ import {
   requestPasswordReset, resetPasswordWithCode, generateRecoveryCode,
   requestAccountDeletion, deleteAccountData,
   checkSensitiveContent, filterContentOrError,
-  createReport, listMyReports, handleReport,
-  createFeedback, listMyFeedback, replyFeedback, FAQ_LIST,
+  createReport, listMyReports,
+  createFeedback, listMyFeedback, FAQ_LIST,
   recordMomentVisit, listMomentVisitors,
   markAnnouncementRead, listAnnouncementReads, getAnnouncementState,
   setGroupJoinApproval, requestJoinGroup, listJoinRequests, handleJoinRequest,
   setMemberRole, canManageGroup, canKickMember, listGroupAlbum,
   exportChatHistory, saveCloudBackup, listCloudBackups, restoreCloudBackup,
   searchMessagesEnhanced, listFavoritesByType,
-  logError, listErrorLogs,
-  isPlatformAdmin, adminOverview, adminListUsers, adminListReports, adminListFeedback,
+  logError,
 } from './platform.js';
-import { getFlags, setFlags, requireFeature, isFeatureEnabled } from './feature-flags.js';
+import { requireFeature } from './feature-flags.js';
+import { createAdminRouter } from './admin.js';
+import { bootstrapAdmins, isUserBanned, isMaintenanceMode, getSetting, cleanupAdminSessions } from './admin-store.js';
 
 const LOG_FILE = path.join(ROOT, 'data', 'app.log');
 const LOG_MAX_BYTES = 5 * 1024 * 1024;
@@ -90,8 +91,43 @@ try {
 }
 const listenPort = Number(process.env.PORT) || config.port;
 
+// ---------- 运营后台独立域名 ----------
+// 命中 adminHosts 的主机名（如 admin.supeiji.top）时，后台 SPA 直接挂在根路径 "/"，
+// 用户端站点则继续使用 "/admin"。可用环境变量 ADMIN_HOSTS=a.com,b.com 覆盖配置。
+const ADMIN_HOSTS = (() => {
+  const fromEnv = String(process.env.ADMIN_HOSTS || '')
+    .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  if (fromEnv.length) return fromEnv;
+  const fromCfg = Array.isArray(config.adminHosts) ? config.adminHosts : [];
+  return fromCfg.map((h) => String(h || '').trim().toLowerCase()).filter(Boolean);
+})();
+const SITE_HOST = String(process.env.SITE_HOST || config.siteHost || '').trim().toLowerCase();
+
+/** 取请求主机名（不含端口）。Cloudflare Tunnel 会把原始 Host 透传过来 */
+function requestHostname(req) {
+  return String(req.get('host') || '').split(':')[0].trim().toLowerCase();
+}
+
+function isAdminHostRequest(req) {
+  if (!ADMIN_HOSTS.length) return false;
+  return ADMIN_HOSTS.includes(requestHostname(req));
+}
+
 const app = express();
 app.disable('x-powered-by');
+
+// HTTP 压缩：静态资源（JS/CSS/HTML/JSON）体积可降 60%~78%，
+// 例如 visual/mineradio-bundle.js 1623KB → gzip 约 361KB。
+// 音频/视频/图片/字体已是压缩格式，再压一遍纯属浪费 CPU，直接跳过。
+const COMPRESSIBLE_SKIP = /\.(?:mp3|m4a|aac|ogg|wav|flac|mp4|webm|mov|m4v|ogv|png|jpe?g|webp|gif|ico|woff2?|ttf|eot|bin|zip|gz|7z|rar)$/i;
+app.use(compression({
+  threshold: 1024,
+  filter: (req, res) => {
+    if (COMPRESSIBLE_SKIP.test(req.path || '')) return false;
+    return compression.filter(req, res);
+  },
+}));
+
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
@@ -101,12 +137,52 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: '8mb' }));
 
+// 维护模式：仅拦截用户端业务接口，后台 /api/admin/* 与静态资源始终可用（避免自锁）
+app.use((req, res, next) => {
+  const p = req.path || '';
+  if (p.startsWith('/api/admin') || p === '/api/login' || p === '/api/me' || p === '/api/site/notice') return next();
+  if (!p.startsWith('/api/')) return next();
+  try {
+    if (!isMaintenanceMode()) return next();
+  } catch {
+    return next();
+  }
+  res.status(503).json({
+    error: getSetting('site.maintenanceMessage') || '系统维护中，请稍后再试。',
+    reason: 'maintenance',
+  });
+});
+
+// 封禁兜底：携带有效 token 但账号已被封禁时直接拒绝（封禁时已清会话，这里防漏网）
+app.use((req, res, next) => {
+  const p = req.path || '';
+  if (!p.startsWith('/api/') || p.startsWith('/api/admin')) return next();
+  const token = extractBearerToken(req);
+  if (!token) return next();
+  try {
+    const session = verifyToken(token);
+    if (session && isUserBanned(session.id)) {
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(session.id);
+      res.status(403).json({ error: '账号已被封禁，如有疑问请联系管理员', reason: 'banned' });
+      return;
+    }
+  } catch { /* ignore */ }
+  next();
+});
+
 const requireUser = userFromRequest;
 
 /** 媒体/附件走 <img> 加载，登录后种 HttpOnly Cookie，避免直链无鉴权 */
-function setAuthCookie(res, token) {
+function setAuthCookie(req, res, token) {
   try {
-    res.setHeader('Set-Cookie', `hudui_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${14 * 86400}`);
+    // 线上经 Cloudflare Tunnel 走 HTTPS：加 Secure，避免明文 HTTP 下外发。
+    // 本地 http://127.0.0.1 调试时不加，否则浏览器不会回传该 Cookie。
+    const proto = String(req?.get?.('x-forwarded-proto') || '').split(',')[0].trim();
+    const isHttps = Boolean(req?.secure) || proto === 'https';
+    res.setHeader(
+      'Set-Cookie',
+      `hudui_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${14 * 86400}${isHttps ? '; Secure' : ''}`
+    );
   } catch { /* ignore */ }
 }
 
@@ -184,49 +260,51 @@ app.use(
 
 app.get('/api/avatars', (req, res) => res.json({ avatars: listAvatars() }));
 
-// 视觉舞台封面代理
+// 视觉舞台封面代理（需登录：<img> 无法带 Authorization，走 Cookie 通道）
 app.get('/api/cover', async (req, res) => {
-  const raw = String(req.query.url || '');
-  if (!/^https?:\/\//i.test(raw)) return res.status(400).json({ error: 'invalid cover url' });
+  if (!userFromCookieOrBearer(req)) return res.status(401).json({ error: '未登录' });
   try {
-    const upstream = await fetch(raw, {
+    const target = parseAllowedMediaUrl(String(req.query.url || ''));
+    const upstream = await fetchAllowedMedia(target.toString(), {
       headers: {
         'User-Agent': 'Mozilla/5.0',
-        Referer: raw.includes('qq.com')
+        Referer: target.hostname.endsWith('qq.com') || target.hostname.endsWith('gtimg.cn')
           ? 'https://y.qq.com/'
-          : raw.includes('kugou.com')
+          : target.hostname.endsWith('kugou.com') || target.hostname.endsWith('kgimg.com')
             ? 'https://www.kugou.com/'
             : 'https://music.163.com/',
       },
-      redirect: 'follow',
       signal: AbortSignal.timeout(8000),
     });
     if (!upstream.ok) return res.status(502).json({ error: 'cover fetch failed' });
     const ct = upstream.headers.get('content-type') || 'image/jpeg';
     if (!/^image\//i.test(ct)) return res.status(502).json({ error: 'not an image' });
     res.setHeader('Content-Type', ct);
-    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('Cache-Control', 'private, max-age=86400');
     res.end(Buffer.from(await upstream.arrayBuffer()));
-  } catch (e) { res.status(502).json({ error: e.message }); }
+  } catch (e) {
+    res.status(e.message === 'host not allowed' || e.message === 'invalid url' ? 400 : 502)
+      .json({ error: e.message });
+  }
 });
 
 
 // 同源音频代理：离线节拍分析 fetch 需要同源，CDN 直链会 CORS 失败
+// （需登录：<audio> 无法带 Authorization，走 Cookie 通道）
 app.get('/api/audio', async (req, res) => {
-  const raw = String(req.query.url || '');
-  if (!/^https?:\/\//i.test(raw)) return res.status(400).json({ error: 'invalid audio url' });
+  if (!userFromCookieOrBearer(req)) return res.status(401).json({ error: '未登录' });
   try {
-    const upstream = await fetch(raw, {
+    const target = parseAllowedMediaUrl(String(req.query.url || ''));
+    const upstream = await fetchAllowedMedia(target.toString(), {
       headers: {
         'User-Agent': 'Mozilla/5.0',
-        Referer: raw.includes('qq.com')
+        Referer: target.hostname.endsWith('qq.com') || target.hostname.endsWith('gtimg.cn')
           ? 'https://y.qq.com/'
-          : raw.includes('kugou.com')
+          : target.hostname.endsWith('kugou.com') || target.hostname.endsWith('kgimg.com')
             ? 'https://www.kugou.com/'
             : 'https://music.163.com/',
         Range: req.headers.range || '',
       },
-      redirect: 'follow',
       signal: AbortSignal.timeout(20000),
     });
     if (!upstream.ok && upstream.status !== 206) return res.status(502).json({ error: 'audio fetch failed' });
@@ -238,26 +316,20 @@ app.get('/api/audio', async (req, res) => {
     if (cr) res.setHeader('Content-Range', cr);
     const cl = upstream.headers.get('content-length');
     if (cl) res.setHeader('Content-Length', cl);
-    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
     res.end(Buffer.from(await upstream.arrayBuffer()));
-  } catch (e) { res.status(502).json({ error: e.message }); }
+  } catch (e) {
+    res.status(e.message === 'host not allowed' || e.message === 'invalid url' ? 400 : 502)
+      .json({ error: e.message });
+  }
 });
 
-// AI 群友列表仅供群成员/群设置使用, 不作为通讯录联系人
+// 群聊已去掉 AI 群友: 该接口保留但恒为空, 避免旧客户端拿到 404 报错
 app.get('/api/ai-contacts', (req, res) => {
   if (!requireUser(req, res)) return;
-  const contacts = personas.map((p) => ({
-    id: p.id,
-    key: `ai-${p.id}`,
-    nickname: p.name,
-    emoji: p.emoji,
-    avatar: aiAvatarFile(p.name),
-    isAI: true,
-    personaId: p.id,
-    groupOnly: true,
-  }));
-  res.json({ contacts, note: 'AI 群友仅出现在群聊中，不可添加为好友' });
+  res.json({ contacts: [], note: '群聊已不再包含 AI 群友' });
 });
+
 
 // 演示钱包
 app.get('/api/wallet', (req, res) => {
@@ -428,12 +500,18 @@ app.get('/api/chat/search', (req, res) => {
 
 app.post('/api/register', (req, res) => {
   const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+  if (getSetting('site.registrationOpen') !== '1') {
+    return res.status(403).json({
+      error: getSetting('site.registrationNotice') || '当前未开放注册',
+      reason: 'registration_closed',
+    });
+  }
   if (registerRateLimited(ip)) return res.status(429).json({ error: '注册太频繁, 请稍后再试' });
   const r = register(req.body?.nickname, req.body?.password, req.body?.avatar);
   if (r.error) return res.status(400).json({ error: r.error });
   log(`新用户注册: ${r.user.nickname}`);
   kickOtherSessions(r.user?.id, r.kickedTokens);
-  setAuthCookie(res, r.token);
+  setAuthCookie(req, res, r.token);
   const anomaly = recordLogin({
     userId: r.user.id,
     token: r.token,
@@ -459,9 +537,15 @@ app.post('/api/login', (req, res) => {
     try { logError({ feature: 'login', message: `login failed for ${req.body?.nickname}` }); } catch { /* ignore */ }
     return res.status(400).json({ error: r.error });
   }
+  // 封禁拦截：密码正确也不放行
+  if (isUserBanned(r.user.id)) {
+    try { db.prepare('DELETE FROM sessions WHERE user_id = ?').run(r.user.id); } catch { /* ignore */ }
+    try { logError({ feature: 'login', message: `banned user blocked: ${r.user.nickname}` }); } catch { /* ignore */ }
+    return res.status(403).json({ error: '账号已被封禁，如有疑问请联系管理员', reason: 'banned' });
+  }
   log(`用户登录: ${r.user.nickname}（单端挤下 ${r.kickedTokens?.length || 0} 个旧会话）`);
   kickOtherSessions(r.user?.id, r.kickedTokens);
-  setAuthCookie(res, r.token);
+  setAuthCookie(req, res, r.token);
   const anomaly = recordLogin({
     userId: r.user.id,
     token: r.token,
@@ -477,12 +561,27 @@ app.post('/api/login', (req, res) => {
   });
 });
 
+app.get('/api/site/notice', (req, res) => {
+  // 公开端点：后台「系统设置 → 公告」写入 app_settings 后由此下发（维护模式下也放行，维护公告是主要用途）
+  let enabled = false;
+  let content = '';
+  let updatedAt = 0;
+  try {
+    enabled = getSetting('site.noticeEnabled') === '1';
+    content = getSetting('site.notice') || '';
+    const row = db.prepare('SELECT updated_at FROM app_settings WHERE key = ?').get('site.notice');
+    updatedAt = Number(row?.updated_at || 0);
+  } catch { /* 设置表未就绪时按无公告处理 */ }
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ enabled: enabled && Boolean(content.trim()), content: enabled ? content : '', updatedAt });
+});
+
 app.get('/api/me', (req, res) => {
   const session = userFromRequest(req, res);
   if (!session) return;
   // 续种媒体 Cookie，保证 <img>/<video> 直链可鉴权
   const tok = extractBearerToken(req);
-  if (tok) setAuthCookie(res, tok);
+  if (tok) setAuthCookie(req, res, tok);
   const full = stmts.userById.get(session.id);
   res.json({ user: publicUser(full || { ...session, avatar_color: session.avatarColor }) });
 });
@@ -727,57 +826,9 @@ app.post('/api/client-error', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- 管理后台 ----------
-function requirePlatformAdmin(req, res, next) {
-  const user = userFromRequest(req, res);
-  if (!user) return;
-  if (!isPlatformAdmin(user.id)) return res.status(403).json({ error: '需要管理员权限' });
-  next();
-}
-
-app.get('/api/admin/overview', requirePlatformAdmin, requireFeature('adminPanel'), (req, res) => {
-  res.json({ ...adminOverview(), flags: getFlags() });
-});
-
-app.get('/api/admin/flags', requirePlatformAdmin, (req, res) => {
-  res.json({ flags: getFlags() });
-});
-
-app.post('/api/admin/flags', requirePlatformAdmin, (req, res) => {
-  const r = setFlags(req.body?.flags || req.body || {});
-  if (r.error) return res.status(400).json({ error: r.error });
-  res.json(r);
-});
-
-app.get('/api/admin/users', requirePlatformAdmin, (req, res) => {
-  res.json({ users: adminListUsers(req.query.q || '', req.query.limit) });
-});
-
-app.get('/api/admin/reports', requirePlatformAdmin, (req, res) => {
-  res.json({ reports: adminListReports(req.query.status || '', req.query.limit) });
-});
-
-app.post('/api/admin/reports/:id', requirePlatformAdmin, (req, res) => {
-  const r = handleReport(req.params.id, {
-    status: req.body?.status,
-    handlerNote: req.body?.handlerNote,
-    adminId: req.user?.id || 1,
-  });
-  if (r.error) return res.status(400).json({ error: r.error });
-  res.json(r);
-});
-
-app.get('/api/admin/feedback', requirePlatformAdmin, (req, res) => {
-  res.json({ feedbacks: adminListFeedback(req.query.status || '', req.query.limit) });
-});
-
-app.post('/api/admin/feedback/:id/reply', requirePlatformAdmin, (req, res) => {
-  res.json(replyFeedback(req.params.id, req.body?.reply || ''));
-});
-
-app.get('/api/admin/errors', requirePlatformAdmin, (req, res) => {
-  res.json({ errors: listErrorLogs({ feature: req.query.feature, limit: req.query.limit }) });
-});
+// ---------- 运营后台（已完全抽离为独立 SPA，见 server/admin.js）----------
+// 管理员账号体系与用户端登录态完全隔离，入口 /admin
+app.use('/api/admin', createAdminRouter());
 
 app.post('/api/content/check', requireAuth, (req, res) => {
   res.json(checkSensitiveContent(req.body?.text || '', req.body?.kind || 'text'));
@@ -1054,29 +1105,22 @@ app.post('/api/moments/unlike', requireAuth, momentsApi.unlike);
 app.post('/api/moments/comment', requireAuth, momentsApi.comment);
 app.post('/api/moments/comment/delete', requireAuth, momentsApi.deleteComment);
 
-// 创建群聊
+// 创建群聊（仅真人成员）
 app.post('/api/groups', (req, res) => {
   const user = requireUser(req, res);
   if (!user) return;
   const name = String(req.body?.name || '').trim();
   const memberIds = Array.isArray(req.body?.memberIds) ? req.body.memberIds.slice(0, 50) : [];
-  const aiMembers = Array.isArray(req.body?.aiMembers)
-    ? req.body.aiMembers.map((n) => String(n || '').trim()).filter(Boolean).slice(0, 20)
-    : [];
   const members = [user.nickname];
   for (const id of memberIds) {
     const t = stmts.userById.get(Number(id));
     if (t && !members.includes(t.nickname)) members.push(t.nickname);
   }
-  for (const n of aiMembers) {
-    if (!members.includes(n)) members.push(n);
-  }
-  if (members.length < 3) return res.status(400).json({ error: '至少再选择 2 位成员（好友或 AI 均可）' });
+  if (members.length < 3) return res.status(400).json({ error: '至少再选择 2 位好友' });
   const g = createGroup({
     name: name || members.slice(0, 3).join('、') + '的群聊',
     memberNames: members,
     userIds: memberIds,
-    aiNames: aiMembers,
     creatorNickname: user.nickname,
     creatorId: user.id,
   });
@@ -1117,11 +1161,8 @@ app.post('/api/groups/:id/members', (req, res) => {
   if (!g) return res.status(404).json({ error: '群不存在' });
   if (!isGroupMember(g.id, user.id)) return res.status(403).json({ error: '你不是该群成员' });
   const memberIds = Array.isArray(req.body?.userIds) ? req.body.userIds.slice(0, 50) : [];
-  const aiNames = Array.isArray(req.body?.aiNames)
-    ? req.body.aiNames.map((n) => String(n || '').trim()).filter(Boolean).slice(0, 20)
-    : [];
-  if (!memberIds.length && !aiNames.length) return res.status(400).json({ error: '请选择要邀请的成员' });
-  const added = addGroupMembers(g.id, { userIds: memberIds, aiNames });
+  if (!memberIds.length) return res.status(400).json({ error: '请选择要邀请的成员' });
+  const added = addGroupMembers(g.id, { userIds: memberIds });
   const names = added.map((a) => a.nickname);
   if (names.length) {
     try {
@@ -1229,8 +1270,7 @@ app.post('/api/search/global', (req, res) => {
       isAI: false,
       isFriend: true,
     }));
-  // AI 不再作为全局联系人搜索结果（仅群聊成员可见）；保留群搜索
-  const aiContacts = [];
+  // 群聊已去掉 AI 群友: 全局搜索只返回真人好友与群
   // 群
   const groups = listGroups(user.id)
     .filter((g) => String(g.name || '').includes(q) || String(g.kind || '').includes(q))
@@ -1266,7 +1306,7 @@ app.post('/api/search/global', (req, res) => {
   } catch {
     messages = [];
   }
-  res.json({ contacts: [...aiContacts, ...friends], groups, messages });
+  res.json({ contacts: friends, groups, messages });
 });
 
 // 设计原型: /prototype/ (与主应用并存, 不互相覆盖)
@@ -1326,8 +1366,81 @@ app.get('/api/games', (req, res) => {
   res.json({ games: list });
 });
 
-// AI 群友可在群聊中使用 Agent 能力(提醒/生成文件); 不可加为好友
-// (好友添加接口本身只会写 users 表, 人设 id 非用户 id 会自然失败)
+// 好友添加接口只会写 users 表; 人设 id 非用户 id 会自然失败
+
+// ---------- 运营后台独立 SPA ----------
+// 两个入口，共用同一份 admin-dist 构建产物：
+//   1) 用户端同域：https://chat.supeiji.top/admin
+//   2) 后台独立域名：https://admin.supeiji.top/  （根路径直接进后台登录页）
+// 未构建时给出提示页。
+const ADMIN_DIST = path.join(ROOT, 'admin-dist');
+const ADMIN_INDEX = path.join(ADMIN_DIST, 'index.html');
+const ADMIN_BUILT = fs.existsSync(ADMIN_INDEX);
+
+// 这些前缀不属于后台 SPA，交给后续路由（API / Socket / 媒体 / 第三方挂载 / 同域 /admin）
+const ADMIN_PASSTHROUGH = new RegExp(
+  '^\\/('
+  + 'api\\/|socket\\.io|avatars\\/?|media\\/?|prototype\\/?|games\\/|'
+  + 'folia\\/?|ncm-api\\/?|runtime-config\\.js|admin\\/?$|admin\\/'
+  + ')'
+);
+
+function adminStaticHeaders(res, filePath) {
+  if (filePath.endsWith('index.html')) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  }
+}
+
+function sendAdminIndex(res) {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.sendFile(ADMIN_INDEX);
+}
+
+function sendAdminNotBuilt(res) {
+  res.status(503).type('html').send(
+    '<!doctype html><meta charset="utf-8"><title>运营后台未构建</title>'
+    + '<body style="font:14px/1.6 -apple-system,\'PingFang SC\',sans-serif;padding:40px;color:#333">'
+    + '<h2>运营后台前端未构建</h2>'
+    + '<p>请先执行 <code>npm run build:admin</code> 生成 <code>admin-dist/</code>，然后刷新本页。</p>'
+    + '<p>接口已就绪：<code>/api/admin/*</code></p></body>'
+  );
+}
+
+if (ADMIN_BUILT) {
+  // --- 独立后台域名：根路径 "/" 即后台，登录页直接在根 ---
+  const adminHostRouter = express.Router();
+  adminHostRouter.use(express.static(ADMIN_DIST, {
+    index: false,
+    redirect: false,
+    setHeaders: adminStaticHeaders,
+  }));
+  adminHostRouter.get(/.*/, (req, res) => sendAdminIndex(res));
+
+  app.use((req, res, next) => {
+    if (!isAdminHostRequest(req)) return next();
+    if (ADMIN_PASSTHROUGH.test(req.path)) return next();
+    adminHostRouter(req, res, next);
+  });
+
+  // --- 用户端同域入口：/admin ---
+  // 显式处理 /admin（无斜杠）：express.static 默认会 301 到 /admin/，这里直接返回页面避免多余跳转
+  app.get(/^\/admin\/?$/, (req, res) => sendAdminIndex(res));
+  app.use('/admin', express.static(ADMIN_DIST, {
+    index: false,
+    redirect: false,
+    setHeaders: adminStaticHeaders,
+  }));
+  app.get(/^\/admin(\/.*)?$/, (req, res) => sendAdminIndex(res));
+} else {
+  app.get(/^\/admin(\/.*)?$/, (req, res) => sendAdminNotBuilt(res));
+  app.use((req, res, next) => {
+    if (!isAdminHostRequest(req)) return next();
+    if (ADMIN_PASSTHROUGH.test(req.path)) return next();
+    sendAdminNotBuilt(res);
+  });
+}
 
 const DIST = path.join(ROOT, 'client-dist');
 if (fs.existsSync(DIST)) {
@@ -1341,7 +1454,7 @@ if (fs.existsSync(DIST)) {
       }
     },
   }));
-  app.get(/^\/(?!api\/|avatars|media|prototype|games\/|folia|ncm-api|runtime-config\.js).*/, (req, res) => {
+  app.get(/^\/(?!api\/|admin|avatars|media|prototype|games\/|folia|ncm-api|runtime-config\.js).*/, (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.sendFile(path.join(DIST, 'index.html'));
   });
@@ -1367,17 +1480,27 @@ ioRef = io;
 try {
   const groups = seedGroups();
   log(`群聊数据就绪: ${groups.map((g) => `${g.name}(${g.kind})`).join(', ')}`);
-} catch (e) {
-  log(`群聊播种失败: ${e.message}`);
+} catch (e) {  log(`群聊播种失败: ${e.message}`);
 }
+
+// 运营后台账号初始化：迁移旧的平台管理员，或生成初始超管
+try {
+  const boot = bootstrapAdmins();
+  if (boot.migrated.length) {
+    log(`运营后台：已迁移平台管理员为后台超管 → ${boot.migrated.join(', ')}（沿用原密码）`);
+  }
+  if (boot.created.length) {
+    log(`运营后台：已创建初始超管 ${boot.created.join(', ')}，密码见 data/admin-bootstrap.txt`);
+  }
+} catch (e) {
+  log(`运营后台初始化失败: ${e.message}`);
+}
+// 定期清理过期后台会话
+setInterval(() => cleanupAdminSessions(), 30 * 60_000).unref();
 
 let chatApi;
 const engine = createEngine({
-  config,
   deps: {
-    sendAI: (persona, content, mediaType, mediaUrl, convId) => chatApi.addAIMessage(persona, content, mediaType, mediaUrl, convId),
-    getRecentContext: (n) => chatApi.getRecentContext(n),
-    getConvContext: (convId, n) => chatApi.getConvContext(convId, n),
     sendPrivateAI: (convId, persona, content, mediaType, mediaUrl) => chatApi.addPrivateAIMessage(convId, persona, content, mediaType, mediaUrl),
     getPrivateContext: (convId, n) => chatApi.getPrivateContext(convId, n),
   },
@@ -1408,4 +1531,15 @@ process.on('unhandledRejection', (err) => log(`未处理的 Promise 拒绝: ${er
 server.listen(listenPort, '0.0.0.0', () => {
   const users = stmts.allUsers.all().length;
   log(`「${config.groupName}」启动完成: http://localhost:${listenPort} (用户 ${users} 人, 头像 ${listAvatars().length} 张)`);
+  if (!ADMIN_BUILT) {
+    log('运营后台：admin-dist/ 未构建，请执行 npm run build:admin');
+  } else {
+    // 本地地址始终输出，避免只看到域名而不知道本机入口（端口以 config/app.json 为准）
+    log(`运营后台本地入口: http://localhost:${listenPort}/admin`);
+    if (ADMIN_HOSTS.length) {
+      for (const h of ADMIN_HOSTS) log(`运营后台独立域名: https://${h}/  （根路径进登录页）`);
+    }
+    if (SITE_HOST) log(`运营后台备用入口: https://${SITE_HOST}/admin`);
+  }
 });
+

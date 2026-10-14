@@ -252,15 +252,15 @@ async function refresh() {
       demoList.value = [
         {
           key: 'l1',
-          title: 'AI 群友如何改变社交产品',
+          title: '即时通讯里的「在线感」从哪来',
           sub: '科技早报 · 1.2万阅读',
           action: 'open-deep',
           feature: 'lookDetail',
           payload: {
             item: {
-              title: 'AI 群友如何改变社交产品',
+              title: '即时通讯里的「在线感」从哪来',
               sub: '科技早报 · 1.2万阅读',
-              body: '当群聊里出现足够像真人的 AI 成员，社交产品的「在线感」会被重新定义。本文讨论人设一致性、消息节奏与媒体生成在即时通讯中的落地方式。',
+              body: '当群聊里的消息节奏、头像与状态都足够自然，社交产品的「在线感」会被重新定义。本文讨论会话节奏、消息形态与媒体分享在即时通讯中的落地方式。',
             },
           },
         },
@@ -541,7 +541,7 @@ async function addFromScan() {
       return;
     }
     if (scanResult.value.isAI) {
-      scanMsg.value = 'AI 群友仅在群聊中互动，无法添加为好友';
+      scanMsg.value = '该账号无法添加为好友';
       return;
     }
     await api.sendFriendRequest(scanResult.value.id, '我是' + (props.me?.nickname || '') + '（扫一扫）');

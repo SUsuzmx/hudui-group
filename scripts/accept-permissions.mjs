@@ -68,7 +68,7 @@ async function main() {
   const g = await req('/api/groups', {
     method: 'POST',
     token: A.token,
-    body: { name: '越权群', memberIds: [B.id], aiMembers: ['思琪', '小辣椒'] },
+    body: { name: '越权群', memberIds: [B.id, C.id] },
   });
   ok(g.status === 200, '建群', JSON.stringify(g.data));
   const gid = g.data.group?.id;

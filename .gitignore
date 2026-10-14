@@ -4,6 +4,7 @@ node_modules/
 # build
 client-dist/
 client/client-dist/
+admin-dist/
 
 # third-party games (cloned repos) & local toolchain
 games/
@@ -30,6 +31,20 @@ music/
 lt-test-server.err
 server.pid
 .auth-state/
+
+# agent/session temp artifacts (never commit)
+/_recover.dmp
+/_recovered_index.js
+/_extract*.mjs
+/_verify*.mjs
+/_check*.mjs
+/_diag*.mjs
+/_probe*.mjs
+/_synchk.*
+/.ci-data*/
+/.e2e.pid
+/.smoke.pid
+/.ci-server.pid
 img/*.png
 img/*.jpg
 img/*.jpeg
@@ -43,6 +58,10 @@ Thumbs.db
 .idea/
 .vscode/
 .zcode/
+.workbuddy-ai/
+
+# local screenshot artifacts (root-level verification shots; do not commit)
+/*.png
 
 # accidental local artifacts (do not commit)
 /[A-Za-z]

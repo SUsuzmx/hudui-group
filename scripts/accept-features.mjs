@@ -238,6 +238,7 @@ async function testGroupAdmin() {
   section('4. 群管理员权限交叉');
   const owner = await ensureAccount('gowner', rand('群主'), 'owner99');
   const member = await ensureAccount('gmember', rand('群员'), 'member99');
+  const member2 = await ensureAccount('gmember2', rand('群员乙'), 'member98');
   const outsider = await ensureAccount('gout', rand('非群'), 'out9999');
 
   const g = await req('/api/groups', {
@@ -245,8 +246,7 @@ async function testGroupAdmin() {
     token: owner.token,
     body: {
       name: '验收群' + Date.now().toString(36),
-      memberIds: [member.id],
-      aiMembers: ['思琪', 'Perry'],
+      memberIds: [member.id, member2.id],
     },
   });
   ok(g.status === 200 && g.data.group?.id, '创建群聊', JSON.stringify(g.data));

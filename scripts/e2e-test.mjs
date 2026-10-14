@@ -1,5 +1,5 @@
-// 端到端功能测试: 注册 → 进群 → 发消息 → AI 插嘴/点名 → 二次登录看历史。
-// 限流阈值与 server/auth.js、server/chat.js 导出的常量保持一致。
+// 端到端功能测试: 注册 → 进群 → 发消息 → 二次登录看历史。
+// 群聊已去掉 AI 群友, 因此不再校验 AI 插嘴/点名回复。
 import { io } from 'socket.io-client';
 
 const BASE = process.env.BASE || 'http://127.0.0.1:3000';
@@ -74,22 +74,22 @@ const history = await new Promise((resolve) => {
 });
 check('历史消息加载', history.length > 0, `${history.length} 条`);
 
-// ── 4. 发消息 + AI 插嘴 ──
+// ── 4. 发消息（群聊纯真人: 不再有 AI 插嘴） ──
 const sent = await new Promise((resolve) => {
   s1.emit('message:send', '大家好，我是新人，多多关照！', (res) => resolve(res));
 });
 check('发送消息', sent?.ok === true, JSON.stringify(sent));
 
-// ── 5. 点名 AI ──
+// ── 5. 群聊不应出现任何 AI 发言 ──
 const sent2 = await new Promise((resolve) => {
   s1.emit('message:send', '小辣椒 你觉得我这个人怎么样', (res) => resolve(res));
 });
 check('点名消息发送', sent2?.ok === true);
 
-// AI 语录模式有打字延迟(最长~6s) + 冷却, 等 12 秒收消息
-await sleep(12000);
+// 旧版这里会等 AI 语录回复; 现在应始终为空
+await sleep(6000);
 const aiMsgs = msgs1.filter((m) => m.senderType === 'ai');
-check('AI 发言(欢迎/插嘴/回应)', aiMsgs.length > 0, aiMsgs.map((m) => `${m.senderName}:${m.content}`).join(' | ').slice(0, 200));
+check('群聊无 AI 发言', aiMsgs.length === 0, aiMsgs.map((m) => `${m.senderName}:${m.content}`).join(' | ').slice(0, 200));
 
 // ── 6. 刷屏限流 ──
 // 服务端: MSG_RATE.limit = 20 / 60s，且「已发送成功」也计数。

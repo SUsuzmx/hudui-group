@@ -27,9 +27,9 @@ const titleMap = {
 const title = ref(titleMap[props.type] || '详情');
 
 const lookItem = ref(props.payload.item || {
-  title: 'AI 群友如何改变社交产品',
+  title: '即时通讯里的「在线感」从哪来',
   sub: '科技早报 · 1.2万阅读',
-  body: '当群聊里出现足够像真人的 AI 成员，社交产品的「在线感」会被重新定义。本文讨论人设一致性、消息节奏与媒体生成在即时通讯中的落地方式。',
+  body: '当群聊里的消息节奏、头像与状态都足够自然，社交产品的「在线感」会被重新定义。本文讨论会话节奏、消息形态与媒体分享在即时通讯中的落地方式。',
 });
 if (!lookItem.value.body) {
   lookItem.value = {
@@ -382,7 +382,7 @@ async function actionLook(kind) {
         <div class="article-meta">{{ lookItem.sub }}</div>
         <div class="article-body">
           <p>{{ lookItem.body }}</p>
-          <p>在本项目中，你可以通过 AI 人设、多模型故障转移与朋友圈互动，体验接近真人的群聊节奏。后续可扩展「在看」关系链与文章评论。</p>
+          <p>在本项目中，你可以通过好友与群聊、多模型故障转移与朋友圈互动，体验接近真人的聊天节奏。后续可扩展「在看」关系链与文章评论。</p>
         </div>
         <div class="article-actions">
           <button type="button" :class="{ on: lookWatched }" @click="actionLook('watch')">👀 {{ lookWatched ? '已在看' : '在看' }}</button>

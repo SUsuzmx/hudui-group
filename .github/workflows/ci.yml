@@ -5,10 +5,18 @@ on:
     branches: [main, master]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # 隔离数据库：CI 冒烟会创建测试账号，不隔离会污染仓库内 data/chat.db
+      PERRY_DATA_DIR: ${{ github.workspace }}/.ci-data
+      BASE: http://127.0.0.1:3011
     steps:
       - uses: actions/checkout@v4
 
@@ -20,17 +28,19 @@ jobs:
       - name: Install
         run: npm ci
 
+      # 第三方/构建产物已在 eslint.config.js 的 ignores 中排除，可全量严格校验
       - name: Lint
         run: npm run lint
-        continue-on-error: true
+
+      - name: Unit tests
+        run: npm run test:unit
 
       - name: Build frontend
         run: npm run build
 
       - name: Security smoke
-        env:
-          BASE: http://127.0.0.1:3011
         run: |
+          mkdir -p .ci-data
           PORT=3011 node server/index.js &
           SERVER_PID=$!
           for i in $(seq 1 30); do
@@ -40,7 +50,3 @@ jobs:
           npm run test:security
           npm run test:listen
           kill $SERVER_PID || true
-
-      - name: Music provider unit tests
-        run: npm run test:music
-        continue-on-error: true

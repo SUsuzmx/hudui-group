@@ -13,18 +13,14 @@ const creating = ref(false);
 
 onMounted(async () => {
   try {
-    const [f, ai] = await Promise.all([
-      api.friends().catch(() => ({ friends: [] })),
-      api.aiContacts().catch(() => ({ contacts: [] })),
-    ]);
-    const list = [];
-    for (const c of ai.contacts || []) {
-      list.push({ key: 'ai-' + c.id, nickname: c.nickname, avatar: c.avatar, emoji: c.emoji, isAI: true, userId: null });
-    }
-    for (const f2 of f.friends || []) {
-      list.push({ key: 'u-' + f2.id, nickname: f2.remark || f2.nickname, avatar: f2.avatar, color: f2.avatarColor, isAI: false, userId: f2.id });
-    }
-    people.value = list;
+    const f = await api.friends().catch(() => ({ friends: [] }));
+    people.value = (f.friends || []).map((f2) => ({
+      key: 'u-' + f2.id,
+      nickname: f2.remark || f2.nickname,
+      avatar: f2.avatar,
+      color: f2.avatarColor,
+      userId: f2.id,
+    }));
   } catch {
     people.value = [];
   }
@@ -45,9 +41,8 @@ async function create() {
   creating.value = true;
   try {
     const pickedPeople = people.value.filter((p) => picked.value[p.key]);
-    const memberIds = pickedPeople.filter((p) => !p.isAI && p.userId).map((p) => p.userId);
-    const aiMembers = pickedPeople.filter((p) => p.isAI).map((p) => p.nickname);
-    const d = await api.createGroup(name.value.trim() || defaultName.value, memberIds, aiMembers);
+    const memberIds = pickedPeople.map((p) => p.userId).filter(Boolean);
+    const d = await api.createGroup(name.value.trim() || defaultName.value, memberIds);
     toast('群聊创建成功');
     emit('created', d.group);
   } catch (e) {
@@ -71,12 +66,11 @@ async function create() {
       <div class="name-field">
         <input v-model="name" :placeholder="defaultName || '群聊名称（可留空自动生成）'" maxlength="20" />
       </div>
-      <p class="hint">选择至少 2 位成员（可选 AI 联系人；AI 会在新群里像真人一样说话）</p>
+      <p class="hint">选择至少 2 位好友</p>
       <div class="pick-list">
         <button v-for="p in people" :key="p.key" class="pick-row" @click="toggle(p)">
           <UserAvatar :name="p.nickname" :avatar="p.avatar" :color="p.color || '#07c160'" :size="40" />
           <span class="pick-name">{{ p.nickname }}</span>
-          <span v-if="p.isAI" class="ai-tag">AI</span>
           <span class="check" :class="{ on: picked[p.key] }">✓</span>
         </button>
         <div v-if="!people.length" class="empty-tip">暂无可选成员</div>
@@ -112,7 +106,6 @@ async function create() {
 }
 .pick-row:active { background: var(--press); }
 .pick-name { flex: 1; font-size: 16px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-tag { font-size: 10px; color: #07c160; border: 1px solid #07c160; border-radius: 3px; padding: 0 4px; margin-right: 6px; }
 .check {
   width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid #ccc; color: transparent;
   display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0;

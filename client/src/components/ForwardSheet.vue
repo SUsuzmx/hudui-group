@@ -30,35 +30,18 @@ onMounted(async () => {
           avatar: c.avatars?.[0],
           kind: '群聊',
         });
+      } else if (c.type === 'private' && (c.peerId || c.userId)) {
+        list.push({
+          key: c.id,
+          conversationId: c.conversationId || c.id,
+          name: c.remark || c.name,
+          avatar: c.avatar || (typeof c.avatars?.[0] === 'string' && !String(c.avatars[0]).startsWith('#') ? c.avatars[0] : null),
+          color: c.avatarColor,
+          kind: '私聊',
+        });
       }
     }
   } catch { /* ignore */ }
-
-  // AI 私聊目标
-  let socket = null;
-  try {
-    socket = io('/', { auth: { token: getToken() }, transports: ['polling', 'websocket'] });
-    const members = await new Promise((resolve) => {
-      const timer = setTimeout(() => resolve(null), 2000);
-      socket.once('members:update', (d) => {
-        clearTimeout(timer);
-        resolve(d);
-      });
-    });
-    const ai = members?.aiMembers || [];
-    for (const a of ai) {
-      list.push({
-        key: 'ai-' + a.id,
-        conversationId: `pv_${props.me.id}_ai_${a.id}`,
-        name: a.nickname,
-        avatar: a.avatarUrl,
-        emoji: a.avatarUrl ? null : a.avatarEmoji,
-        kind: '私聊',
-      });
-    }
-  } catch { /* ignore */ } finally {
-    try { socket?.disconnect(); } catch { /* ignore */ }
-  }
 
   targets.value = list;
 });
@@ -120,7 +103,7 @@ async function confirmForward() {
           :class="{ active: picked?.key === t.key }"
           @click="pick(t)"
         >
-          <UserAvatar :name="t.name" :avatar="t.avatar" :emoji="t.emoji" :color="'#07c160'" :size="40" />
+          <UserAvatar :name="t.name" :avatar="t.avatar" :emoji="t.emoji" :color="t.color || '#07c160'" :size="40" />
           <div class="fwd-main">
             <div class="fwd-name">{{ t.name }}</div>
             <div class="fwd-kind">{{ t.kind }}</div>
