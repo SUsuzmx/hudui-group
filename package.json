@@ -30,6 +30,7 @@
     "test:music": "node --test server/tests/music-providers.test.mjs",
     "test:unit": "node --test \"server/tests/*.test.mjs\"",
     "test:listen": "node scripts/test-listen-together.mjs",
+    "test:device-ban": "node scripts/test-device-ban.mjs && node scripts/test-device-ban-http.mjs && node scripts/test-device-ban-ui.mjs",
     "test:private-listen": "node scripts/test-private-listen.mjs",
     "test:invite-card": "node scripts/test-invite-card.mjs",
     "test:tower": "node --test server/tests/tower-battle.test.mjs && node scripts/test-tower-battle.mjs",

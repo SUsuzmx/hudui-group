@@ -3,7 +3,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, stmts, ROOT } from './db.js';
+import { db, stmts, DATA_DIR } from './db.js';
 
 const SESSION_HOURS = 12;
 
@@ -44,6 +44,7 @@ const VIEW_ONLY = [
   'flags.view',
 ];
 
+/** 封禁设备复用 users.manage 权限，无需新增权限项 */
 export const ROLES = {
   super: { label: '超级管理员', permissions: Object.keys(PERMISSIONS) },
   operator: {
@@ -477,7 +478,8 @@ export function isPlatformAdminUser(userId) {
 }
 
 // ---------- 引导初始化 ----------
-const BOOTSTRAP_FILE = path.join(ROOT, 'data', 'admin-bootstrap.txt');
+// 跟随数据目录，隔离测试（PERRY_DATA_DIR）时不写真实 data/
+const BOOTSTRAP_FILE = path.join(DATA_DIR, 'admin-bootstrap.txt');
 
 /**
  * 首次启动时建立后台账号：

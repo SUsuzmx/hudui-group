@@ -6,7 +6,7 @@ import { runMigrations } from './migrate.js';
 
 export const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 // PERRY_DATA_DIR 允许隔离出独立数据目录（冒烟测试用），默认仍是 <root>/data
-const DATA_DIR = process.env.PERRY_DATA_DIR || path.join(ROOT, 'data');
+export const DATA_DIR = process.env.PERRY_DATA_DIR || path.join(ROOT, 'data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 // node:sqlite 需要 Node >= 22.13（22.5–22.12 需 --experimental-sqlite，20.x 无此模块）。

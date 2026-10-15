@@ -69,6 +69,15 @@ function ask(type, user) {
   dialog.confirm = '';
 }
 
+/** 从用户详情发起设备封禁：需要带 deviceId */
+function askDevice(type, user, deviceId) {
+  if (!deviceId) {
+    toast('该用户还没有设备记录（需注册或登录一次）', 'warn');
+    return;
+  }
+  ask(type, { ...user, deviceId });
+}
+
 async function run() {
   if (busy.value) return;
   busy.value = true;
@@ -80,6 +89,12 @@ async function run() {
     } else if (dialog.type === 'unban') {
       await api.unbanUser(u.id);
       toast(`已解除封禁「${u.nickname}」`, 'ok');
+    } else if (dialog.type === 'ban-device') {
+      await api.banDevice(u.deviceId, dialog.text.trim());
+      toast('设备已封禁，该设备无法注册或登录', 'ok');
+    } else if (dialog.type === 'unban-device') {
+      await api.unbanDevice(u.deviceId);
+      toast('已解除该设备封禁', 'ok');
     } else if (dialog.type === 'password') {
       if (dialog.text.length < 6) { toast('密码至少 6 位', 'error'); busy.value = false; return; }
       await api.resetUserPassword(u.id, dialog.text);
@@ -157,6 +172,8 @@ async function runBulk() {
 const DIALOG_TITLES = {
   ban: '封禁用户',
   unban: '解除封禁',
+  'ban-device': '封禁设备',
+  'unban-device': '解除设备封禁',
   password: '重置密码',
   logout: '强制下线',
   'platform-admin': '平台管理员标记',
@@ -279,6 +296,31 @@ onMounted(load);
             </span>
             <span class="k">平台管理员</span>
             <span class="v">{{ detail.user.isPlatformAdmin ? '是' : '否' }}</span>
+            <span class="k">登录设备</span>
+            <span class="v">
+              <template v-if="detail.user.deviceId">
+                <code class="mono" style="font-size:12px">{{ detail.user.deviceId.slice(0, 12) }}…</code>
+                <span v-if="detail.user.deviceBanned" class="tag red" style="margin-left:6px">设备已封禁</span>
+                <span v-else class="tag green" style="margin-left:6px">设备正常</span>
+              </template>
+              <span v-else class="muted">暂无设备记录（用户登录一次后自动登记）</span>
+            </span>
+            <span class="k">特征指纹</span>
+            <span class="v">
+              <template v-if="detail.user.deviceSig">
+                <code class="mono" style="font-size:12px">{{ detail.user.deviceSig.slice(0, 12) }}…</code>
+                <span class="muted" style="margin-left:6px">不依赖缓存，清缓存/无痕不变；该指纹下 {{ detail.user.deviceSigAccounts }} 个账号</span>
+              </template>
+              <span v-else class="muted">—</span>
+            </span>
+            <template v-if="detail.user.deviceUsers && detail.user.deviceUsers.length > 1">
+              <span class="k">同设备账号</span>
+              <span class="v">
+                <span v-for="du in detail.user.deviceUsers" :key="du.id" class="tag" :class="du.banned ? 'red' : 'blue'" style="margin-right:4px">
+                  #{{ du.id }} {{ du.nickname }}
+                </span>
+              </span>
+            </template>
           </div>
 
           <div class="divider"></div>
@@ -338,6 +380,18 @@ onMounted(load);
       <div v-if="detail.user && props.can('users.manage')" class="dialog-actions">
         <button type="button" class="btn sm" @click="ask('password', detail.user); detail = null">重置密码</button>
         <button type="button" class="btn sm" @click="ask('logout', detail.user); detail = null">强制下线</button>
+        <button
+          v-if="detail.user.deviceId && !detail.user.deviceBanned"
+          type="button"
+          class="btn sm danger"
+          @click="askDevice('ban-device', detail.user, detail.user.deviceId); detail = null"
+        >封禁设备</button>
+        <button
+          v-else-if="detail.user.deviceId && detail.user.deviceBanned"
+          type="button"
+          class="btn sm"
+          @click="askDevice('unban-device', detail.user, detail.user.deviceId); detail = null"
+        >解除设备封禁</button>
         <button type="button" class="btn sm" @click="ask('platform-admin', detail.user); detail = null">
           {{ detail.user.isPlatformAdmin ? '取消平台管理员' : '设为平台管理员' }}
         </button>
@@ -371,6 +425,21 @@ onMounted(load);
             <textarea v-model="dialog.text" class="textarea" rows="3" placeholder="将记录在案并展示给用户"></textarea>
           </div>
           <p class="hint">封禁后该用户所有会话立即失效，无法登录。</p>
+        </template>
+
+        <template v-else-if="dialog.type === 'ban-device'">
+          <div class="field">
+            <label>封禁原因</label>
+            <textarea v-model="dialog.text" class="textarea" rows="3" placeholder="将记录在审计日志"></textarea>
+          </div>
+          <p class="hint">
+            封禁后该设备<b>无法注册新账号、无法登录任何账号</b>，该设备上已登记的用户（含本用户）会话立即失效。
+            同设备账号：{{ (dialog.user?.deviceUsers || []).map((x) => `#${x.id} ${x.nickname}`).join('、') || '（无）' }}
+          </p>
+        </template>
+
+        <template v-else-if="dialog.type === 'unban-device'">
+          <p class="hint">解除后该设备可以正常注册和登录。</p>
         </template>
 
         <template v-else-if="dialog.type === 'unban'">
@@ -410,7 +479,7 @@ onMounted(load);
         <button
           type="button"
           class="btn"
-          :class="dialog.type === 'delete' || dialog.type === 'ban' ? 'danger' : 'primary'"
+          :class="['delete', 'ban', 'ban-device'].includes(dialog.type) ? 'danger' : 'primary'"
           :disabled="busy"
           @click="run"
         >{{ busy ? '处理中…' : '确定' }}</button>

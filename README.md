@@ -9,7 +9,7 @@
 ### 近期功能要点
 
 - **平台能力（账号安全 / 群治理 / 内容安全 / 备份 / 运营）**：登录记录与异常提醒、找回密码与注销、群管理员/入群验证/公告已读/群相册、朋友圈访客与举报、聊天记录导出与云备份、反馈 FAQ、增强搜索；可用 **功能开关**（`server/feature-flags.js` + `data/feature-flags.json`）一键回退
-- **独立运营后台**：已从用户端**完全抽离**为独立 SPA。含概览仪表盘、用户管理、举报管理、反馈管理、错误监控、内容治理、功能开关、系统设置、审计日志、管理员账号十大模块；独立管理员账号体系（`admin_accounts`）与用户端登录态完全隔离，支持角色 + 细粒度权限、全量操作审计、用户封禁、维护模式。详见下方「运营后台」
+- **独立运营后台**：已从用户端**完全抽离**为独立 SPA。含概览仪表盘、用户管理、**设备封禁**、举报管理、反馈管理、错误监控、内容治理、功能开关、系统设置、审计日志、管理员账号等模块；独立管理员账号体系（`admin_accounts`）与用户端登录态完全隔离，支持角色 + 细粒度权限、全量操作审计、用户封禁、**设备封禁**、维护模式。详见下方「运营后台」
 - **PWA / Web Push**：离线页与离线横幅、安装引导；VAPID 推送订阅，后台/关页仍可收新消息（需 HTTPS）
 - **本地曲库兜底**：可选 `music/<歌手>/<曲名>.mp3`，猜歌拉流超时自动兜底（`music/` 默认不入库）
 - **群聊信息页修复**：成员头像墙正确渲染并可进资料；群公告可编辑发布；「查找聊天记录」返回即开搜索；「我在群里的昵称」独立编辑并写入群成员昵称
@@ -230,6 +230,9 @@ npm run build:folia          # 或在 vendor/folia-major 下：npx vite build --
 │   ├── verify-*.mjs         # 管理端/清理/群聊修复等校验
 │   ├── test-listen-together.mjs
 │   ├── test-private-listen.mjs
+│   ├── test-device-ban.mjs      # 设备封禁单元（迁移/登记/封禁/解封）
+│   ├── test-device-ban-http.mjs # 设备封禁 HTTP 拦截（注册/登录/后台接口）
+│   ├── test-device-ban-ui.mjs   # 设备封禁后台 UI 端到端（Playwright）
 │   └── archive/             # 红包/通话/私聊支付等冒烟脚本
 ├── server/
 │   ├── index.js             # Express + Socket.IO 入口
@@ -245,6 +248,7 @@ npm run build:folia          # 或在 vendor/folia-major 下：npx vite build --
 │   ├── platform.js          # 账号安全/群治理/备份/反馈
 │   ├── admin.js             # 运营后台全部接口 /api/admin/*
 │   ├── admin-store.js       # 后台账号/会话/权限/审计/系统设置/封禁
+│   ├── device-ban.js        # 设备封禁：指纹登记、封禁/解封、注册与登录拦截
 │   ├── feature-flags.js     # 功能开关（可热关闭）
 │   ├── push.js              # Web Push（VAPID）
 │   ├── local-music.js       # 本地曲库扫描
@@ -486,7 +490,10 @@ npm run test:admin-host        # Host 路由矩阵（21 项）
 | `vite.admin.config.js` | 后台独立构建配置（`base: /admin/`） |
 | `server/admin.js` | 后台全部 HTTP 接口（`/api/admin/*`） |
 | `server/admin-store.js` | 后台核心：账号、会话、权限、审计、系统设置、封禁 |
+| `server/device-ban.js` | 设备封禁：设备指纹规范化、登记、封禁/解封、登录与注册拦截 |
+| `client/src/device-ban.js` | 用户端设备指纹采集（`localStorage` 持久 ID + 稳定特征），随请求头 `X-Device-Id` 上报 |
 | `server/migrate.js` 迁移 13 | `admin_accounts` / `admin_sessions` / `admin_audit_logs` / `app_settings` + 用户封禁列 |
+| `server/migrate.js` 迁移 14 | `banned_devices` 设备封禁表 + `users.device_id`（最近使用设备） |
 
 ### 构建与启动
 
@@ -529,7 +536,8 @@ npm run admin:reset -- 小苏 'NewPass123'      # 重置并踢下线该账号所
 | 模块 | 能力 |
 |------|------|
 | 📊 概览 | 待办聚合（举报/反馈/错误/异常登录）、实时指标、7/14/30 天趋势图、分类分布、高频错误 Top、最近注册与后台操作 |
-| 👥 用户管理 | 昵称/微信号/ID 检索、状态筛选、详情（统计/群组/登录记录/被举报记录）、封禁与解封、重置密码、强制下线、平台管理员标记、删除账号（需昵称二次确认）、CSV 导出 |
+| 👥 用户管理 | 昵称/微信号/ID 检索、状态筛选、详情（统计/群组/登录记录/被举报记录/登录设备）、封禁与解封、**封禁设备**、重置密码、强制下线、平台管理员标记、删除账号（需昵称二次确认）、CSV 导出 |
+| 📵 设备封禁 | 设备登记列表（设备 ID / 最后使用用户 / IP / UA / 活跃时间）、关键词检索、单台或批量封禁、解封；被封设备**无法注册新账号、无法登录任何账号** |
 | 🚨 举报管理 | 状态/分类/关键词筛选、详情含被举报对象上下文、处置（处理中/已处理/未违规 + 备注）、一键连带封禁、批量处置、CSV 导出 |
 | 💬 反馈管理 | 状态/分类筛选、回复、关闭/重开、按状态与分类统计、CSV 导出 |
 | 🐞 错误监控 | 趋势图、模块分布（点击下钻）、高频错误信息聚合、按模块/关键词筛选、单条删除、按时间/模块批量清理、堆栈与 meta 详情、CSV 导出 |
@@ -562,6 +570,9 @@ npm run admin:reset -- 小苏 'NewPass123'      # 重置并踢下线该账号所
 
 - **维护模式**（`site.maintenance`）：用户端所有 `/api/*` 业务接口返回 503（可自定义文案）；`/api/login`、`/api/me`、`/api/admin/*` 与静态页面不受影响，**保证管理员始终能进后台恢复**。
 - **用户封禁**：封禁立即清除该用户全部会话；登录时密码正确也会被拒（403）；对已登录的漏网会话有兜底中间件强制下线。管理员账号不可被封禁。
+- **设备封禁**：客户端（`client/src/device-ban.js`）采集设备特征生成设备 ID，经 `X-Device-Id` 头随注册/登录上报；服务端哈希后存入 `banned_devices`（`server/device-ban.js`，迁移 14），并在 `users.device_id` 记录用户最近使用的设备。被封设备注册与登录都返回 403（`reason: device_banned`），封禁瞬间清除该设备上所有已登记用户的会话，可随时解封。设备从「用户详情 → 封禁设备」或「设备封禁」模块操作。
+
+  ⚠️ 设备 ID 存在浏览器 `localStorage`：清缓存/换浏览器/无痕模式会得到新指纹，属该方案的固有边界（非强身份）。同一设备上的多个账号会一并下线，后台封禁前可在用户详情看到「同设备账号」清单。
 
 ### 后台接口速查
 
@@ -573,6 +584,7 @@ npm run admin:reset -- 小苏 'NewPass123'      # 重置并踢下线该账号所
 | 会话 | `POST /auth/login` `POST /auth/logout` `GET /auth/me` `POST /auth/password` `GET /auth/sessions` |
 | 概览 | `GET /dashboard?days=14` |
 | 用户 | `GET /users` `GET /users/:id` `POST /users/:id/ban` `POST /users/:id/unban` `POST /users/:id/password` `POST /users/:id/platform-admin` `POST /users/:id/logout-all` `DELETE /users/:id` |
+| 设备 | `GET /devices` `POST /devices/ban` `POST /devices/bulk-ban` `POST /devices/unban` |
 | 举报 | `GET /reports` `GET /reports/:id` `POST /reports/:id` `POST /reports/bulk` |
 | 反馈 | `GET /feedback` `POST /feedback/:id/reply` `POST /feedback/:id/close` `POST /feedback/:id/reopen` |
 | 错误 | `GET /errors` `GET /errors/stats` `DELETE /errors/:id` `POST /errors/purge` |
@@ -736,6 +748,7 @@ Get-Content C:\perry\data\service.log -Tail 50
 | `npm run test:admin-ops` | 维护模式/注册开关/开关解耦/审计（15 项） |
 | `npm run test:admin-host` | 后台独立域名 Host 路由矩阵（21 项） |
 | `npm run test:admin-public` | 线上独立域名真实浏览器端到端验证 |
+| `npm run test:device-ban` | 设备封禁：单元 + HTTP 拦截 + 后台 UI 端到端（自起隔离实例，不碰真实 `data/`） |
 | `npm run admin:domain` | 后台独立域名接入助手（检查 + 可选 API 自动配置） |
 | `npm run admin:reset` | **忘记后台密码时离线重置**（列出账号 / 重置指定账号） |
 | `npm run admin:cleanup` | 定向清理 `smoke_*` 测试数据（默认 dry-run，`-- --apply` 生效） |

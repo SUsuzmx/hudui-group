@@ -3,6 +3,7 @@ import { dataUrlToBlob } from './chat-shared.js';
 import { toast } from './toast.js';
 import { uploadWithProgress, dataUrlToBlobSync, dataUrlToBlobAsync } from './upload-progress.js';
 import { compressToBlob, IMAGE_PRESETS } from './image-pipeline.js';
+import { deviceHeaders } from './device-ban.js';
 
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY);
@@ -34,6 +35,7 @@ async function request(path, { method = 'POST', body, query } = {}) {
   const res = await fetch(url, {
     method,
     headers: {
+      ...deviceHeaders(),
       ...(body ? { 'Content-Type': 'application/json' } : {}),
       ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
     },

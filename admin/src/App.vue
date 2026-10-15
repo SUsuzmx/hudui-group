@@ -6,6 +6,7 @@ import ToastHost from './components/ToastHost.vue';
 import LoginView from './views/LoginView.vue';
 import DashboardView from './views/DashboardView.vue';
 import UsersView from './views/UsersView.vue';
+import DevicesView from './views/DevicesView.vue';
 import ReportsView from './views/ReportsView.vue';
 import FeedbackView from './views/FeedbackView.vue';
 import ErrorsView from './views/ErrorsView.vue';
@@ -27,6 +28,7 @@ const badges = ref({});
 const VIEWS = {
   dashboard: DashboardView,
   users: UsersView,
+  devices: DevicesView,
   reports: ReportsView,
   feedback: FeedbackView,
   errors: ErrorsView,

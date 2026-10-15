@@ -27,6 +27,7 @@ import { mediaFromBodyJson, mediaFromMultipart, mediaFromRaw, normalizeKind } fr
 import { mediaServeMiddleware } from './media-serve.js';
 import { parseAllowedMediaUrl, fetchAllowedMedia, userFromCookieOrBearer } from './media-proxy.js';
 import { mountFolia } from './folia.js';
+import { isBannedRequest, normalizeDeviceId, normalizeDeviceSig, sigRegisterLimited, touchDevice } from './device-ban.js';
 import { pushStatus, saveSubscription, removeSubscription, pushToUser } from './push.js';
 import { getBalance, listTx, debit } from './wallet.js';
 import { expirePendingPayments, RP_COVERS, redPacketPayload } from './rp.js';
@@ -507,9 +508,22 @@ app.post('/api/register', (req, res) => {
     });
   }
   if (registerRateLimited(ip)) return res.status(429).json({ error: '注册太频繁, 请稍后再试' });
+  // 设备封禁拦截（双轨）：持久 ID 或特征指纹任一被封即拦
+  const deviceId = req.get('X-Device-Id') || '';
+  const deviceSig = req.get('X-Device-Sig') || '';
+  if (isBannedRequest({ deviceId, sig: deviceSig })) {
+    log(`设备封禁拦截注册: ${normalizeDeviceId(deviceId).slice(0, 10)}… sig:${normalizeDeviceSig(deviceSig).slice(0, 10)}…（IP ${ip}）`);
+    return res.status(403).json({ error: '该设备已被限制注册，如有疑问请联系管理员', reason: 'device_banned' });
+  }
+  // 同特征指纹注册频次限制：堵「清缓存/无痕反复注册」
+  if (sigRegisterLimited(deviceSig)) {
+    log(`注册频次拦截: 同设备指纹 24h 注册已达上限（IP ${ip}）`);
+    return res.status(429).json({ error: '该设备注册过于频繁，请 24 小时后再试', reason: 'device_register_limited' });
+  }
   const r = register(req.body?.nickname, req.body?.password, req.body?.avatar);
   if (r.error) return res.status(400).json({ error: r.error });
   log(`新用户注册: ${r.user.nickname}`);
+  try { touchDevice({ userId: r.user.id, deviceId, sig: deviceSig, ip, userAgent: req.get('User-Agent') || '' }); } catch { /* ignore */ }
   kickOtherSessions(r.user?.id, r.kickedTokens);
   setAuthCookie(req, res, r.token);
   const anomaly = recordLogin({
@@ -543,6 +557,15 @@ app.post('/api/login', (req, res) => {
     try { logError({ feature: 'login', message: `banned user blocked: ${r.user.nickname}` }); } catch { /* ignore */ }
     return res.status(403).json({ error: '账号已被封禁，如有疑问请联系管理员', reason: 'banned' });
   }
+  // 设备封禁拦截（双轨）：账号正常但来自被封禁设备/特征指纹时不放行
+  const deviceId = req.get('X-Device-Id') || '';
+  const deviceSig = req.get('X-Device-Sig') || '';
+  if (isBannedRequest({ deviceId, sig: deviceSig })) {
+    try { logError({ feature: 'login', message: `banned device blocked login: ${r.user.nickname}` }); } catch { /* ignore */ }
+    log(`设备封禁拦截登录: ${r.user.nickname}（id:${normalizeDeviceId(deviceId).slice(0, 10)}… sig:${normalizeDeviceSig(deviceSig).slice(0, 10)}…）`);
+    return res.status(403).json({ error: '该设备已被限制登录，如有疑问请联系管理员', reason: 'device_banned' });
+  }
+  try { touchDevice({ userId: r.user.id, deviceId, sig: deviceSig, ip, userAgent: req.get('User-Agent') || '' }); } catch { /* ignore */ }
   log(`用户登录: ${r.user.nickname}（单端挤下 ${r.kickedTokens?.length || 0} 个旧会话）`);
   kickOtherSessions(r.user?.id, r.kickedTokens);
   setAuthCookie(req, res, r.token);

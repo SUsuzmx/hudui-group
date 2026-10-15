@@ -587,6 +587,42 @@ const migrations = [
       createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_users_banned ON users(banned)');
     },
   },
+  {
+    id: 14,
+    name: 'device_ban',
+    up(db) {
+      // 设备封禁：device_id 由客户端采集设备特征生成（device-ban.js），一个设备一行
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS banned_devices (
+          device_id   TEXT PRIMARY KEY,
+          reason      TEXT NOT NULL DEFAULT '',
+          banned_by   TEXT NOT NULL DEFAULT '',
+          banned_at   INTEGER NOT NULL,
+          last_seen_at INTEGER,
+          last_user_id INTEGER,
+          last_ip     TEXT NOT NULL DEFAULT '',
+          last_ua     TEXT NOT NULL DEFAULT ''
+        );
+      `);
+      // 用户最近登录使用的设备（注册或登录时回填），用于从用户维度找到设备再封禁
+      addColumnIfMissing(db, 'users', 'device_id', 'TEXT NOT NULL DEFAULT ""');
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_users_device ON users(device_id)');
+    },
+  },
+  {
+    id: 15,
+    name: 'device_sig_fingerprint',
+    up(db) {
+      // 特征指纹（sig）：不依赖 localStorage 的稳定特征哈希，清缓存/无痕模式也不变。
+      // 与持久 ID（device_id）双轨封禁：封任一即拦；同一特征指纹限制注册频次。
+      db.exec(`
+        ALTER TABLE banned_devices ADD COLUMN sig_hash TEXT NOT NULL DEFAULT '';
+      `);
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_banned_devices_sig ON banned_devices(sig_hash)');
+      addColumnIfMissing(db, 'users', 'device_sig', 'TEXT NOT NULL DEFAULT ""');
+      createIndex(db, 'CREATE INDEX IF NOT EXISTS idx_users_device_sig ON users(device_sig)');
+    },
+  },
 ];
 
 export function runMigrations(db) {

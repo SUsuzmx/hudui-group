@@ -14,6 +14,9 @@ import {
   getAllSettings, setSettings, DEFAULT_SETTINGS,
   banUser, unbanUser, isPlatformAdminUser,
 } from './admin-store.js';
+import {
+  deviceOfUser, identityOfUser, usersOfDevice, banDevice, banSig, unbanDevice, listBannedDevices, isBannedRequest,
+} from './device-ban.js';
 
 function now() {
   return Date.now();
@@ -351,6 +354,11 @@ export function createAdminRouter() {
     ).all(String(uid)).map((r) => ({
       id: r.id, category: r.category, status: r.status, detail: r.detail, createdAt: r.created_at,
     }));
+    const { deviceId: userDeviceId, deviceSig: userDeviceSig } = identityOfUser(uid);
+    const deviceBanned = isBannedRequest({ deviceId: userDeviceId, sig: userDeviceSig });
+    const deviceSigCount = userDeviceSig
+      ? db.prepare('SELECT COUNT(*) AS n FROM users WHERE device_sig = ?').get(userDeviceSig)?.n || 0
+      : 0;
     res.json({
       user: {
         id: u.id,
@@ -368,6 +376,11 @@ export function createAdminRouter() {
         bannedAt: u.banned_at || null,
         bannedBy: u.banned_by || '',
         isPlatformAdmin: settings.isAdmin === true,
+        deviceId: userDeviceId,
+        deviceSig: userDeviceSig,
+        deviceBanned,
+        deviceUsers: (userDeviceId || userDeviceSig) ? usersOfDevice(userDeviceId, userDeviceSig) : [],
+        deviceSigAccounts: deviceSigCount,
       },
       stats: {
         friends: one('SELECT COUNT(*) AS n FROM friends WHERE user_id = ?', uid),
@@ -513,6 +526,63 @@ export function createAdminRouter() {
       return { ok: true, count: ids.length, kicked };
     }
     return { error: '不支持的操作类型' };
+  }));
+
+  // ============ 设备封禁 ============
+  router.get('/devices', requirePerm('users.view'), (req, res) => {
+    const limit = Math.min(Number(req.query.limit) || 20, 100);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+    const r = listBannedDevices({
+      q: String(req.query.q || ''),
+      limit, offset,
+    });
+    res.json({ ...r, limit, offset });
+  });
+
+  router.post('/devices/ban', ...write('devices', 'ban', 'users.manage', (req) => {
+    const deviceId = String(req.body?.deviceId || '');
+    const sig = String(req.body?.sig || '');
+    const reason = String(req.body?.reason || '').slice(0, 200);
+    let r;
+    if (deviceId) {
+      r = banDevice(deviceId, { reason, by: req.admin.username });
+    } else if (sig) {
+      r = banSig(sig, { reason, by: req.admin.username });
+    } else {
+      return { error: '缺少 deviceId 或 sig' };
+    }
+    if (r.error) return r;
+    logWrite(req, 'devices', 'ban', {
+      targetType: 'device', targetId: (deviceId || sig).slice(0, 16) + '…',
+      detail: `封禁设备${sig ? '（含特征指纹）' : ''}：${reason || '未填写原因'}`,
+    });
+    return { ok: true };
+  }));
+
+  router.post('/devices/bulk-ban', ...write('devices', 'bulk-ban', 'users.manage', (req) => {
+    const ids = (Array.isArray(req.body?.deviceIds) ? req.body.deviceIds : []).map(String).filter(Boolean).slice(0, 100);
+    if (!ids.length) return { error: '请选择要封禁的设备' };
+    const reason = String(req.body?.reason || '').slice(0, 200);
+    let done = 0;
+    for (const id of ids) {
+      const r = banDevice(id, { reason, by: req.admin.username });
+      if (!r.error) done += 1;
+    }
+    logWrite(req, 'devices', 'bulk-ban', {
+      targetType: 'device', targetId: ids.map((s) => s.slice(0, 8)).join(','),
+      detail: `批量封禁设备 ${done}/${ids.length}（${reason || '未填写原因'}）`,
+    });
+    return { ok: true, count: done };
+  }));
+
+  router.post('/devices/unban', ...write('devices', 'unban', 'users.manage', (req) => {
+    const deviceId = String(req.body?.deviceId || '');
+    const r = unbanDevice(deviceId);
+    if (r.error) return r;
+    logWrite(req, 'devices', 'unban', {
+      targetType: 'device', targetId: deviceId.slice(0, 16) + '…', detail: '解除设备封禁',
+    });
+    return { ok: true };
   }));
 
   // ============ 举报管理 ============
@@ -1171,6 +1241,7 @@ export const SETTINGS_META = {
 export const MODULES = [
   { key: 'dashboard', label: '概览', icon: '📊', perm: 'dashboard.view' },
   { key: 'users', label: '用户管理', icon: '👥', perm: 'users.view' },
+  { key: 'devices', label: '设备封禁', icon: '📵', perm: 'users.view' },
   { key: 'reports', label: '举报管理', icon: '🚨', perm: 'reports.view' },
   { key: 'feedback', label: '反馈管理', icon: '💬', perm: 'feedback.view' },
   { key: 'errors', label: '错误监控', icon: '🐞', perm: 'errors.view' },

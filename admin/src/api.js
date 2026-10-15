@@ -70,6 +70,12 @@ export const api = {
   deleteUser: (id, confirm) => request(`/users/${id}`, { method: 'DELETE', body: { confirm } }),
   bulkUsers: (payload) => request('/users/bulk', { method: 'POST', body: payload }),
 
+  // 设备封禁
+  devices: (params) => request('/devices', { query: params }),
+  banDevice: (deviceId, reason, sig = '') => request('/devices/ban', { method: 'POST', body: { deviceId, reason, sig } }),
+  unbanDevice: (deviceId) => request('/devices/unban', { method: 'POST', body: { deviceId } }),
+  bulkBanDevices: (deviceIds, reason) => request('/devices/bulk-ban', { method: 'POST', body: { deviceIds, reason } }),
+
   // 举报
   reports: (params) => request('/reports', { query: params }),
   report: (id) => request(`/reports/${id}`),
